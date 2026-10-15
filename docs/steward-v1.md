@@ -1,8 +1,20 @@
 # Steward v1
 
-The steward handles failed work, detected stalls and preparation of a retry brief. It reads an immutable dossier and returns one to four ranked choices, one recommendation and a confidence. Triage and conversation remain separate until Run 4.
+The steward handles failed work, detected stalls, retry briefs, repository planning and issue conversations. Every mode reads an immutable dossier v1 and returns decision v1: one to four ranked choices, one recommendation, a confidence and an optional choice-specific brief. Repository planning returns a bounded collection of these decisions, one per proposed row.
 
-## Decisions and authority
+## Subjects and captured authority
+
+A dossier identifies the existing object whose authority governs the decision:
+
+| Subject | Exact identity | Application authority |
+| --- | --- | --- |
+| `unit` | `unit_id`, plus the dossier's membership, requirements, candidate and gate pins | Existing delivery selection and application receipts |
+| `proposal_row` | `proposal_id`, `row_id`, captured `version` and context digest | Versioned row edits and explicit proposal acceptance |
+| `conversation_turn` | `thread_id`, captured `version`, latest operator `message_id` and authenticated `actor_id` | Existing message-bound operator request and undo receipts |
+
+Each decision echoes its dossier ID and digest. Captured subject decisions retain their physical execution identity, so later captures do not replace their history. Planning and conversations keep their existing leases and storage domains; neither creates a delivery merely to run the steward. Historical triage and discussion captures still complete through their original contracts.
+
+## Delivery decisions and authority
 
 The dossier pins issue membership and requirements, the candidate, independent holds, runtime configuration and repository autonomy. It includes references to retained attempt evidence and durable repository notes. A later change makes an unselected decision stale.
 
@@ -12,7 +24,15 @@ Selection records the exact stored choice. The browser sends identifiers and a r
 
 There are at most three logical steward cycles per delivery. A separate brief consumes a cycle. Only a sealed provider failure or a proven pre-agent Forge failure can retry the same cycle, with at most three physical invocations. Review and Audit remain independent. A steward choice cannot reset failure charges, clear independent holds or bypass unsettled publication or merge work.
 
-## Applying choices
+## Planning and conversation choices
+
+Repository rows offer ranked alternatives with identical issue membership. **Choose this option** updates the row; **Accept** separately approves it. Partial acceptance, rejection and explicit approval of each group remain unchanged, including groups with existing PRs. A manual row edit clears its association with a captured choice. A matching accepted planning brief may select a configured environment through the existing environment policy and label effects; independent operator selections remain authoritative. See [Repository planning](repository-planning.md).
+
+Conversations use the same ranked-choice card. An `answer` choice cannot submit a mutation. Selecting another offered choice submits its stored identity through the normal operator confirmation path. The exact close-command grammar remains an authenticated operator instruction; worker wording cannot grant it authority. Undo still requires a confirmed reversible operator effect. See [Issue conversations](issue-conversations-reference.md).
+
+Each proposal and each authenticated conversation message permits at most three physical worker executions, including failed attempts. A proposal at the limit shows `steward_cycle_limit`; use **Triage now** to request a fresh proposal. A conversation at the limit records an explanation; send a new question or instruction to continue. Repeating the same unanswered message or replaying the same request does not reset the limit. These executions do not charge a delivery's failure budget. This subject limit is separate from the delivery's three logical steward cycles described above.
+
+## Applying delivery choices
 
 - **Retry:** freezes the adjustment and brief into the next matching assignment. A task-specific choice authorizes one new execution of that exact task; unrelated tasks retain their original settings.
 - **Wait:** records verified issue prerequisites through the existing dependency machinery.
