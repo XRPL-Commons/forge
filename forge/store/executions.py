@@ -455,7 +455,16 @@ class ExecutionQueries:
             for member in job['members']:
                 del member['requirements_json']
             if not members:
-                raise TransitionError('worker assignment has no pinned issue scope')
+                from .review_pulls import review_only_in, source_in
+                binding=review_only_in(db,job['unit_id'])
+                source=source_in(db,job['candidate_id']) if job['candidate_id'] else None
+                if (job['role'] not in {'review','audit'} or binding is None or source is None
+                        or source['repo_id']!=job['repo_id'] or source['pull_number']!=binding['pull_number']
+                        or source['pull_number']!=identity['pull_number']
+                        or source['head']['sha']!=identity['head_oid'] or source['base']['sha']!=identity['base_oid']
+                        or source['base']['repo']['id']!=job['repo_id']):
+                    raise TransitionError('worker assignment has no pinned issue or pull request scope')
+                job.update(review_only=True,review_source=source)
             # Singular fields remain only for singular assignments. Grouped
             # consumers use members and cannot accidentally authorize the first.
             if len(members) == 1:
@@ -463,8 +472,9 @@ class ExecutionQueries:
                             ('issue_number', 'issue_key', 'requirements_revision_id', 'requirements')})
             else:
                 job.update(issue_number=None, issue_key=None, requirements_revision_id=None,
-                           requirements=[{key: member[key] for key in ('member_id', 'requirements_revision_id', 'requirements')}
-                                         for member in job['members']])
+                           requirements=({key:job['review_source'][key] for key in ('title','body')} if job.get('review_only') else
+                               [{key: member[key] for key in ('member_id', 'requirements_revision_id', 'requirements')}
+                                for member in job['members']]))
             assignment = db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?', (job_id,)).fetchone()
             if assignment:
                 job.update(builder_id=assignment['builder_id'], builder_stage=assignment['stage'])
