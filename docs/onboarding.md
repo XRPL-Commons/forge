@@ -4,6 +4,8 @@ Start a new factory from your computer with `forge install`. The CLI handles
 remote installation, saves progress and prints each required browser action.
 You do not need to SSH into the VM or copy configuration files yourself.
 
+## Host installation
+
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
 forge install --ssh anvil
@@ -21,6 +23,8 @@ flowchart TD
   S --> M[Verify Triage, Build, Review, Audit and Merge]
   M --> E[Enable selected repositories]
 ```
+
+![Build, Review, Audit and Controller roles bring a repository to the Forge workbench.](assets/setup-hero.svg)
 
 ## What the CLI asks you to do
 
@@ -55,6 +59,8 @@ remain separate responsibilities; Review and Audit are produced by independent
 workers. Their verdicts appear as `forge/review` and `forge/audit` checks, and
 `forge/merge-policy` records the merge decision.
 
+## GitHub repository protection
+
 The default repository scope requires Forge Review and Audit for all pull
 requests, including human-authored ones. A repository can instead select
 Forge-created PRs only. Existing CI, signing rules and stronger protections remain
@@ -67,6 +73,22 @@ requirements need it. Provider verification makes real model calls and can consu
 provider usage. See [GitHub setup](github-settings.md) for permissions and rules.
 
 ## The first merge and handover
+
+```mermaid
+flowchart TD
+  T[Triage proposal] --> K{Unchanged singleton keep?}
+  K -->|Yes| A[Accept through the normal API]
+  K -->|No| O[Operator reviews the disposition]
+  O --> D{Runnable disposition?}
+  D -->|Yes| A
+  D -->|No| W[Wait for resolution]
+  W --> T
+  A --> E[Confirm required effects]
+  E --> B[Build the smoke issue]
+  B --> R[Independent Review and Audit]
+  R --> M[Verify exact GitHub merge and completed issue]
+  M --> H[Hand over selected repositories]
+```
 
 While installation is pending, execution is limited to the exact smoke issue.
 The default creates a private smoke repository and a separate publication-probe
@@ -88,12 +110,14 @@ A prepared host or passing automated tests do not establish that this live
 installation acceptance has succeeded. The CLI reports the recorded proof and
 time to first merge when the run completes.
 
-## Existing factories and recovery
+## Configuration and recovery
 
 For an active factory, use **Settings** to manage repository access, accounts and
 configuration. **Settings → GitHub access → Add repository** checks access and
 rules before **Enable automation**. Checking or discovering a repository alone
 does not enable it. Refresh expired checks when prompted.
+
+![Repository setup checks access and rules before the operator enables automation.](assets/settings-screen.svg)
 
 Older factories may retain four role Apps and a separate sign-in App. Their
 existing setup commands remain available; creating a new installation uses the
