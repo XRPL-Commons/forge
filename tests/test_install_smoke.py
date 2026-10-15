@@ -193,7 +193,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT status FROM triage_proposals WHERE id=?',
                                        (existing['proposal_id'],)).fetchone()[0], 'draft')
 
-    def interrupt_triage(self, plans, proposal_id, execution_id):
+    def interrupt_triage(self, plans, proposal_id, execution_id, *, cleanup=True):
         from forge.store.transitions import manifest_hash
         context = plans.context(proposal_id, head='a'*40)
         job = dict(id=execution_id, proposal_id=proposal_id, slot='repository-triage', role='triage',
@@ -201,7 +201,8 @@ class SmokeTests(unittest.TestCase):
             runner_config={}, context_hash=manifest_hash(context))
         plans.reserve(proposal_id, job, context)
         plans.interrupt_for_maintenance(execution_id)
-        plans.interrupt_for_maintenance(execution_id, cleanup=True)
+        if cleanup:
+            plans.interrupt_for_maintenance(execution_id, cleanup=True)
 
     def test_maintenance_interruption_queues_deterministic_successors_without_duplicate_runs(self):
         from forge.store.repository_planning import RepositoryPlanning
@@ -271,6 +272,56 @@ class SmokeTests(unittest.TestCase):
         result = self.call('status')
         self.assertEqual(result['error'], 'triage_failed')
         self.assertNotIn('private diagnostic', str(result))
+
+    def test_explicit_retry_preserves_failure_and_replays_one_successor(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        self.call('launch')
+        failed = plans.runs()[0]['id']
+        plans.settle_run(failed, error='steward_cycle_limit: request a new proposal')
+        first = self.call('retry', proposal_id=failed)
+        self.assertEqual(first['status'], 'smoke_retry_queued')
+        self.assertNotEqual(first['proposal_id'], failed)
+        self.assertEqual(self.call('retry', proposal_id=failed), first)
+        plans.settle_run(first['proposal_id'], error='triage_result_invalid')
+        self.assertEqual(self.call('retry', proposal_id=failed), first)
+        self.assertEqual(self.call('launch')['status'], 'smoke_triage_failed')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM repository_triage_runs').fetchone()[0], 2)
+            self.assertEqual(db.execute('SELECT error FROM repository_triage_runs WHERE id=?', (failed,)).fetchone()[0],
+                             'steward_cycle_limit: request a new proposal')
+
+    def test_retry_requires_exact_current_failed_run_and_setup(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        self.call('launch')
+        failed = plans.runs()[0]['id']
+        for proposal in (failed, 'unknown'):
+            with self.assertRaises(SetupError): self.call('retry', proposal_id=proposal)
+        plans.settle_run(failed, error='triage_result_invalid')
+        with self.assertRaises(SetupError):
+            self.service.call('retry', {'proposal_id': failed}, setup_id='other', generation=self.generation)
+        with self.assertRaises(SetupError):
+            self.service.call('retry', {'proposal_id': failed}, setup_id='install', generation='old')
+        plans.queue(1, request_id='other-active', actor_id='operator', base_branch='main')
+        with self.assertRaises(SetupError): self.call('retry', proposal_id=failed)
+
+    def test_retry_refuses_unclean_workers_and_maintenance_interruptions(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        self.call('launch')
+        failed = plans.runs()[0]['id']
+        self.interrupt_triage(plans, failed, 'unclean-retry')
+        with self.assertRaises(SetupError): self.call('retry', proposal_id=failed)
+        self.call('launch')
+        failed = plans.runs()[0]['id']
+        self.interrupt_triage(plans, failed, 'still-unclean', cleanup=False)
+        with self.store.write() as db:
+            db.execute("UPDATE repository_triage_runs SET status='failed',error='triage_result_invalid' WHERE id=?", (failed,))
+        with self.assertRaises(SetupError): self.call('retry', proposal_id=failed)
 
     def test_completed_smoke_triage_does_not_schedule_another_run(self):
         self.active_smoke()
@@ -561,6 +612,19 @@ class SmokeClientTests(unittest.TestCase):
             self.assertEqual(self.client.run(apply=True), busy)
         self.assertEqual([call.args[0] for call in self.factory.call.call_args_list], ['smoke_bind'])
         self.factory.check.assert_not_called()
+
+    def test_explicit_retry_calls_bound_host_action_before_normal_launch(self):
+        def call(action, **parameters):
+            if action == 'smoke_retry':
+                self.assertEqual(parameters, {'proposal_id': 'failed-proposal'})
+                return {'status': 'smoke_retry_queued'}
+            if action == 'status': return {'phase': 'active'}
+            return {'status': 'smoke_pending'}
+        self.factory.call.side_effect = call
+        with patch.object(self.client, 'prepare', return_value={'status': 'smoke_repository_ready'}):
+            self.assertEqual(self.client.run(apply=True, retry_proposal='failed-proposal')['status'], 'smoke_pending')
+        self.assertEqual([call.args[0] for call in self.factory.call.call_args_list],
+                         ['smoke_retry', 'smoke_bind', 'status', 'smoke_launch'])
 
     def test_readonly_handover_verifies_without_activating(self):
         self.assertEqual(self.client.handover()['status'], 'smoke_verified')

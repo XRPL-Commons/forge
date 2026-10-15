@@ -138,6 +138,16 @@ class CoordinatorTests(unittest.TestCase):
         self.assertFalse(result['handover_complete'])
         self.smoke.handover.assert_not_called()
 
+    def test_failed_smoke_receipt_exposes_exact_retry_command(self):
+        self.factory()
+        self.smoke.run.return_value = {'status': 'smoke_triage_failed', 'proposal_id': 'failed-proposal',
+                                       'error': 'steward_cycle_limit'}
+        result = self.install.apply(retry_smoke='previous-proposal')
+        self.smoke.run.assert_called_with(apply=True, retry_proposal='previous-proposal')
+        failure = next(row for row in result['pending'] if row['stage'] == 'smoke')
+        self.assertEqual(failure['next_action']['command'], ['forge', 'install', '--ssh', 'anvil', '--resume',
+            '--retry-smoke', 'failed-proposal', '--wait', '3600'])
+
     def test_consent_polling_does_not_reopen_installation_tab(self):
         self.factory()
         self.install.interactive = True

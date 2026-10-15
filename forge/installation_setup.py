@@ -44,6 +44,7 @@ class InstallationSetup:
                    'start': ('revision',), 'account': ('provider', 'kind', 'secret'),
                    'smoke_bind': ('binding',), 'smoke_status': (), 'smoke_handover': (), 'smoke_launch': (),
                    'smoke_issue': ('intent_digest', 'repository', 'number', 'started_at'),
+                   'smoke_retry': ('proposal_id',),
                    'publication': ('repository', 'probe_repository', 'request_id', 'apply'),
                    'identity': ('tailnet_operator', 'apply'),
                    'device_account': ('provider', 'apply', 'retry'),

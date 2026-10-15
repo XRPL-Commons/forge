@@ -130,7 +130,7 @@ class Install:
             self.save()
             return {'status': 'needs_user_action', 'error': error.code, 'reason': str(error)}
 
-    def apply(self, *, waivers=()):
+    def apply(self, *, waivers=(), retry_smoke=None):
         selected = self.load()
         if self.state['stages'].get('handover', {}).get('status') == 'complete':
             return self.status()
@@ -208,7 +208,7 @@ class Install:
         prepared = self.stage('smoke.prepare', smoke.prepare, lambda _: smoke.prepare(apply=True),
                               complete=lambda row: row.get('status') == 'smoke_repository_ready')
         if prepared.get('status') != 'smoke_repository_ready': return self.status()
-        verified = self.stage('smoke', smoke.run, lambda _: smoke.run(apply=True),
+        verified = self.stage('smoke', smoke.run, lambda _: smoke.run(apply=True, retry_proposal=retry_smoke),
                               complete=lambda row: row.get('status') in ('smoke_verified', 'handover_complete'))
         if verified.get('status') not in ('smoke_verified', 'handover_complete'): return self.status()
         self.stage('handover', smoke.handover, lambda _: smoke.handover(apply=True),
@@ -263,6 +263,10 @@ class Install:
         complete = stages.get('handover', {}).get('status') == 'complete'
         pending = [{'stage': name, **(row.get('receipt') or {})}
                    for name, row in stages.items() if row['status'] != 'complete']
+        for row in pending:
+            if row.get('status') == 'smoke_triage_failed':
+                row['next_action'] = {'instruction': 'Fix the reported planner problem, then retry this failed smoke proposal:',
+                    'command': ['forge', 'install', '--ssh', self.ssh, '--resume', '--retry-smoke', row['proposal_id'], '--wait', '3600']}
         return {'status': 'installation_complete' if complete else 'installation_pending',
                 'inputs_digest': self.state['inputs_digest'], 'ssh': self.ssh, 'intent': self.state['intent'],
                 'stages': stages, 'pending': pending,
@@ -307,6 +311,9 @@ def interview(ssh, github, *, ask=input, tell=print):
 def execute(args):
     import sys
     require(type(args.wait) is int and 0 <= args.wait <= 3600, 'invalid_wait', 'Use --wait between 0 and 3600 seconds.')
+    retry_smoke = getattr(args, 'retry_smoke', None)
+    require(not retry_smoke or args.resume and not getattr(args, 'reset', False), 'invalid_retry',
+            'Use --retry-smoke FAILED_PROPOSAL_ID with --resume after fixing the planner failure.')
     github = GitHub()
     supplied = None
     if args.intent_file:
@@ -348,7 +355,7 @@ def execute(args):
             deadline = time.monotonic() + args.wait
             previous = None
             while True:
-                result = workflow.apply(waivers=args.waive)
+                result = workflow.apply(waivers=args.waive, retry_smoke=retry_smoke)
                 progress = {key: row['status'] for key, row in result.get('stages', {}).items()}
                 if progress != previous:
                     event({'event': 'installation_progress', 'stages': progress})
@@ -410,6 +417,8 @@ def schemas():
     return {
         'usage': 'forge install --ssh HOST --intent-file FILE --json',
         'resume': 'forge install --ssh HOST --resume --json',
+        'retry_smoke': {'command': 'forge install --ssh HOST --resume --retry-smoke FAILED_PROPOSAL_ID --wait 3600 --json',
+                        'effect': 'After repair, explicitly requests one new smoke proposal for the current cleaned terminal failure. Replays reuse the same successor; prior attempts and receipts remain intact.'},
         'status': 'forge install --ssh HOST --status --json',
         'preflight': 'forge install --ssh HOST --preflight --json',
         'apply': 'forge install --ssh HOST --apply --json',

@@ -36,13 +36,17 @@ class InstallSmoke:
         self.save()
         return {'status': 'smoke_repository_ready', **saved}
 
-    def run(self, *, apply=False):
+    def run(self, *, apply=False, retry_proposal=None):
         prepared = self.prepare(apply=apply)
         if prepared['status'] != 'smoke_repository_ready':
             return prepared
         saved = self.state['smoke']
         if not apply:
             return self.factory.call('smoke_status')
+        if retry_proposal:
+            retried = self.factory.call('smoke_retry', proposal_id=retry_proposal)
+            if retried['status'] != 'smoke_retry_queued':
+                return retried
         binding = {**saved, 'intent_digest': self.state['inputs_digest'], 'started_at': self.state['started_at'],
                    'repositories': [{**row, 'target': {key: row['target'][key] for key in ('id', 'name')}}
                                     for row in self.state['intent']['repositories']]}

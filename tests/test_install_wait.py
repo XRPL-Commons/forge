@@ -7,9 +7,18 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge_client.installation import Install, execute
+from forge_client.cli import parser
+from forge_client.contracts import SetupError
 
 
 class InstallWaitTests(unittest.TestCase):
+    def test_retry_flag_requires_resume(self):
+        args = parser().parse_args(['install', '--ssh', 'fixture', '--apply', '--retry-smoke', 'failed-proposal'])
+        with self.assertRaisesRegex(SetupError, 'with --resume'):
+            execute(args)
+        args = parser().parse_args(['install', '--ssh', 'fixture', '--resume', '--retry-smoke', 'failed-proposal'])
+        self.assertEqual(args.retry_smoke, 'failed-proposal')
+
     def run_install(self, receipts, *, wait=60, json_mode=False, events=()):
         args = SimpleNamespace(wait=wait, intent_file=None, status=False, resume=True,
                                preflight=False, apply=False, json=json_mode, ssh='fixture', waive=[])

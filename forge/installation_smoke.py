@@ -30,7 +30,7 @@ class InstallationSmoke:
         return self.supplied_github or GitHub(Settings(self.root, scope='active'), load(self.root, scope='active'))
 
     def call(self, action, parameters, *, setup_id, generation):
-        require(action in {'issue', 'bind', 'launch', 'status', 'handover'}, 'invalid_action')
+        require(action in {'issue', 'bind', 'launch', 'status', 'handover', 'retry'}, 'invalid_action')
         require(isinstance(setup_id, str) and 0 < len(setup_id) <= 256, 'invalid_setup')
         data = self.setup.read()
         require(data['generation'] == generation and data['phase'] in ('setup', 'active'), 'setup_changed')
@@ -46,6 +46,9 @@ class InstallationSmoke:
                 if action == 'bind':
                     fields(parameters, ('binding',))
                     return self.bind(parameters['binding'])
+                if action == 'retry':
+                    fields(parameters, ('proposal_id',))
+                    return self.retry(parameters['proposal_id'])
                 fields(parameters, ())
                 return self.launch() if action == 'launch' else self.handover()
         except ControllerBusy:
@@ -230,7 +233,7 @@ class InstallationSmoke:
                 return None
             run = db.execute("SELECT r.id,r.status,r.error FROM repository_triage_runs r "
                 "JOIN triage_proposal_inputs p ON p.proposal_id=r.id JOIN issues i ON i.id=p.issue_id "
-                "WHERE r.repository_id=? AND r.requested_at>=? AND i.github_number=? "
+                "WHERE r.repository_id=? AND i.repository_id=r.repository_id AND r.requested_at>=? AND i.github_number=? "
                 "AND NOT EXISTS(SELECT 1 FROM triage_proposal_inputs other "
                 "WHERE other.proposal_id=r.id AND other.issue_id!=p.issue_id) "
                 "ORDER BY r.requested_at DESC,r.rowid DESC LIMIT 1",
@@ -249,6 +252,29 @@ class InstallationSmoke:
         return {'status': 'smoke_triage_failed', 'proposal_id': run['id'], 'error': error, 'reason': reason,
                 'next_action': {'instruction': 'Inspect the failed proposal in Forge and fix the reported problem. '
                     'Request new repository triage, then resume forge install.', 'path': '/issues'}}
+
+    def retry(self, proposal_id):
+        saved = self.saved()
+        require(saved and saved['settings']['binding']['setup_id'] == self.setup_id, 'smoke_binding_required')
+        require(self.setup.read()['phase'] == 'active' and saved['settings']['phase'] != 'complete', 'smoke_not_pending')
+        require(isinstance(proposal_id, str) and 0 < len(proposal_id) <= 256, 'invalid_proposal')
+        binding = saved['settings']['binding']
+        request_id = 'installation-smoke-retry:' + digest({'binding': binding, 'failed_proposal': proposal_id})
+        from .store.repository_planning import RepositoryPlanning
+        with self.store.read_snapshot() as db:
+            prior = db.execute('SELECT 1 FROM repository_planning_requests WHERE request_id=?', (request_id,)).fetchone()
+            proposal = db.execute('SELECT base_branch FROM triage_proposals WHERE id=? AND repository_id=?',
+                                  (proposal_id, binding['repository']['id'])).fetchone()
+            unclean = db.execute("SELECT 1 FROM auxiliary_executions WHERE domain='triage' AND owner_id=? AND cleanup=0",
+                                 (proposal_id,)).fetchone()
+        if not prior:
+            failure = self.triage_failure(binding)
+            require(failure and failure['proposal_id'] == proposal_id and not unclean, 'smoke_retry_changed',
+                    'Retry requires the current failed smoke proposal with all its workers cleaned up.')
+        require(proposal, 'smoke_retry_changed')
+        queued = RepositoryPlanning(self.store, clock=self.clock).queue(binding['repository']['id'],
+            request_id=request_id, actor_id='operator:installation', base_branch=proposal['base_branch'])
+        return {**queued, 'status': 'smoke_retry_queued', 'failed_proposal_id': proposal_id}
 
     def accept_keep(self, binding, github, runtime):
         """Installation consent covers exactly one unchanged keep disposition.

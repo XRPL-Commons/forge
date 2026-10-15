@@ -82,6 +82,7 @@ def parser():
     install.add_argument('--wait', type=int, default=0, help='Follow automated stages for up to 3600 seconds; browser actions remain explicit')
     install.add_argument('--reset', action='store_true', help='Plan a clean Forge reinstall on this VM; archives the old installation and retains SSH/Tailscale')
     install.add_argument('--reset-revision', help='Exact reset plan digest; required with --reset --apply')
+    install.add_argument('--retry-smoke', metavar='FAILED_PROPOSAL_ID', help='With --resume, explicitly request new smoke triage after fixing a failed proposal')
     install.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     version = sub.add_parser('version', help='Show this client revision and compare an installed server')
     version.add_argument('--ssh', help='Saved SSH destination; read the actual installed server revision')
@@ -255,7 +256,7 @@ def parser():
 def execute(args):
     if args.command == 'install':
         if args.reset:
-            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file),
+            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file or getattr(args, 'retry_smoke', None)),
                     'invalid_reset', 'Use --reset --ssh HOST, then --reset --apply --reset-revision DIGEST.')
             from .installer_reset import execute as reset
             return reset(args)
