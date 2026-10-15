@@ -42,12 +42,16 @@ class TaskPipelineTests(unittest.TestCase):
         f.git('bundle', 'create', str(path), 'HEAD', '^' + f.base)
         return head, path.read_bytes()
 
-    def waiting_assignment(self, stage='task'):
-        # The quote belongs to member 2 only; the two immutable requirements
-        # digests differ. A joint wait must not copy either digest to its sibling.
+    def waiting_assignment(self, stage='task', *, full=False):
+        # Different member requirements remain pinned under one typed claim.
+        # The prose belongs to member 2 only and cannot grant dependency authority.
         f = fixtures.DeliveryPipelineTests('runTest')
         f.setUp(bodies={2: 'Depends on #10 before implementation'})
         self.addCleanup(f.doCleanups); self.f = f
+        f.github.prerequisite.side_effect = self.prerequisite
+        if full:
+            f.config=validate({**f.config,'environment_tiers':{'full':{'memory':'8g','image':'sha256:'+'b'*64,'cpus':2}}})
+            f.dispatch=f.dispatcher()
         if stage == 'planning':
             return f.jobs.job(f.dispatch.step('batch')['job_id'])
         self.plan(lambda members: self.value(
@@ -55,20 +59,39 @@ class TaskPipelineTests(unittest.TestCase):
             [row['member_id'] for row in members] if stage == 'integration' else []))
         return f.jobs.job(f.dispatch.step('batch')['job_id'])
 
-    def test_joint_task_dependency_wait_is_uncharged_and_each_revision_requires_completion(self):
+    @staticmethod
+    def prerequisite(reference, binding):
+        number=int(reference.rsplit('#',1)[1])
+        return dict(reference=reference,kind='issue',repository_id=1,github_id=100+number,
+                    number=number,state='open',state_reason=None,merged=False,updated_at='2026-10-10T12:00:00Z')
+
+    @staticmethod
+    def wait_claim(number=10, reason='Requires the shared interface'):
+        return dict(type='wait_on_issue',repository_id=1,issue_number=number,reason=reason)
+
+    def assert_dependency_scope(self, f, job):
+        with f.store.read_snapshot() as db:
+            gates=list(db.execute("SELECT * FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL"))
+            self.assertEqual(len(gates),1)
+            self.assertIsNone(gates[0]['member_id'])
+            self.assertEqual(gates[0]['job_id'],job['id'])
+            details=json.loads(gates[0]['details_json'])
+            self.assertEqual(details['requirements_by_member'],
+                             {pin['member_id']:pin['requirements_revision_id'] for pin in job['members']})
+            self.assertEqual(details['references'],['example/repo#10'])
+            self.assertEqual(details['dependency_observations'][0]['github_id'],110)
+            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0],0)
+
+    def test_joint_task_dependency_wait_preserves_each_revision_after_shared_completion(self):
         from forge.factory.prerequisites import collect
         from forge.store.runtime_requirements import RuntimeRequirements
         from forge.store.models import TransitionError
         job = self.waiting_assignment(); f = self.f
-        outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Depends on #10')
+        outcome = f.capture(job['id'], outcome='cannot_complete', claims=[self.wait_claim()])
         self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
-        self.assertEqual(len(outcome['gate_ids']), 2)
+        self.assertEqual(len(outcome['gate_ids']), 1)
+        self.assert_dependency_scope(f,job)
         with f.store.read_snapshot() as db:
-            gates = list(db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL"))
-            self.assertEqual({row['member_id']: json.loads(row['details_json'])['requirements'] for row in gates},
-                             {pin['member_id']: pin['requirements'] for pin in job['members']})
-            self.assertEqual({json.loads(row['details_json'])['evidence'] for row in gates}, {'Depends on #10'})
-            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT count(*) FROM member_dependencies').fetchone()[0], 0)
         commands = RuntimeRequirements(f.store, clock=lambda: 101)
         fact = {'reference': 'example/repo#10', 'kind': 'issue', 'repository_id': 1, 'github_id': 110,
@@ -89,8 +112,31 @@ class TaskPipelineTests(unittest.TestCase):
             self.assertTrue(commands.dependencies(f.command(), requirements_revision_id=pin['requirements_revision_id'],
                                                  generation=2, facts=observed['facts'])['clear'])
             with f.store.read_snapshot() as db:
-                self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], 1-index)
-        self.assertEqual(f.jobs.job(f.dispatch.step('batch')['job_id'])['builder_stage'], 'planning')
+                self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0],0)
+                receipt=db.execute("SELECT payload_json FROM events WHERE kind='gate_resolved' AND json_extract(payload_json,'$.gate_id')=?",
+                                   (outcome['gate_ids'][0],)).fetchone()
+                self.assertEqual(json.loads(receipt[0])['evidence']['verified_requirements'],
+                                 {member['member_id']:member['requirements_revision_id'] for member in job['members']})
+        # A completed shared wait remains a prerequisite for each pinned member.
+        # Reopening it restores a member dependency hold after the original gate resolved.
+        fact.update(state='open',state_reason=None)
+        pin=job['members'][0]
+        observed=collect(f.store,f.github,unit_id='batch',member_id=pin['member_id'],
+                         requirements_revision_id=pin['requirements_revision_id'],body='Scope')
+        self.assertEqual([row['number'] for row in observed['facts']],[10])
+        self.assertFalse(commands.dependencies(f.command(),requirements_revision_id=pin['requirements_revision_id'],
+                                              generation=3,facts=observed['facts'])['clear'])
+        with f.store.read_snapshot() as db:
+            reopened=db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchall()
+            self.assertEqual([row['member_id'] for row in reopened],[pin['member_id']])
+            self.assertEqual(json.loads(reopened[0]['details_json'])['blocked'],
+                             [{'reference':'example/repo#10','reason':'prerequisite_open'}])
+        fact.update(state='closed',state_reason='completed')
+        observed=collect(f.store,f.github,unit_id='batch',member_id=pin['member_id'],
+                         requirements_revision_id=pin['requirements_revision_id'],body='Scope')
+        self.assertTrue(commands.dependencies(f.command(),requirements_revision_id=pin['requirements_revision_id'],
+                                             generation=4,facts=observed['facts'])['clear'])
+        self.assertEqual(f.jobs.job(f.dispatch.step('batch')['job_id'])['builder_stage'],'planning')
 
     def test_owner_planning_and_integration_dependency_waits_preserve_every_member(self):
         from forge.factory.contracts import assignment_note
@@ -99,21 +145,17 @@ class TaskPipelineTests(unittest.TestCase):
                 job = self.waiting_assignment(stage); f = self.f
                 if stage == 'planning':
                     self.assertNotIn('return needs_human_verification', assignment_note(job)['instructions'])
-                outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Depends on #10')
+                outcome = f.capture(job['id'], outcome='cannot_complete', claims=[self.wait_claim()])
                 self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
-                with f.store.read_snapshot() as db:
-                    gates = list(db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL"))
-                    self.assertEqual({row['member_id']: json.loads(row['details_json'])['requirements'] for row in gates},
-                                     {pin['member_id']: pin['requirements'] for pin in job['members']})
-                    self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
+                self.assert_dependency_scope(f,job)
 
     def test_owner_environment_waits_can_be_repaired_by_normal_member_overrides(self):
         from forge.store.runtime_requirements import RuntimeRequirements
         for stage in ('planning', 'integration'):
             with self.subTest(stage=stage):
-                job = self.waiting_assignment(stage); f = self.f
-                outcome = f.capture(job['id'], outcome='blocked_environment', blocker='services',
-                                    required_services=['postgres'])
+                job = self.waiting_assignment(stage,full=True); f = self.f
+                outcome = f.capture(job['id'], outcome='cannot_complete', claims=[dict(type='environment',environment_id='full',
+                                    reason='services',services=['postgres'],evidence='The integration test requires PostgreSQL.')])
                 self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
                 commands = RuntimeRequirements(f.store, clock=lambda: 101)
                 for index, pin in enumerate(job['members']):
@@ -128,15 +170,25 @@ class TaskPipelineTests(unittest.TestCase):
     def test_joint_wait_rejects_own_scope_and_grounds_identity_without_prose(self):
         from forge.factory.contracts import result
         job = self.waiting_assignment(); f = self.f
-        report = dict(version=1, attempt=job['id'], role='build', outcome='waiting_on_issues', summary='Waiting',
-                      delegation_plan=None, output_commit=None, issues=[1], evidence='Depends on #1')
+        report = dict(version=2, attempt=job['id'], role='build', outcome='cannot_complete', summary='Waiting',
+                      headline='Waiting for a prerequisite',plain='The shared interface is still needed.',
+                      operator_summary='Waiting for the shared interface.',claims=[self.wait_claim()],
+                      delegation_plan=None, output_commit=None,verification=None,pr_title=None,pr_body=None)
+        self.assertEqual(result(report,job)['claims'],[self.wait_claim()])
         for pin in job['members']:
-            with self.assertRaises(ValueError): result({**report, 'issues': [pin['issue_number']]}, job)
-        # Historical typed numbers are grounded remotely; prose is explanatory.
-        accepted = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Requires the shared interface')
+            with self.assertRaisesRegex(ValueError,'own members'):
+                result({**report,'claims':[self.wait_claim(pin['issue_number'])]},job)
+        # Retained v1 assignments still enforce their own typed member boundary.
+        historical={key:value for key,value in job.items() if key!='build_result_version'}
+        legacy=dict(version=1,attempt=job['id'],role='build',outcome='waiting_on_issues',summary='Waiting',
+                    delegation_plan=None,output_commit=None,issues=[10],evidence='Requires the shared interface')
+        self.assertEqual(result(legacy,historical)['issues'],[10])
+        for pin in job['members']:
+            with self.assertRaises(ValueError):result({**legacy,'issues':[pin['issue_number']]},historical)
+        # The current typed claim is grounded remotely; prose is explanatory.
+        accepted = f.capture(job['id'], outcome='cannot_complete', claims=[self.wait_claim()])
         self.assertFalse(accepted['charged'])
-        with f.store.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], len(job['members']))
+        self.assert_dependency_scope(f,job)
 
     def test_task_wait_does_not_approve_an_internal_member_dependency(self):
         from forge.factory.prerequisites import collect
@@ -148,7 +200,8 @@ class TaskPipelineTests(unittest.TestCase):
             [self.definition('first', [row['member_id'] for row in members if row['issue_number'] == 1])],
             [row['member_id'] for row in members if row['issue_number'] == 2]))
         job = f.jobs.job(f.dispatch.step('batch')['job_id'])
-        outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[2], evidence='Depends on #2')
+        f.github.prerequisite.side_effect=self.prerequisite
+        outcome = f.capture(job['id'], outcome='cannot_complete', claims=[self.wait_claim(2)])
         self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
         pin = job['members'][0]
         with self.assertRaisesRegex(TransitionError, 'absent from the approved composition'):

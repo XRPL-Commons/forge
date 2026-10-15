@@ -96,9 +96,10 @@ class DeliveryPipelineTests(unittest.TestCase):
             report.setdefault('delegation_plan', None); report.setdefault('output_commit', None)
         if job.get('build_result_version') == 2:
             report.update(version=2,outcome={'pass':'done','delegate':'done',
-                'needs_human_verification':'done','unable':'cannot_complete'}[outcome],
+                'needs_human_verification':'done','unable':'cannot_complete',
+                'done':'done','cannot_complete':'cannot_complete'}[outcome],
                 headline='Completed build',plain='Build result for this assignment.',
-                operator_summary='Build result for this assignment.',claims=[])
+                operator_summary='Build result for this assignment.',claims=report.get('claims',[]))
             for key in ('verification','delegation_plan','output_commit','pr_title','pr_body'):
                 report.setdefault(key,None)
         capture = {'result': report, 'logs': '', 'execution': {'exit_code': 0}}
