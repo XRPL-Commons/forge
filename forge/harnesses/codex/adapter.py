@@ -1,5 +1,4 @@
 """Codex adapter: native sandbox, structured result and connection probe."""
-from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -9,23 +8,6 @@ import runpy
 
 RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
 EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
-
-
-def wire_schema(schema):
-    """Project the provider schema; the original contract still gates handoff."""
-    result = deepcopy(schema)
-    def visit(node):
-        if not isinstance(node, dict):
-            return
-        node.pop('minLength', None)
-        for child in node.get('properties', {}).values():
-            visit(child)
-        for key in ('items', 'additionalProperties'):
-            visit(node.get(key))
-        for child in node.get('anyOf', []):
-            visit(child)
-    visit(result)
-    return result
 
 
 def prepare_tool_environment(directory, env):
@@ -47,8 +29,6 @@ def prepare_tool_environment(directory, env):
 
 
 def run(note, directory, env, result_schema):
-    path = Path('/work/result-schema.json')
-    path.write_text(json.dumps(wire_schema(result_schema)))
     client = Path('/work/home/.codex')
     child_env = prepare_tool_environment(directory, env)
     build = runpy.run_path('/opt/forge/build_environment.py')
@@ -69,11 +49,14 @@ def run(note, directory, env, result_schema):
     # The native sandbox stays enabled. Image provisioning must prove it works;
     # an unavailable sandbox fails the attempt instead of disabling protection.
     args = ['codex', '-a', 'never', 'exec', '--json',
-            '--output-schema', str(path), '--output-last-message', '/work/final-result.json',
+            '--output-last-message', '/work/final-result.json',
             '--cd', str(directory), '-']
     if note.get('model'):
         args[5:5] = ['--model', note['model']]
-    prompt = json.dumps(note) + '\nReturn your result as the final structured response. It will be validated by the supervisor.'
+    prompt = (json.dumps(note) + '\nComplete the assigned work, then return exactly one JSON value as your final response. '
+              'Do not include Markdown code fences or prose outside the JSON. The final response must satisfy '
+              'the entire schema below; Forge validates it before accepting the result.\nResult JSON Schema:\n'
+              + json.dumps(result_schema))
     code, events = EXECUTION['stream'](args, prompt, directory, env)
     if code:
         provider = EXECUTION['codex_provider_error'](events)
