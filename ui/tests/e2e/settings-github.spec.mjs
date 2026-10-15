@@ -26,7 +26,7 @@ const posted = (path) => (entry) => entry.method === 'POST' && entry.path === pa
 // setup phase, and its three outcomes), with a link to repository management.
 export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
+  await waitForText(page, 'See your Forge App connections')
   // The original role illustrations survive on both migrated UI surfaces.
   for (const role of ['build', 'review', 'audit', 'controller']) {
     const art = page.locator(`#connections svg.role-illustration[data-role="${role}"]`)
@@ -68,7 +68,7 @@ export default async function (page, { base, scenario, requests }) {
   // it finished when a newer `finished_at` arrives.
   await scenario('default')
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
+  await waitForText(page, 'See your Forge App connections')
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   const syncs = await waitForRequests(requests, posted('/api/settings/sync'))
   assert.deepEqual(syncs[0].body, {})
@@ -92,7 +92,7 @@ export default async function (page, { base, scenario, requests }) {
   // tone: it is a failure the operator has to act on, not a progress note.
   await scenario('sync-failed')
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
+  await waitForText(page, 'See your Forge App connections')
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   await waitForText(page, 'Could not refresh access. Try again.')
   const failure = page.locator('#notice')
@@ -106,7 +106,7 @@ export default async function (page, { base, scenario, requests }) {
   // the onboarding endpoint instead of the settings sync.
   await scenario('needs-apps')
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
+  await waitForText(page, 'See your Forge App connections')
   await page.locator('#connections [data-badge]').nth(3).waitFor()
   const badges = await page.locator('#connections [data-badge]').allInnerTexts()
   assert.deepEqual(badges, ['Connected', 'Installation unverified', 'Permissions missing', 'Not connected'])
@@ -120,11 +120,38 @@ export default async function (page, { base, scenario, requests }) {
   assert.deepEqual(refreshes[0].body, { action: 'refresh' })
   assert.equal((await requests()).filter(posted('/api/settings/sync')).length, 0)
 
+  // A migrated installation shares one App across all four roles. Exercise
+  // the real page with the live API shape while keeping the legacy fixtures.
+  await scenario('default')
+  const settingsRoute = '**/api/settings?summary=1'
+  await page.route(settingsRoute, async route => {
+    const response = await route.fetch()
+    const settings = await response.json()
+    for (const role of ['build', 'review', 'audit', 'controller']) {
+      settings.config.connections[role] = { ...settings.config.connections.controller }
+      settings.roles[role] = { ...settings.roles[role], app_slug: 'forge-shared-example',
+        installation_url: 'https://github.com/organizations/XRPL-Commons/settings/installations/104' }
+    }
+    await route.fulfill({ response, json: settings })
+  })
+  await page.goto(base + '/settings/github')
+  await page.waitForFunction(() => document.querySelectorAll('#connections [data-key]').length === 1)
+  const shared = page.locator('#connections [data-key]')
+  const sharedText = await shared.innerText()
+  for (const text of ['Forge App', 'forge-shared-example', 'Connected', '2 repositories with verified access']) {
+    assert.ok(sharedText.includes(text), `shared App card is missing ${text}: ${sharedText}`)
+  }
+  assert.equal(await shared.getByRole('link', { name: 'Manage access ↗' }).getAttribute('href'),
+    'https://github.com/organizations/XRPL-Commons/settings/installations/104')
+  assert.equal(await page.getByText('See the four Forge Apps', { exact: false }).count(), 0)
+  await page.screenshot({ path: '/tmp/forge-single-app-settings-github.png', fullPage: true })
+  await page.unroute(settingsRoute)
+
   // On a phone-width viewport nothing scrolls sideways.
   await scenario('default')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
+  await waitForText(page, 'See your Forge App connections')
   const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }))
   assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
 }
