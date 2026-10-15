@@ -348,6 +348,8 @@ class Deployments:
     def drive(self, key):
         job = self.read()['repositories'][key]['job']
         runner = self.runner(job['runner_config'])
+        # The runner enriches its execution view with physical source authority.
+        # Persist only explicit progress; the reserved launch manifest is immutable.
         # A failed prepare may never reach Docker start. Its deadline still owns
         # the reservation: fence before any further inspect/prepare attempt.
         if not job['fenced'] and self.clock() >= job['deadline']:
@@ -363,15 +365,15 @@ class Deployments:
             try:
                 current = runner.inspect(job)
                 if current is None:
-                    job['container_id'] = runner.create(job)
+                    job['container_id'] = runner.create(deepcopy(job))
                     self.save(key, job=job)
                     current = runner.inspect(job)
                 if current is None:
                     raise RunnerError('The strategist container is not observable; reconcile before replacement')
                 if current['status'] == 'created':
                     # The recovery role is the controller App's read-only worker credential.
-                    runner.prepare(job)
-                    runner.start(job)
+                    runner.prepare(deepcopy(job))
+                    runner.start(deepcopy(job))
                     if job.get('capacity_wait_since') is not None:
                         job['deadline'] += max(0, self.clock() - job.pop('capacity_wait_since'))
                     self.save(key, job=job)
@@ -391,7 +393,7 @@ class Deployments:
             capture['timed_out'] = timed_out and current['running']
             job.update(capture=capture, fenced=True)
             self.save(key, job=job)
-        runner.reset(job)
+        runner.reset(deepcopy(job))
         job['cleanup'] = True
         self.finish(key, job)
 

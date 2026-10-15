@@ -204,6 +204,63 @@ class DeploymentTests(unittest.TestCase):
         self.deployments().tick(config)
         self.assertEqual(self.entry()['status'], 'running')
 
+    def test_real_source_enrichment_never_replaces_launch_manifest(self):
+        source = Mock()
+        source.mirror.prepared.return_value = {'source_input': 'immutable-input', 'execution_fence': 'physical-fence',
+                                              'publication_authorization': {'kind': 'none'}}
+        real = ContainerRunner(self.config, source=source)
+        originals = {name: getattr(self.runner_class, name) for name in ('create', 'prepare', 'start', 'reset')}
+        enriched = []
+        def wrapped(name):
+            def execute(runner, job):
+                real.source_record(job)
+                enriched.append(name)
+                self.assertEqual(job['execution_fence'], 'physical-fence')
+                return originals[name](runner, job)
+            return execute
+        with patch.object(self.runner_class, 'create', wrapped('create')), \
+             patch.object(self.runner_class, 'prepare', wrapped('prepare')), \
+             patch.object(self.runner_class, 'start', wrapped('start')), \
+             patch.object(self.runner_class, 'reset', wrapped('reset')):
+            deployments = self.deployments()
+            deployments.tick(self.config)
+            job = self.entry()['job']
+            self.assertIsNotNone(job['container_id'])
+            with self.database.read_snapshot() as db:
+                manifest = db.execute('SELECT manifest_json FROM auxiliary_runtime WHERE execution_id=?', (job['id'],)).fetchone()[0]
+            self.assertNotIn('source_input', json.loads(manifest))
+            self.assertNotIn('execution_fence', json.loads(manifest))
+            self.finish()
+            deployments.tick(self.config)
+        self.assertEqual(enriched, ['create', 'prepare', 'start', 'reset'])
+        self.assertEqual(self.entry()['status'], 'proposed')
+        self.assertTrue(self.execution(job['id'])['cleanup'])
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT manifest_json FROM auxiliary_runtime WHERE execution_id=?', (job['id'],)).fetchone()[0], manifest)
+            self.assertEqual(db.execute('SELECT count(*) FROM auxiliary_leases').fetchone()[0], 0)
+
+    def test_existing_fenced_capture_survives_source_enrichment_during_cleanup_retry(self):
+        deployments = self.deployments()
+        deployments.tick(self.config)
+        job = self.entry()['job']; self.finish()
+        job.update(fenced=True, capture=self.runner_class(self.config).capture(job))
+        deployments.save(7, job=job)
+        source = Mock()
+        source.mirror.prepared.return_value = {'source_input': 'input', 'execution_fence': 'fence',
+                                              'publication_authorization': {'kind': 'none'}}
+        real = ContainerRunner(self.config, source=source)
+        original = self.runner_class.reset
+        def reset(runner, execution):
+            real.source_record(execution)
+            return original(runner, execution)
+        with patch.object(self.runner_class, 'reset', reset):
+            deployments.drive('7')
+        self.assertEqual(self.entry()['status'], 'proposed')
+        self.assertTrue(self.execution(job['id'])['cleanup'])
+        with self.database.read_snapshot() as db:
+            from forge.store.auxiliary import job_in
+            self.assertEqual(job_in(db, job['id'])['capture'], job['capture'])
+
     def test_unavailable_preparation_cannot_hold_its_reservation_past_deadline(self):
         self.prepare_error = RunnerUnavailable('private credential detail')
         deployments = self.deployments()
