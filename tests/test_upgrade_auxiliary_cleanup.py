@@ -22,7 +22,7 @@ class UpgradeAuxiliaryCleanupTests(unittest.TestCase):
         self.root = Path(temporary.name); self.store = selected_store(self.root)
         Configuration(self.store).replace('runtime.json', {'enabled': False}, expected_revision=0)
         self.deployments = Deployments(self.root, runner=None, github=None, settings=None, clock=lambda: 100)
-        self.job = self.deployments.new_job({}, {'id': 1, 'name': 'owner/repo'}, 'a'*40, 1000)
+        self.job = self.deployments.new_job({'provider': 'codex'}, {'id': 1, 'name': 'owner/repo'}, 'a'*40, 1000)
         self.deployments.save(1, 'owner/repo', job=self.job, status='running')
         self.runner = Mock()
         self.runner.inspect.return_value = {'id': 'exact', 'status': 'created', 'running': False, 'started_at': None}
