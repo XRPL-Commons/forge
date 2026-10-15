@@ -40,8 +40,10 @@ class Launch:
         for value in (self.runner_config, self.policy, self.context):
             if not isinstance(value, dict) or len(_json(value).encode()) > 65536:
                 raise TransitionError('launch configuration must be a bounded object')
-        if set(self.context) - {'review_policy', 'ci_evidence', 'verification_checks', 'resume_branch', 'resume_pr', 'resume_head', 'publication_author', 'steward_retry'}:
+        if set(self.context) - {'review_policy', 'ci_evidence', 'verification_checks', 'resume_branch', 'resume_pr', 'resume_head', 'publication_author', 'steward_retry', 'build_result_version'}:
             raise TransitionError('unsupported launch context field')
+        if 'build_result_version' in self.context and (type(self.context['build_result_version']) is not int or self.context['build_result_version'] != 2):
+            raise TransitionError('unsupported build result version')
         if 'steward_retry' in self.context and not isinstance(self.context['steward_retry'],dict):
             raise TransitionError('steward retry context must be an immutable plan object')
         return asdict(self)

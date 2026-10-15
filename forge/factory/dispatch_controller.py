@@ -268,7 +268,7 @@ class DispatchController:
             grouped = db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?', (unit_id,)).fetchone() is not None
             member, issue = (None, None) if grouped else (members[0]['member'], members[0]['issue'])
             candidate = db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone()
-            role = {'queued': 'build', 'building': 'build', 'integrating': 'build', 'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
+            role = {'building': 'build', 'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
             gates = applicable_gates(db, unit, member['id'] if member and role == 'build' else None, unit['current_candidate_id'])
             if grouped and role == 'build':
                 # Exact job waits belong to the task selector; a failed sibling
@@ -499,6 +499,8 @@ class DispatchController:
         if self.admission(snapshot) is not True:
             return {**result, 'reason': 'repository_setup'}
         unit, member, candidate = snapshot['unit'], snapshot['member'], snapshot['candidate']
+        if role == 'build':
+            prepared = replace(prepared, context={**prepared.context, 'build_result_version': 2})
         if snapshot['grouped'] and role == 'build':
             return self._reserve_group(snapshot, prepared, assignment, config, entry, slot, result)
         launch_policy = policy(config, unit['repository_id'], repository_name=snapshot['repo'])
@@ -576,14 +578,14 @@ class DispatchController:
                 "WHERE e.unit_id=u.id AND e.kind='attempt_reserved' AND j.role=CASE u.state "
                 "WHEN 'reviewing' THEN 'review' WHEN 'auditing' THEN 'audit' ELSE 'build' END "
                 "ORDER BY e.sequence DESC LIMIT 1),0) AS allocation_sequence FROM units u "
-                "WHERE u.id>? AND u.state IN ('queued','building','integrating','reviewing','auditing') "
+                "WHERE u.id>? AND u.state IN ('building','reviewing','auditing') "
                 'ORDER BY u.id LIMIT ?', (after, limit + 1)).fetchall()
         # An eligible memory escalation drains capacity; smaller work must not
         # refill it while the next bounded allocation is waiting to fit.
         if self.config['memory_tiers']:
             with self.store.read_snapshot() as db:
                 retries = db.execute("SELECT u.id FROM units u JOIN unit_issues m ON m.unit_id=u.id AND m.left_at IS NULL JOIN issue_environment_observations e ON e.issue_id=m.issue_id "
-                    "WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('queued','building','integrating','reviewing','auditing') "
+                    "WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('building','reviewing','auditing') "
                     "ORDER BY json_extract(e.memory_retry_json,'$.at'),u.id LIMIT 100").fetchall()
             for retry in retries:
                 snapshot = self.snapshot(retry['id'])
@@ -596,7 +598,7 @@ class DispatchController:
                     if result.get('reserved') or result.get('reason') in {'capacity_unavailable','role_capacity'}:
                         return {'items': [result], 'next_cursor': after or None}
         page = rows[:limit]
-        priority = {'auditing': 0, 'reviewing': 1, 'building': 2, 'integrating': 2, 'queued': 2}
+        priority = {'auditing': 0, 'reviewing': 1, 'building': 2}
         items = []
         for row in sorted(page, key=lambda row: (priority[row['state']], row['allocation_sequence'], row['id'])):
             try:

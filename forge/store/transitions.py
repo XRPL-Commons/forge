@@ -51,7 +51,7 @@ def _gates(db, unit_id):
     scopes={}
     job_ids=sorted({row['job_id'] for row in rows if row['job_id'] is not None})
     if job_ids:
-        # Only unresolved process gates consume these immutable scopes. Start
+        # Unresolved job gates consume these immutable scopes. Start
         # from their exact IDs, rather than walking every retained unit job.
         for row in db.execute('SELECT p.job_id,p.member_id FROM json_each(?) requested '
                 'CROSS JOIN jobs j ON j.id=requested.value CROSS JOIN job_members p ON p.job_id=j.id '
@@ -68,12 +68,33 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None, *, job_id=None
     validates their exact candidate inputs.
     Derived blockers have no gate ID and are not stored as a second authority.
     """
-    return _scope_gates(_collect_gates(db, unit), unit, member_id, candidate_id, job_id=job_id)
+    assignment_members = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=?', (job_id,))]
+                          if job_id is not None else None)
+    return _scope_gates(_collect_gates(db, unit), unit, member_id, candidate_id,
+                        job_id=job_id, assignment_members=assignment_members)
 
 
 def _collect_gates(db, unit):
     """Collect canonical unit facts; mutation callers always collect afresh."""
     gates = _gates(db, unit["id"])
+    # Claims belong to their captured requirements, even after a different job
+    # takes the same work. Process waits still belong only to their source job.
+    pins = None
+    current = []
+    for gate in gates:
+        details = json.loads(gate['details_json'])
+        claim = (gate.get('job_id') is not None and
+                 ((details.get('source') == 'build_claim' and gate['code'] in {'dependency', 'decision_required'})
+                  or (details.get('source') == 'worker_claim' and gate['code'] == 'environment')))
+        if claim:
+            if pins is None:
+                pins = dict(db.execute('SELECT id,requirements_revision_id FROM unit_issues WHERE unit_id=? AND left_at IS NULL', (unit['id'],)))
+            gate['claim_member_ids'] = [member for member, revision in details['requirements_by_member'].items()
+                                        if pins.get(member) == revision]
+            if not gate['claim_member_ids']:
+                continue
+        current.append(gate)
+    gates = current
     repository = db.execute("SELECT enabled FROM repositories WHERE id = ?", (unit["repository_id"],)).fetchone()
     if repository is None or not repository["enabled"]:
         gates.append({"id": None, "unit_id": unit["id"], "member_id": None, "candidate_id": None,
@@ -113,17 +134,22 @@ def _collect_gates(db, unit):
     return gates
 
 
-def _scope_gates(gates, unit, member_id=None, candidate_id=None, *, job_id=None):
+def _scope_gates(gates, unit, member_id=None, candidate_id=None, *, job_id=None, assignment_members=None):
     """Apply the same assignment scope and priority to fresh or snapshot facts."""
-    if job_id is not None:
-        gates=[gate for gate in gates if gate.get('job_id') is None or gate['job_id']==job_id]
-    elif member_id is not None:
-        # A process wait belongs on every issue in its immutable assignment scope.
-        gates=[gate for gate in gates if gate.get('job_id') is None or member_id in gate.get('job_member_ids',[])]
+    def belongs(gate):
+        if 'claim_member_ids' in gate:
+            members = assignment_members if job_id is not None else [member_id] if member_id is not None else None
+            return members is None or bool(set(gate['claim_member_ids']).intersection(members))
+        if job_id is not None:
+            return gate.get('job_id') is None or gate['job_id'] == job_id
+        if member_id is not None:
+            # Process waits belong to every issue in their immutable scope.
+            return gate.get('job_id') is None or member_id in gate.get('job_member_ids', [])
+        return True
     return sorted((gate for gate in gates
-                   if (gate["candidate_id"] is None or gate["candidate_id"] == candidate_id)
+                   if belongs(gate) and (gate["candidate_id"] is None or gate["candidate_id"] == candidate_id)
                    and (gate["member_id"] is None or gate["member_id"] == member_id
-                        or unit["state"] not in {"queued", "building"})),
+                        or unit["state"] not in {"building"})),
                   key=lambda g: (GATE_PRIORITY[g["code"]], g["created_at"], g["id"] or g["subject_key"]))
 
 
@@ -163,7 +189,7 @@ def issue_state(issue, unit=None, blocker=None, member=None):
         return 'untracked'
     if blocker:
         return 'blocked'
-    return 'queued' if unit['state'] == 'queued' else 'in_unit'
+    return 'in_unit'
 
 
 def project_unit(db, unit_id):
@@ -172,7 +198,7 @@ def project_unit(db, unit_id):
     members = []
     for row in db.execute(
         "SELECT m.*, i.github_state, i.state_reason, i.github_number FROM unit_issues m "
-        "JOIN issues i ON i.id = m.issue_id WHERE m.unit_id = ? AND (m.left_at IS NULL OR ? IN ('merged','closed','dissolved')) ORDER BY m.id",
+        "JOIN issues i ON i.id = m.issue_id WHERE m.unit_id = ? AND (m.left_at IS NULL OR ? IN ('merged','closed')) ORDER BY m.id",
         (unit_id, unit["state"]),
     ):
         member = dict(row)
@@ -190,7 +216,7 @@ def project_unit(db, unit_id):
         # An independent runnable/active part keeps the whole unit unblocked.
         runnable = any(m["current_blocker"] is None and m["state"] in {"pending", "building", "failed"} for m in members)
         blocked = [m["current_blocker"] for m in members if m["current_blocker"]]
-        if blocked and (unit["state"] not in {"queued", "building"} or not runnable):
+        if blocked and (unit["state"] not in {"building"} or not runnable):
             blocker = min(blocked, key=lambda g: (GATE_PRIORITY[g["code"]], g["created_at"], g["id"] or g["subject_key"]))
     blocker = None if unit["state"] in TERMINAL else blocker
     from .delivery_inputs import approved_in
@@ -368,7 +394,7 @@ class Lifecycle:
             )
             record_revision_display(db,revision_id,body,requirements)
             db.execute(
-                "INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'queued',?,?)",
+                "INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'building',?,?)",
                 (unit_id, repository_id, base_branch, self.clock(), self.clock()),
             )
             db.execute(
@@ -519,7 +545,7 @@ class Lifecycle:
             payload['launch'] = launch.payload()
         def change(db, unit):
             self._live(unit)
-            expected = {"build": {"queued", "building"}, "review": {"reviewing"}, "audit": {"auditing"}}[role]
+            expected = {"build": {"building"}, "review": {"reviewing"}, "audit": {"auditing"}}[role]
             if unit["state"] not in expected:
                 raise TransitionError("role is not eligible in this phase")
             if not slot or not execution_fence or not isinstance(input_manifest, dict) or not input_manifest:
@@ -660,8 +686,8 @@ class Lifecycle:
                    or json.loads(g['details_json']).get('job_id') != job_id
                    for g in applicable_gates(db, unit, job["member_id"], job["candidate_id"])):
                 raise TransitionError("a gate prevents accepting this result")
-            expected = {"build": "building", "review": "reviewing", "audit": "auditing"}
-            if unit["state"] != expected.get(job["role"]):
+            expected = {"build": {"building", "publishing"}, "review": {"reviewing"}, "audit": {"auditing"}}
+            if unit["state"] not in expected.get(job["role"], set()):
                 raise TransitionError("result phase is no longer current")
             if job["role"] == "build":
                 count = db.execute("SELECT COUNT(*) FROM unit_issues WHERE unit_id = ? AND left_at IS NULL", (unit["id"],)).fetchone()[0]
@@ -909,7 +935,7 @@ class Lifecycle:
             for task_id in affected_tasks_in(db,unit['id'],affected):
                 db.execute('INSERT OR IGNORE INTO part_output_invalidations(output_id,reason,evidence_json,created_at) '
                     'SELECT id,?,?,? FROM part_outputs WHERE task_id=?',(reason,_json(evidence),self.clock(),task_id))
-        target = 'integrating' if grouped and not affected else 'building'
+        target = 'building'
         db.execute('UPDATE units SET current_candidate_id=NULL,primary_gate_id=NULL,state=? WHERE id=?',(target,unit['id']))
         for member_id in affected:
             db.execute("UPDATE unit_issues SET state='pending' WHERE id=?",(member_id,))
@@ -1213,7 +1239,7 @@ class Lifecycle:
         if not all(isinstance(v, str) and v for v in (command.request_id, command.actor_id, unit_id, base_branch)):
             raise TransitionError("admission identities must be nonempty")
         member_id = _id(command.request_id, f"member:{unit_id}")
-        db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'queued',?,?)", (unit_id, issue["repository_id"], base_branch, self.clock(), self.clock()))
+        db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'building',?,?)", (unit_id, issue["repository_id"], base_branch, self.clock(), self.clock()))
         db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES(?,?,?,?,?,?,'pending',?)", (member_id, unit_id, issue["id"], issue["repository_id"], base_branch, revision_id, self.clock()))
         child = Command(command.request_id, command.actor_id, unit_id, 1)
         self._event(db, child, "issue_admitted", {"member_id": member_id, "revision_id": revision_id}, issue_id=issue["id"])
@@ -1229,7 +1255,7 @@ class Lifecycle:
             self._live(unit)
             self._quiescent(db, unit["id"])
             member = self._singleton(db, unit)
-            if unit["state"] not in {"queued", "building"} or unit["current_candidate_id"] is not None:
+            if unit["state"] not in {"building"} or unit["current_candidate_id"] is not None:
                 raise TransitionError("existing PR adoption requires a candidate-less unit")
             if applicable_gates(db, unit, member["id"]):
                 raise TransitionError("unit is blocked from adopting a candidate")
@@ -1258,15 +1284,16 @@ class Lifecycle:
                 or evidence["observed_at"] < candidate["accepted_at"]):
             raise TransitionError("ending candidate work requires a fresh confirmed unmerged observation")
 
-    def _settle(self, db, command, unit, target, *, close_code=None, merge_sha=None):
+    def _settle(self, db, command, unit, target, *, close_code=None, merge_sha=None, exit_reason=None):
+        ending = exit_reason or target
         for gate in _gates(db, unit["id"]):
             self._resolve(db, command, gate["id"], {"terminal_state": target}, resolution="superseded")
         self._fence(db, command)
         for member in self._members(db, unit["id"]):
-            db.execute("UPDATE unit_issues SET state = ?, left_at = ?, exit_reason = ?, completion_issue_version = (SELECT version FROM issues WHERE id=unit_issues.issue_id) WHERE id = ?", ("done" if target == "merged" else "removed", self.clock(), target, member["id"]))
-            self._event(db, command, "membership_changed", {"member_id": member["id"], "exit_reason": target}, issue_id=member["issue_id"])
+            db.execute("UPDATE unit_issues SET state = ?, left_at = ?, exit_reason = ?, completion_issue_version = (SELECT version FROM issues WHERE id=unit_issues.issue_id) WHERE id = ?", ("done" if target == "merged" else "removed", self.clock(), ending, member["id"]))
+            self._event(db, command, "membership_changed", {"member_id": member["id"], "exit_reason": ending}, issue_id=member["issue_id"])
         db.execute("UPDATE units SET state = ?, close_code = ?, merge_sha = ?, primary_gate_id = NULL WHERE id = ?", (target, close_code, merge_sha, unit["id"]))
-        self._event(db, command, target, {"close_code": close_code, "merge_sha": merge_sha})
+        self._event(db, command, ending, {"close_code": close_code, "merge_sha": merge_sha})
 
     def confirm_merged(self, command, candidate_id, *, merge_sha, evidence):
         """Record a confirmed remote merge, including a human merge during review."""
@@ -1292,7 +1319,7 @@ class Lifecycle:
             # The receipt reconciles only this candidate's merge intent. Any
             # unrelated uncertain external effect still needs reconciliation.
             self._quiescent(db, unit["id"])
-            if unit['state'] in {'queued','building','integrating'}:
+            if unit['state'] in {'building','publishing'}:
                 # Normalize a preserved, already published candidate inside the
                 # receipt transaction; no technical verdict or launch is implied.
                 db.execute("UPDATE units SET state='reviewing' WHERE id=?", (unit['id'],))
@@ -1354,7 +1381,7 @@ class Lifecycle:
                 db.execute("INSERT OR IGNORE INTO issue_dependencies(id,issue_id,requirements_revision_id,prerequisite_issue_id,source,evidence,created_at) "
                     "VALUES(?,?,?,?,'operator',?,?)",(_id(command.request_id,'external:'+member['id']+':'+prerequisite_id),
                     member['issue_id'],member['requirements_revision_id'],prerequisite['issue_id'],'Approved dependency retained after dissolve',self.clock()))
-        self._settle(db, command, unit, "dissolved")
+        self._settle(db, command, unit, "closed", close_code="dissolved", exit_reason="dissolved")
         released = []
         for member, issue in zip(members, issues):
             child_id = _id(command.request_id, f"unit:{member['id']}")

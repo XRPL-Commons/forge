@@ -16,9 +16,8 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'admission_conflict': ("Couldn't start this issue: its state changed; Forge will check again", None),
     'result_pending': ('Checking the completed worker result', None),
     # Unit states
-    'queued': ('Waiting to start', None),
     'building': ('Building', 'Building {parts}'),
-    'integrating': ('Combining the parts into one change', None),
+    'publishing': ('Publishing the completed change', None),
     'reviewing': ('In review', 'Reviewing pull request #{pull}'),
     'auditing': ('In audit', 'Auditing pull request #{pull}'),
     'merging': ('Ready to merge', 'Merging pull request #{pull}'),

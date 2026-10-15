@@ -15,7 +15,7 @@ STALL_SECONDS = 300
 
 def current_in(db, unit, member_id=None):
     """Return only decisions belonging to this exact active assignment."""
-    if unit['state'] in {'merged', 'closed', 'dissolved'}:
+    if unit['state'] in {'merged', 'closed'}:
         return None
     row = db.execute(
         'SELECT n.* FROM next_actions n WHERE n.unit_id=? AND n.unit_version=? '
@@ -31,6 +31,33 @@ def current_in(db, unit, member_id=None):
         (unit['id'], unit['version'], unit['fencing_generation'], unit['membership_generation'],
          unit['current_candidate_id'], member_id, member_id)).fetchone()
     return dict(row) if row else None
+
+
+def execution_condition_in(db, unit, member_id=None, *, gates=(), action=None):
+    """Describe present ownership independently of phase and retry scheduling.
+
+    A missing owner stays absent: this projection must not hide an orphan or
+    grant authority to launch work. Scheduling.audit retains the stall bound.
+    """
+    if unit['state'] in {'merged', 'closed'}:
+        return None
+    jobs = db.execute(
+        'SELECT j.phase,j.cleanup,j.fenced FROM jobs j WHERE j.unit_id=? '
+        'AND (? IS NULL OR EXISTS(SELECT 1 FROM job_members m WHERE m.job_id=j.id AND m.member_id=?)) '
+        'AND (j.cleanup=0 OR (j.outcome IS NULL AND (j.fenced=0 OR EXISTS('
+        'SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.capture_authorized=1 AND x.result_revoked=0))))',
+        (unit['id'], member_id, member_id)).fetchall()
+    if any(not job['cleanup'] and not job['fenced'] and job['phase'] in {'starting', 'running', 'collecting'} for job in jobs):
+        return 'running'
+    if gates or jobs:
+        return 'owned'
+    effect = db.execute(
+        "SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
+        "WHERE e.unit_id=? AND e.status IN ('pending','running','uncertain') AND c.candidate_id IS ? LIMIT 1",
+        (unit['id'], unit['current_candidate_id'])).fetchone()
+    if effect:
+        return 'owned'
+    return 'scheduled' if action else None
 
 
 class Scheduling(Lifecycle):
@@ -55,7 +82,7 @@ class Scheduling(Lifecycle):
         with self.store.write() as db:
             writable(db)
             unit = db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()
-            if unit is None or unit['state'] in {'merged', 'closed', 'dissolved'}:
+            if unit is None or unit['state'] in {'merged', 'closed'}:
                 return
             if job_id and not db.execute('SELECT 1 FROM jobs j JOIN attempts assignment ON assignment.id=j.attempt_id JOIN units assigned_unit ON assigned_unit.id=j.unit_id WHERE assignment.assignment_generation=assigned_unit.fencing_generation AND assignment.membership_generation=assigned_unit.membership_generation AND assignment.budget_generation=assigned_unit.budget_generation AND (j.candidate_id IS NULL OR j.candidate_id=assigned_unit.current_candidate_id) AND j.id=? AND j.unit_id=? AND j.outcome IS NULL '
                 'AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id '
@@ -97,7 +124,7 @@ class Scheduling(Lifecycle):
                 'WHERE n.unit_id=? AND n.owner=? AND n.scope_key=? AND n.due_at>? '
                 'AND n.unit_version=u.version AND n.fencing_generation=u.fencing_generation '
                 'AND n.membership_generation=u.membership_generation '
-                "AND u.state NOT IN ('merged','closed','dissolved') "
+                "AND u.state NOT IN ('merged','closed') "
                 'AND (n.candidate_id IS NULL OR n.candidate_id=u.current_candidate_id) '
                 'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j JOIN attempts assignment ON assignment.id=j.attempt_id JOIN units assigned_unit ON assigned_unit.id=j.unit_id WHERE assignment.assignment_generation=assigned_unit.fencing_generation AND assignment.membership_generation=assigned_unit.membership_generation AND assignment.budget_generation=assigned_unit.budget_generation AND (j.candidate_id IS NULL OR j.candidate_id=assigned_unit.current_candidate_id) AND j.id=n.job_id AND j.unit_id=u.id '
                 'AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture '
@@ -125,7 +152,7 @@ class Scheduling(Lifecycle):
         with self.store.write() as db:
             writable(db)
             rows = db.execute("SELECT m.id,m.unit_id FROM unit_issues m JOIN units u ON u.id=m.unit_id "
-                "WHERE m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved') AND m.id>? "
+                "WHERE m.left_at IS NULL AND u.state NOT IN ('merged','closed') AND m.id>? "
                 'ORDER BY m.id LIMIT ?', (after or '', limit + 1)).fetchall()
             for member in rows[:limit]:
                 unit = dict(db.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())

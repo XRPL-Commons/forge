@@ -60,7 +60,7 @@ function locate(row: PipelineRow): { at: StageId | null; state: PipelineView['st
   if (code === 'dropped') return { at: null, state: 'closed', note: reason }
   if (code === 'backlog') return { at: 'queued', state: 'upcoming', note: reason }
   const stage: Record<string, StageId> = {
-    queued: 'queued', building: 'build', integrating: 'build', reviewing: 'review', auditing: 'audit', merging: 'approval',
+    building: 'build', publishing: 'build', reviewing: 'review', auditing: 'audit', merging: 'approval',
   }
   const at = stage[row.stage_code ?? ''] ?? reached(row)
   const state = code === 'working' ? 'active'

@@ -49,7 +49,12 @@ class Queries:
 
     def unit(self, unit_id):
         with self.store.read_snapshot() as connection:
-            return project_unit(connection, unit_id)
+            unit = project_unit(connection, unit_id)
+            from .scheduling import current_in, execution_condition_in
+            unit['execution_condition'] = execution_condition_in(connection, unit,
+                gates=[member['current_blocker'] for member in unit['members'] if member['current_blocker']],
+                action=current_in(connection, unit))
+            return unit
 
     @staticmethod
     def _issue(connection, issue_id, *, include_body=False, include_gates=False):
@@ -139,8 +144,10 @@ class Queries:
             if failed:
                 lifecycle.update(reason_code=failed['reason_code'], display_status=status.describe(failed['reason_code']))
                 issue['discovery_observation'] = dict(failed)
-        from .scheduling import current_in
+        from .scheduling import current_in, execution_condition_in
         lifecycle['next_action'] = current_in(connection, unit, member['id']) if current else None
+        lifecycle['execution_condition'] = execution_condition_in(connection, unit, member['id'],
+            gates=gates, action=lifecycle['next_action']) if current else None
         if include_gates:
             lifecycle['gates'] = gates
         issue['lifecycle'] = lifecycle
@@ -205,7 +212,7 @@ class Queries:
             clauses.append('id > ?')
             parameters.append(after)
         if not include_terminal:
-            clauses.append("state NOT IN ('merged', 'closed', 'dissolved')")
+            clauses.append("state NOT IN ('merged', 'closed')")
         where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
         with self.store.read_snapshot() as connection:
             rows = connection.execute(

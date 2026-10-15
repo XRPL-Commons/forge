@@ -109,6 +109,29 @@ class DeliveryExecutionTests(unittest.TestCase):
             commit_oid=commit,evidence={'verified':True,'commit_oid':commit,'base_oid':'base','input_manifest_hash':manifest_hash(manifest),'bundle_digest':digest})
         return accepted
 
+    def test_integration_publication_checks_each_member_hold_in_build_phase(self):
+        from forge.store.publications import Publications
+        self.compose(); parent,plan,children=self.plan()
+        for key in ('0','1'):
+            child,manifest=self.child(plan,key);self.accept(child,manifest,key)
+        manifest=self.manifest('integration')
+        integrated=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',
+            execution_fence='integration-fence',input_manifest=manifest,
+            launch=Launch('forge/batch','builder[bot]','codex',1000,{},{}))
+        Executions(self.store,clock=lambda:100).collect(self.command(),integrated['job_id'],
+            execution_fence='integration-fence',capture={'result':None,'logs':''})
+        self.clean(integrated,'integration-fence')
+        row=dict(unit_id='batch',job_id=integrated['job_id'],execution_fence='integration-fence',
+            input_manifest_json=json.dumps(manifest))
+        commands=Publications(self.store,clock=lambda:100)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(commands._ready(db,row)[1]['state'],'building')
+        self.life.open_gate(self.command(),'environment',details={'capability':'database'},
+            member_id=self.members['issue-1'])
+        with self.store.read_snapshot() as db:
+            with self.assertRaisesRegex(TransitionError,'independent gate'):
+                commands._ready(db,row)
+
     def test_parallel_parts_resume_same_builder_then_one_exact_review_and_audit(self):
         self.compose(); parent,plan,children=self.plan()
         first,one=self.child(plan,'0'); second,two=self.child(plan,'1')
@@ -120,6 +143,9 @@ class DeliveryExecutionTests(unittest.TestCase):
         self.assertEqual(self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']['stage'],'integration')
         integrated=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='integration-fence',input_manifest=manifest)
         self.assertEqual(integrated['builder_id'],parent['builder_id'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT state FROM units WHERE id='batch'").fetchone()[0], 'building')
+            self.assertEqual(db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(integrated['job_id'],)).fetchone()[0], 'integration')
         candidate=Candidate(7,'forge/batch','c'*40,'base','policy',manifest['requirements_hash'],manifest_hash(manifest))
         self.delivery.publish_candidate(self.command(),integrated['job_id'],execution_fence='integration-fence',input_manifest=manifest,candidate=candidate,
             evidence={'verified':True,'pull_number':7,'head_oid':candidate.head_oid,'base_oid':'base'})

@@ -112,8 +112,16 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(job['input_manifest']['policy_hash'], manifest_hash(policy(self.config,1,repository_name='owner/repo')))
         self.assertEqual(job['slot'], 'build-1')
         self.assertEqual(job['deadline'], 2800)
+        self.assertEqual(job['build_result_version'], 2)
         self.assertTrue(job['branch'].startswith('forge/issue-1-'))
         self.assertEqual(self.controller.step('u')['reason'], 'cleanup_pending')
+
+    def test_launch_contract_marker_is_exact_and_legacy_context_is_readable(self):
+        Launch('branch','builder[bot]','codex',1000,{},{}).payload()
+        self.assertEqual(Launch('branch','builder[bot]','codex',1000,{},{},context={'build_result_version':2}).payload()['context']['build_result_version'],2)
+        for value in (True,1,3,'2'):
+            with self.subTest(value=value), self.assertRaisesRegex(TransitionError,'build result version'):
+                Launch('branch','builder[bot]','codex',1000,{},{},context={'build_result_version':value}).payload()
 
     def test_base_revoked_capture_reuses_owned_pr_with_fresh_base(self):
         from forge.factory.result_controller import ResultController

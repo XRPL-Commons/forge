@@ -11,7 +11,7 @@ from .task_inputs import (current_plan_in,plan_current_in,plan_tasks_in,task_man
 def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
     def result(items=(),reason=None):
         return {'unit_id':unit['id'],'version':unit['version'],'items':list(items),'pending_reason':reason}
-    if unit['state'] not in {'queued','building','integrating'}: return result(reason='not_building')
+    if unit['state'] != 'building': return result(reason='not_building')
     if _charges(db,unit)>=3: return result(reason='budget_exhausted')
     if not db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit['id'],)).fetchone(): return result(reason='not_approved_composition')
     members=[row[0] for row in db.execute('SELECT id FROM unit_issues WHERE unit_id=? AND left_at IS NULL',(unit['id'],))]

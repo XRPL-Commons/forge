@@ -287,9 +287,8 @@ class Recovery(Executions):
                 return {**self._finish(db, command, unit, job, failed, True, findings), 'corrected': False}
             owner = db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(failed['id'],)).fetchone()
             child = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?',(failed['id'],)).fetchone()
-            expected_phase = 'integrating' if owner else 'building'
             if (failed['role'] != 'build' or child or (owner and owner['stage'] != 'integration')
-                    or unit['current_candidate_id'] is not None or unit['state'] != expected_phase):
+                    or unit['current_candidate_id'] is not None or unit['state'] not in {'building', 'publishing'}):
                 raise TransitionError('only the current failed publisher can recover its publication')
             original = json.loads(failed['input_manifest_json'])
             if owner:

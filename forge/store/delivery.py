@@ -147,7 +147,7 @@ class Delivery(TaskCommands, Lifecycle):
                 self._event(db,child,'membership_changed',{'member_id':member['id'],'combined_into':command.unit_id},issue_id=member['issue_id'])
             db.execute("UPDATE units SET state='closed',close_code='combined',primary_gate_id=NULL,version=version+1,updated_at=? WHERE id=?", (self.clock(),source['id']))
             self._event(db,child,'closed',{'reason':'combined','target_unit_id':command.unit_id})
-        db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'queued',?,?)", (command.unit_id,repository_id,base_branch,self.clock(),self.clock()))
+        db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'building',?,?)", (command.unit_id,repository_id,base_branch,self.clock(),self.clock()))
         db.execute('INSERT INTO unit_publication_targets VALUES(?,?)',(command.unit_id,_json(publication_target)))
         for source in sources.values():
             db.execute('INSERT INTO unit_composition_sources VALUES(?,?,?)',(command.unit_id,source['id'],source['current_candidate_id']))
@@ -191,7 +191,7 @@ class Delivery(TaskCommands, Lifecycle):
                        launch=launch.payload() if launch else None)
         def change(db,unit):
             self._live(unit)
-            if not approved_in(db,unit['id']) or not members_in(db,unit['id']) or unit['state'] not in {'queued','building','integrating'}:
+            if not approved_in(db,unit['id']) or not members_in(db,unit['id']) or unit['state'] != 'building':
                 raise TransitionError('owning builder reservation requires a grouped delivery in code work')
             self._quiescent(db,unit['id'])
             expected = self._builder_manifest_in(db,unit,stage,input_manifest.get('base_oid'),input_manifest.get('policy_hash'))
@@ -211,7 +211,7 @@ class Delivery(TaskCommands, Lifecycle):
             if launch is not None:
                 from .executions import insert_launch
                 insert_launch(db,job['job_id'],slot,execution_fence,launch.payload(),self.clock())
-            target = 'integrating' if stage == 'integration' else 'building'
+            target = 'building'
             db.execute('UPDATE units SET state=? WHERE id=?',(target,unit['id']))
             self._event(db,command,'phase_changed',{'before':unit['state'],'after':target,'builder_id':builder_id},job_id=job['job_id'])
             return {**job,'builder_id':builder_id}
@@ -247,7 +247,7 @@ class Delivery(TaskCommands, Lifecycle):
                 self._result(db,command,job,evidence,'stale_success')
                 return {'accepted':False}
             expected = self._builder_manifest_in(db,unit,'integration',input_manifest['base_oid'],input_manifest['policy_hash'])
-            if input_manifest != expected or unit['state'] != 'integrating':
+            if input_manifest != expected or unit['state'] not in {'building','publishing'}:
                 raise TransitionError('combined candidate inputs are no longer current')
             if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND id!=? AND cleanup=0',(unit['id'],job_id)).fetchone():
                 raise TransitionError('all children must be cleaned before combined publication')

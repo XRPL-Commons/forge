@@ -217,7 +217,10 @@ def scoped_task_gates_in(db,unit,member_ids,*,job_id=None,candidate_id=None):
     from .transitions import _collect_gates
     gates=[]
     for gate in _collect_gates(db,unit):
-        if gate.get('job_id') is not None:
+        if 'claim_member_ids' in gate:
+            if not set(gate['claim_member_ids']).intersection(member_ids):
+                continue
+        elif gate.get('job_id') is not None:
             if gate['job_id']==job_id:
                 gates.append(gate)
             continue

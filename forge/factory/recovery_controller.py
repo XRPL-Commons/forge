@@ -143,7 +143,7 @@ class RecoveryController:
             return {'job_id': recovery_job_id, 'pending': 'cleanup'}
         capture = self.jobs.capture(recovery_job_id)
         stale = (not job['capture_authorized'] or job['result_revoked']
-                 or job['unit_state'] in {'merged', 'closed', 'dissolved'}
+                 or job['unit_state'] in {'merged', 'closed'}
                  or job['assignment_generation'] != job['fencing_generation']
                  or job['assigned_membership'] != job['membership_generation']
                  or job['assigned_budget'] != job['budget_generation']
@@ -210,7 +210,7 @@ class RecoveryController:
         policy_current = original['input_manifest'].get('policy_hash') == digest(policy(self.config, original['repo_id'], repository_name=original['repo']))
         from .delegation_contracts import read_only_build
         if (original_report and original_report['outcome'] in BUILD_CANDIDATE_OUTCOMES and not read_only_build(original)
-                and policy_current and job['unit_state'] in {'building', 'integrating'}
+                and policy_current and job['unit_state'] in {'building', 'publishing'}
                 and job['current_candidate_id'] is None
                 and (original.get('builder_stage') == 'integration' or
                      job['input_manifest'].get('requirements_revision_id') == original['input_manifest'].get('requirements_revision_id'))):
