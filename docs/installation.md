@@ -23,6 +23,20 @@ alone is not installation completion. Resume with:
 forge install --ssh anvil --resume --wait 3600
 ```
 
+When smoke planning stops with `smoke_triage_failed`, fix the reported provider,
+runner or planning problem first. Then use the exact failed proposal ID from the
+result to request another planning cycle:
+
+```sh
+forge install --ssh anvil --resume --retry-smoke FAILED_PROPOSAL_ID --wait 3600 --json
+```
+
+This command keeps the same installation, issue and first-merge timer. It requires
+the current failed proposal and completed worker cleanup. Repeating the command
+reuses its successor proposal; it does not reset that successor's attempt limit.
+Ordinary `--resume` never retries an exhausted proposal automatically. Agents can
+read the structured recovery command in the pending stage's `next_action.command`.
+
 For a clean Forge reinstall, use the CLI's explicit
 [reset plan and apply operation](cli-fresh-host.md#clean-reinstall-on-a-test-vm).
 It archives the owned installation and preserves SSH, Tailscale, the OS and

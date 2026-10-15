@@ -29,8 +29,6 @@ def prepare_tool_environment(directory, env):
 
 
 def run(note, directory, env, result_schema):
-    path = Path('/work/result-schema.json')
-    path.write_text(json.dumps(result_schema))
     client = Path('/work/home/.codex')
     child_env = prepare_tool_environment(directory, env)
     build = runpy.run_path('/opt/forge/build_environment.py')
@@ -51,18 +49,24 @@ def run(note, directory, env, result_schema):
     # The native sandbox stays enabled. Image provisioning must prove it works;
     # an unavailable sandbox fails the attempt instead of disabling protection.
     args = ['codex', '-a', 'never', 'exec', '--json',
-            '--output-schema', str(path), '--output-last-message', '/work/final-result.json',
+            '--output-last-message', '/work/final-result.json',
             '--cd', str(directory), '-']
     if note.get('model'):
         args[5:5] = ['--model', note['model']]
-    prompt = json.dumps(note) + '\nReturn your result as the final structured response. It will be validated by the supervisor.'
+    prompt = (json.dumps(note) + '\nComplete the assigned work, then return exactly one JSON value as your final response. '
+              'Do not include Markdown code fences or prose outside the JSON. The final response must satisfy '
+              'the entire schema below; Forge validates it before accepting the result.\nResult JSON Schema:\n'
+              + json.dumps(result_schema))
     code, events = EXECUTION['stream'](args, prompt, directory, env)
     if code:
         provider = EXECUTION['codex_provider_error'](events)
         if provider is not None:
+            session = EXECUTION['codex_session_diagnostic'](events, client / 'sessions')
+            if session is not None:
+                provider['diagnostic']['session'] = session
             EXECUTION['write_receipt'](note, 'provider_error', provider_error=provider)
     output = Path('/work/final-result.json')
-    RESULTS['publish_result'](note, output)
+    RESULTS['publish_result'](note, output, result_schema)
     return code
 
 

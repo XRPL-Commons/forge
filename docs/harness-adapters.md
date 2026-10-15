@@ -55,6 +55,23 @@ Before enabling a new module, qualify:
    credentials stay isolated, and those tools can reach GitHub through the proxy.
    Claude's setup probe verifies this using a synthetic token and a public endpoint.
 
+### Codex incomplete responses
+
+Codex is pinned to 0.163.0. Its upstream fixes treat `response.incomplete`
+(such as `max_output_tokens`) as a terminal provider response instead of a
+network disconnect, and retain reported token usage. Earlier versions could
+retry the same exhausted response and discard its usage. See
+[terminal incomplete responses](https://github.com/openai/codex/pull/53451) and
+[incomplete response accounting](https://github.com/openai/codex/pull/53670).
+
+This update does not raise provider limits or guarantee that a previously failing
+assignment will succeed. Forge continues to require a complete validated result.
+When no model is configured, Codex selects from its account's available model
+catalog; a pinned CLI version alone does not pin the model or reasoning default.
+Image updates still need the native sandbox and authenticated setup checks before
+work resumes. The upgrade retains device sign-in, file-backed credentials and
+Forge's managed permission profile.
+
 Grok Build (`forge/harnesses/grok`, pinned 1.0.34) ships with the image and appears
 in setup like Codex and Claude Code. Its terminal login is `grok login --device-auth`;
 the API-key path uses `XAI_API_KEY`. It is dispatched only once `setup check` passes

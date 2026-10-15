@@ -17,10 +17,13 @@ import uuid
 from .app_access import OPTIONAL_PERMISSIONS
 from .store.auxiliary import save_in, job_in
 from .store.operations import deployment_views
+from .store.executions import provider_available
+from .store.provider_selection import select_provider
+from .store.models import TransitionError
 from .store.runtime import required, writable
 from .factory.github import GitHubUnavailable
 from .factory.live import LiveUnavailable
-from .factory.runner import RunnerCapacity, RunnerError, scrub
+from .factory.runner import RunnerCapacity, RunnerError, RunnerUnavailable, scrub
 
 STRATEGIES = ('github_deployments', 'health', 'header', 'unobservable')
 OUTCOMES = ('pass', 'reject', 'unable', 'wait', 'blocked_environment')
@@ -117,6 +120,10 @@ class Deployments:
             for key, value in values.items():
                 if key == 'job':
                     if value is not None:
+                        if not db.execute('SELECT 1 FROM auxiliary_executions WHERE id=?', (value['id'],)).fetchone():
+                            config = value['runner_config']
+                            if not provider_available(db, config['provider'], value.get('provider_id'), config, self.clock()):
+                                raise TransitionError('Deployment coding account is no longer available')
                         save_in(db, 'deployment', str(repo_id), value, self.clock())
                     fields['execution_id'] = value['id'] if value else None
                 else:
@@ -159,27 +166,14 @@ class Deployments:
                 raise ValueError('There is no deployment proposal to reject')
             db.execute("UPDATE deployment_profiles SET status='rejected',reason=?,observed_at=? WHERE repository_id=?", (reason.strip()[:2000], self.clock(), int(repo_id)))
 
-    def leased(self, config):
-        reference = config.get('provider_auth_file_env')
-        if not reference:
-            return False
-        with self.database.read_snapshot() as db:
-            return bool(db.execute("SELECT 1 FROM job_leases l JOIN job_launches j ON j.job_id=l.job_id "
-                "WHERE json_extract(j.runner_config_json,'$.provider_auth_file_env')=? UNION ALL "
-                "SELECT 1 FROM auxiliary_leases l JOIN auxiliary_runtime r ON r.execution_id=l.execution_id "
-                "WHERE json_extract(r.manifest_json,'$.runner_config.provider_auth_file_env')=? LIMIT 1", (reference, reference)).fetchone()
-                or db.execute("SELECT 1 FROM discussion_leases l LEFT JOIN discussion_runtime r ON r.execution_id=l.execution_id "
-                    "WHERE r.manifest_json IS NULL OR json_extract(r.manifest_json,'$.runner_config.provider_auth_file_env')=? LIMIT 1",
-                    (reference,)).fetchone())
-
-    def new_job(self, config, repo, head, deadline):
+    def new_job(self, config, repo, head, deadline, *, provider_id=None):
         """A probe-shaped internal job: no issue, no candidate, no publication."""
         return {'id': str(uuid.uuid4()), 'slot': 'deployment-strategist', 'role': 'strategist',
                 'repo': repo['name'], 'repo_id': repo['id'], 'issue_number': None,
                 'publisher': 'forge-strategist', 'target_branch': None, 'branch': None,
                 'candidate': None, 'history': {}, 'head': head, 'deadline': deadline,
                 'fenced': False, 'runner_config': deepcopy(config), 'kind': 'strategist',
-                'cleanup': False, 'capture': None}
+                'cleanup': False, 'capture': None, 'provider_id': provider_id}
 
     def live(self, data):
         for key, entry in data['repositories'].items():
@@ -204,8 +198,10 @@ class Deployments:
         # larger pipeline retry waiting for existing workers to drain.
         if self.memory_draining(config):
             return
-        if self.leased(config):
-            return  # The coding account is held by a pipeline worker; retry next cycle.
+        with self.database.read_snapshot() as db:
+            account, worker = select_provider(db, config, self.clock())
+        if account is None:
+            return
         for row in self.settings.view()['repositories']:
             if not row['dispatch_allowed']:
                 continue
@@ -222,13 +218,16 @@ class Deployments:
                           error=str(error) if isinstance(error, GitHubUnavailable) else
                                 'The repository workflows could not be read')
                 continue
-            self.save(row['id'], row['name'], checked_at=self.clock(), error=None)
             if not reread and entry and entry['workflows_digest'] == value:
+                self.save(row['id'], row['name'], checked_at=self.clock(), error=None)
                 continue
-            job = self.new_job(config, row, head, self.clock() + self.TIMEOUT)
+            job = self.new_job(worker, row, head, self.clock() + self.TIMEOUT, provider_id=account['id'])
             job['workflows_digest'] = value
-            self.save(row['id'], row['name'], status='running', job=job, reread_requested=False,
-                      summary=None, reason=None, observation=None)
+            try:
+                self.save(row['id'], row['name'], status='running', job=job, reread_requested=False,
+                          checked_at=self.clock(), error=None, summary=None, reason=None, observation=None)
+            except TransitionError:
+                return  # A concurrent worker claimed the account; reselect next cycle.
             self.drive(str(row['id']))
             return  # One strategist at a time; the next repository waits a cycle.
 
@@ -349,34 +348,42 @@ class Deployments:
     def drive(self, key):
         job = self.read()['repositories'][key]['job']
         runner = self.runner(job['runner_config'])
+        # The runner enriches its execution view with physical source authority.
+        # Persist only explicit progress; the reserved launch manifest is immutable.
+        # A failed prepare may never reach Docker start. Its deadline still owns
+        # the reservation: fence before any further inspect/prepare attempt.
+        if not job['fenced'] and self.clock() >= job['deadline']:
+            job['fenced'] = True
+            self.save(key, job=job)
+        if job['fenced'] and job['capture'] is None:
+            capture = runner.capture(job)
+            capture['timed_out'] = (self.clock() >= job['deadline']
+                                    and (capture.get('execution') or {}).get('status') != 'exited')
+            job['capture'] = capture
+            self.save(key, job=job)
         if not job['fenced']:
             try:
                 current = runner.inspect(job)
                 if current is None:
-                    job['container_id'] = runner.create(job)
+                    job['container_id'] = runner.create(deepcopy(job))
                     self.save(key, job=job)
                     current = runner.inspect(job)
                 if current is None:
                     raise RunnerError('The strategist container is not observable; reconcile before replacement')
                 if current['status'] == 'created':
                     # The recovery role is the controller App's read-only worker credential.
-                    runner.prepare(job)
-                    runner.start(job)
+                    runner.prepare(deepcopy(job))
+                    runner.start(deepcopy(job))
                     if job.get('capacity_wait_since') is not None:
                         job['deadline'] += max(0, self.clock() - job.pop('capacity_wait_since'))
                     self.save(key, job=job)
                     return
             except RunnerCapacity:
-                if self.clock() < job['deadline']:
-                    job.setdefault('capacity_wait_since', self.clock())
-                    self.save(key, job=job)
-                    return
-                # Waiting for memory is not unbounded: give the slot back and report.
-                job.update(capture=runner.capture(job), fenced=True)
+                job.setdefault('capacity_wait_since', self.clock())
                 self.save(key, job=job)
-                runner.reset(job)
-                job['cleanup'] = True
-                self.finish(key, job, reason=CAPACITY)
+                return
+            except RunnerUnavailable:
+                self.save(key, error='The assigned deployment worker is unavailable; retrying until its deadline.')
                 return
             timed_out = self.clock() >= job['deadline']
             if current['running'] and not timed_out:
@@ -386,7 +393,7 @@ class Deployments:
             capture['timed_out'] = timed_out and current['running']
             job.update(capture=capture, fenced=True)
             self.save(key, job=job)
-        runner.reset(job)
+        runner.reset(deepcopy(job))
         job['cleanup'] = True
         self.finish(key, job)
 
@@ -396,7 +403,7 @@ class Deployments:
             if (capture.get('execution') or {}).get('oom_killed'):
                 reason = 'The deployment read exceeded its memory limit; review worker capacity before re-reading'
             elif capture.get('timed_out'):
-                reason = 'The deployment read did not finish before its deadline'
+                reason = CAPACITY if job.get('capacity_wait_since') is not None else 'The deployment read did not finish before its deadline'
             else:
                 try:
                     report = profile(capture.get('result'), job)

@@ -5,7 +5,7 @@ import uuid
 from urllib.parse import quote
 
 from ..store.auxiliary import active
-from ..store.executions import provider_available
+from ..store.provider_selection import select_provider
 from ..store.models import TransitionError, VersionConflict
 from ..store.repository_planning import RepositoryPlanning
 from ..store.transitions import manifest_hash
@@ -71,10 +71,9 @@ class RepositoryPlanner:
                     (repo['id'],smoke['binding']['number'])).fetchone()
             if not admitted:return {'waiting':'smoke_admission'}
         if not self.settings.admission(repo['name'])['allowed']:return {'waiting':'repository'}
-        pool=self.config.get('provider_pool') or [dict(id=None,**{k:self.config.get(k) for k in ('provider','model','provider_environment','provider_auth_file_env')})]
-        now=self.clock();ready=self.config.get('provider_ready')
+        now=self.clock()
         with self.store.read_snapshot() as db:
-            entry=next((e for e in pool if (ready is None or e['id'] in ready) and provider_available(db,e['provider'],e['id'],{**self.config,**{k:v for k,v in e.items() if k!='id'}},now)),None)
+            entry,worker=select_provider(db,self.config,now)
         if entry is None:return {'waiting':'coding_account'}
         self.refresh(repo)
         self.plans.refresh_inputs(run['id'])
@@ -88,7 +87,6 @@ class RepositoryPlanner:
             if issue['candidate_id']:
                 pr=self.github.call('controller',item,'GET',f"/pulls/{issue['pull_number']}")
                 issue['candidate_author']={k:(pr.get('user') or {}).get(k) for k in ('id','type','login')}
-        worker={**self.config,**{k:v for k,v in entry.items() if k!='id'}}
         worker=self.problems.memory('triage',run['id'],worker)
         if worker is None:return {'waiting':'memory_configuration'}
         job=dict(id=str(uuid.uuid4()),slot='repository-triage',role='triage',proposal_id=run['id'],repo=repo['name'],repo_id=repo['id'],
@@ -105,6 +103,11 @@ class RepositoryPlanner:
     def drive(self,job):
         job=self.plans.job(job['id'],context=True);runner=self.runner(job['runner_config'])
         try:
+            if self.plans.maintenance_interrupted(job['id']):
+                if not job['cleanup']:
+                    runner.reset(dict(job))
+                    self.plans.interrupt_for_maintenance(job['id'], cleanup=True)
+                return {'phase': 'interrupted', 'reason': 'maintenance_interrupted'}
             if job['fenced'] or self.clock()>=job['deadline']:
                 if not job['fenced']:job=self.plans.progress(job['id'],fenced=True)
                 if not job['cleanup']:
@@ -142,6 +145,9 @@ class RepositoryPlanner:
 
     def _finish(self,job):
         job=self.plans.job(job['id'],context=True)
+        if self.plans.maintenance_interrupted(job['id']):
+            self.plans.interrupt_for_maintenance(job['id'], cleanup=True)
+            return {'phase': 'interrupted', 'reason': 'maintenance_interrupted'}
         capture=job.get('capture') or {};result=capture.get('result')
         steward=bool(job.get('steward_mode')=='triage')
         valid=(isinstance(result,dict) and result.get('attempt')==job['id'] and result.get('role')=='triage'

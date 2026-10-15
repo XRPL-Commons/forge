@@ -7,7 +7,7 @@ import time
 
 from forge_client.contracts import digest, fields, repository, require
 from .factory.config import load, validate
-from .factory.control import controller_lock
+from .factory.control import ControllerBusy, controller_lock
 from .factory.first_merge import proof
 from .factory.github import GitHub
 from .install_scope import accepted_triage_in, triage_in, triage_run_in
@@ -30,7 +30,7 @@ class InstallationSmoke:
         return self.supplied_github or GitHub(Settings(self.root, scope='active'), load(self.root, scope='active'))
 
     def call(self, action, parameters, *, setup_id, generation):
-        require(action in {'issue', 'bind', 'launch', 'status', 'handover'}, 'invalid_action')
+        require(action in {'issue', 'bind', 'launch', 'status', 'handover', 'retry'}, 'invalid_action')
         require(isinstance(setup_id, str) and 0 < len(setup_id) <= 256, 'invalid_setup')
         data = self.setup.read()
         require(data['generation'] == generation and data['phase'] in ('setup', 'active'), 'setup_changed')
@@ -38,15 +38,22 @@ class InstallationSmoke:
         if action == 'status':
             fields(parameters, ())
             return self.status()
-        with identity_effect_lock(self.store), controller_lock(self.root):
-            require(self.setup.read()['generation'] == generation, 'setup_changed')
-            if action == 'issue':
-                return self.issue(parameters)
-            if action == 'bind':
-                fields(parameters, ('binding',))
-                return self.bind(parameters['binding'])
-            fields(parameters, ())
-            return self.launch() if action == 'launch' else self.handover()
+        try:
+            with identity_effect_lock(self.store), controller_lock(self.root):
+                require(self.setup.read()['generation'] == generation, 'setup_changed')
+                if action == 'issue':
+                    return self.issue(parameters)
+                if action == 'bind':
+                    fields(parameters, ('binding',))
+                    return self.bind(parameters['binding'])
+                if action == 'retry':
+                    fields(parameters, ('proposal_id',))
+                    return self.retry(parameters['proposal_id'])
+                fields(parameters, ())
+                return self.launch() if action == 'launch' else self.handover()
+        except ControllerBusy:
+            return {'status': 'smoke_pending', 'phase': 'controller',
+                    'reason': 'The supervisor is completing its current cycle. Resume installation to continue the same smoke work.'}
 
     def saved(self, domain='installation_smoke'):
         return self.configuration.get(domain, self.generation)
@@ -149,6 +156,9 @@ class InstallationSmoke:
         require(self.setup.read()['phase'] == 'active', 'factory_not_started')
         if saved['settings']['phase'] == 'complete':
             return self.status()
+        failure = self.triage_failure(binding)
+        if failure:
+            return failure
         target = binding['repository']
         github = self.github()
         item = {'repo': target['name'], 'repo_id': target['id']}
@@ -174,8 +184,37 @@ class InstallationSmoke:
             dict(target, enabled=True), remote, requirements)
         from .store.repository_planning import RepositoryPlanning
         plans = RepositoryPlanning(self.store, clock=self.clock)
-        plans.queue(target['id'], request_id='installation-smoke:' + digest(binding), actor_id='operator:installation',
-                    base_branch=github.target(item))
+        with self.store.read_snapshot() as db:
+            completed = triage_run_in(db, binding)
+            active = db.execute("SELECT id,requested_at FROM repository_triage_runs WHERE repository_id=? "
+                                "AND status IN ('queued','running','captured')", (target['id'],)).fetchone()
+            interrupted = db.execute("SELECT r.id FROM repository_triage_runs r "
+                "JOIN auxiliary_executions a ON a.id=r.execution_id "
+                "JOIN auxiliary_runtime x ON x.execution_id=a.id WHERE r.repository_id=? "
+                "AND a.domain='triage' AND a.owner_id=r.id AND a.fenced=1 AND a.cleanup=1 AND x.capture_digest IS NULL "
+                "AND r.status='failed' AND r.error='maintenance_interrupted' AND r.requested_at>=? "
+                "AND (SELECT count(*) FROM triage_proposal_inputs p WHERE p.proposal_id=r.id)=1 "
+                "AND EXISTS(SELECT 1 FROM triage_proposal_inputs p JOIN issues i ON i.id=p.issue_id "
+                "WHERE p.proposal_id=r.id AND i.repository_id=? AND i.github_number=?) "
+                "ORDER BY r.requested_at DESC,r.rowid DESC LIMIT 1",
+                (target['id'], binding['started_at'], target['id'], binding['number'])).fetchone()
+            if active:
+                members = list(db.execute('SELECT i.repository_id,i.github_number FROM triage_proposal_inputs p '
+                    'JOIN issues i ON i.id=p.issue_id WHERE p.proposal_id=?', (active['id'],)))
+                exact = (active['requested_at'] >= binding['started_at'] and len(members) == 1
+                         and tuple(members[0]) == (target['id'], binding['number']))
+        # Automatic repository planning may win the race after activation. Its
+        # exact smoke run is the same work; do not queue a competing proposal.
+        # Other captures are never adopted as smoke evidence.
+        if active and not exact:
+            return {'status': 'smoke_pending', 'phase': 'triage',
+                    'reason': 'Waiting for the existing repository triage to finish before planning the exact smoke issue.'}
+        if not active and not completed:
+            request_id = 'installation-smoke:' + digest(binding)
+            if interrupted:
+                request_id += ':after:' + interrupted['id']
+            plans.queue(target['id'], request_id=request_id, actor_id='operator:installation',
+                        base_branch=github.target(item))
         waiting = self.accept_keep(binding, github, runtime)
         return waiting or self.status()
 
@@ -184,6 +223,58 @@ class InstallationSmoke:
                 'next_action': {'instruction': 'Review the smoke issue’s proposal in Forge. Accept a runnable disposition; '
                     'parked, closed or unanswered work cannot pass installation smoke. Then resume forge install.',
                     'path': '/issues'}}
+
+    def triage_failure(self, binding):
+        """A finished failed proposal needs repair and an explicit new request."""
+        with self.store.read_snapshot() as db:
+            if triage_run_in(db, binding) or db.execute(
+                    "SELECT 1 FROM repository_triage_runs WHERE repository_id=? "
+                    "AND status IN ('queued','running','captured')", (binding['repository']['id'],)).fetchone():
+                return None
+            run = db.execute("SELECT r.id,r.status,r.error FROM repository_triage_runs r "
+                "JOIN triage_proposal_inputs p ON p.proposal_id=r.id JOIN issues i ON i.id=p.issue_id "
+                "WHERE r.repository_id=? AND i.repository_id=r.repository_id AND r.requested_at>=? AND i.github_number=? "
+                "AND NOT EXISTS(SELECT 1 FROM triage_proposal_inputs other "
+                "WHERE other.proposal_id=r.id AND other.issue_id!=p.issue_id) "
+                "ORDER BY r.requested_at DESC,r.rowid DESC LIMIT 1",
+                (binding['repository']['id'], binding['started_at'], binding['number'])).fetchone()
+        if not run or run['status'] != 'failed' or run['error'] == 'maintenance_interrupted':
+            return None
+        reasons = {
+            'steward_cycle_limit: request a new proposal': ('steward_cycle_limit', 'The smoke planner reached its three-attempt limit.'),
+            'triage_result_missing': ('triage_result_missing', 'The smoke planner returned no result.'),
+            'triage_result_invalid': ('triage_result_invalid', 'The smoke planner returned an invalid result.'),
+            'triage_worker_unsuccessful': ('triage_worker_unsuccessful', 'The smoke planner could not complete its task.'),
+            'triage_proposal_invalid': ('triage_proposal_invalid', 'The smoke planner returned an invalid proposal.'),
+            'triage_inputs_changed': ('triage_inputs_changed', 'The smoke planning inputs changed before launch.'),
+        }
+        error, reason = reasons.get(run['error'], ('triage_failed', 'The smoke planner stopped with a failed proposal.'))
+        return {'status': 'smoke_triage_failed', 'proposal_id': run['id'], 'error': error, 'reason': reason,
+                'next_action': {'instruction': 'Inspect the failed proposal in Forge and fix the reported problem. '
+                    'Request new repository triage, then resume forge install.', 'path': '/issues'}}
+
+    def retry(self, proposal_id):
+        saved = self.saved()
+        require(saved and saved['settings']['binding']['setup_id'] == self.setup_id, 'smoke_binding_required')
+        require(self.setup.read()['phase'] == 'active' and saved['settings']['phase'] != 'complete', 'smoke_not_pending')
+        require(isinstance(proposal_id, str) and 0 < len(proposal_id) <= 256, 'invalid_proposal')
+        binding = saved['settings']['binding']
+        request_id = 'installation-smoke-retry:' + digest({'binding': binding, 'failed_proposal': proposal_id})
+        from .store.repository_planning import RepositoryPlanning
+        with self.store.read_snapshot() as db:
+            prior = db.execute('SELECT 1 FROM repository_planning_requests WHERE request_id=?', (request_id,)).fetchone()
+            proposal = db.execute('SELECT base_branch FROM triage_proposals WHERE id=? AND repository_id=?',
+                                  (proposal_id, binding['repository']['id'])).fetchone()
+            unclean = db.execute("SELECT 1 FROM auxiliary_executions WHERE domain='triage' AND owner_id=? AND cleanup=0",
+                                 (proposal_id,)).fetchone()
+        if not prior:
+            failure = self.triage_failure(binding)
+            require(failure and failure['proposal_id'] == proposal_id and not unclean, 'smoke_retry_changed',
+                    'Retry requires the current failed smoke proposal with all its workers cleaned up.')
+        require(proposal, 'smoke_retry_changed')
+        queued = RepositoryPlanning(self.store, clock=self.clock).queue(binding['repository']['id'],
+            request_id=request_id, actor_id='operator:installation', base_branch=proposal['base_branch'])
+        return {**queued, 'status': 'smoke_retry_queued', 'failed_proposal_id': proposal_id}
 
     def accept_keep(self, binding, github, runtime):
         """Installation consent covers exactly one unchanged keep disposition.
@@ -232,6 +323,9 @@ class InstallationSmoke:
         require(binding['setup_id'] == self.setup_id, 'smoke_changed')
         if value['phase'] == 'complete':
             return {'status': 'handover_complete', **deepcopy(value['verified'])}
+        failure = self.triage_failure(binding)
+        if failure:
+            return failure
         observed = self.prove(self.root, repository=binding['repository'], number=binding['number'],
                               started_at=binding['started_at'], clock=self.clock)
         with self.store.read_snapshot() as db:

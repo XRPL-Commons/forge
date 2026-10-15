@@ -43,6 +43,31 @@ class RoleQualificationFailed(SetupError):
         self.report = failure_report(report)
 
 
+
+def provider_session(value):
+    """Credential-free native metadata; host runtime is absent in CLI installs."""
+    if (not isinstance(value, dict) or value.get('source') != 'native_session'
+            or value.get('usage_scope') != 'last_recorded' or type(value.get('truncated')) is not bool):
+        return None
+    result = dict(source='native_session', usage_scope='last_recorded', truncated=value['truncated'])
+    models = {'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra',
+              'gpt-5.6-luna', 'gpt-daybreak-blue-latest', 'gpt-daybreak-red-latest', 'gpt-5.5',
+              'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'codex-auto-review', 'unrecognized'}
+    efforts = {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'unrecognized'}
+    for field, allowed in (('model', models), ('reasoning_effort', efforts)):
+        if isinstance(value.get(field), str) and value[field] in allowed:
+            result[field] = value[field]
+    numeric = lambda item: type(item) is int and 0 <= item <= 10**12
+    fields = {'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens',
+              'output_tokens', 'reasoning_output_tokens', 'total_tokens'}
+    for field in ('last_token_usage', 'total_token_usage'):
+        if isinstance(value.get(field), dict):
+            result[field] = {key: value[field][key] for key in fields if key in value[field] and numeric(value[field][key])}
+    if numeric(value.get('model_context_window')):
+        result['model_context_window'] = value['model_context_window']
+    return result
+
+
 def provider_diagnostic(value):
     """Project a fixed vocabulary without importing the host runtime package."""
     if (not isinstance(value, dict) or value.get('kind') != 'unclassified_terminal_error'
@@ -67,6 +92,9 @@ def provider_diagnostic(value):
         result['structured_code'] = code
     if type(status) is int and 400 <= status <= 599:
         result['http_status'] = status
+    session = provider_session(value.get('session'))
+    if session is not None:
+        result['session'] = session
     return result
 
 
