@@ -24,10 +24,11 @@ class ReviewPolicyTests(unittest.TestCase):
         self.policy=digest(policy(self.config,1,repository_name='owner/repo'))
         self.effects=Effects(self.store,clock=lambda:self.now)
         self.observer=ReviewPullRequests(self.store,clock=lambda:self.now)
-        self.github=Mock();self.remotes={};self.checks={}
+        self.github=Mock();self.remotes={};self.checks={};self.policy_runs={}
         self.github.pr.side_effect=lambda item,number:copy.deepcopy(self.remotes[number])
         self.github.gates.return_value=True
         self.github.check.side_effect=self.check
+        self.github.review_policy_current.side_effect=self.policy_current
         self.admission=MergeAdmission(self.store,self.github,config=lambda:self.config,
             repository_ready=lambda repo:False,review_repository_ready=lambda repo:True,clock=lambda:self.now)
         self.driver=EffectController(self.store,self.github,admission=self.admission,clock=lambda:self.now)
@@ -35,7 +36,15 @@ class ReviewPolicyTests(unittest.TestCase):
 
     def check(self,item,role,candidate,external_id,conclusion,summary,**options):
         if options.get('observe_only'):return self.checks.get(external_id)
-        return self.checks.setdefault(external_id,len(self.checks)+1)
+        check_id=self.checks.setdefault(external_id,len(self.checks)+1)
+        if role=='controller':self.policy_runs[external_id]=(check_id,candidate['head'],conclusion)
+        return check_id
+
+    def policy_current(self,item,external_ids):
+        runs=[(effect_id,value) for effect_id,value in self.policy_runs.items() if value[1]==item['candidate']['head']]
+        if not runs:return False
+        effect_id,(_,_,conclusion)=max(runs,key=lambda row:row[1][0])
+        return effect_id in external_ids and conclusion=='success'
 
     def command(self,unit):
         self.serial+=1
@@ -215,3 +224,92 @@ class ReviewPolicyTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             unit=db.execute('SELECT current_candidate_id,state FROM units WHERE id=?',(row['unit_id'],)).fetchone()
         self.assertEqual(tuple(unit),(row['candidate_id'],'merging'))
+
+    def test_peer_retirement_republishes_masked_success_then_stays_stable(self):
+        for change in ('closed','new_head'):
+            with self.subTest(change=change):
+                self.setUp()
+                first=self.admit();self.passed(first)
+                controller=MergeController(self.store,admission=self.admission,clock=lambda:self.now)
+                old=controller.step(first['unit_id'])['effect_id'];self.driver.step(old)
+                peer=self.admit(8);self.driver.step(peer['effect_id'])
+                if change=='closed':self.remotes[8]['state']='closed'
+                else:self.remotes[8]['head']['sha']='c'*40
+                self.observer.observe(normalize_source(self.remotes[8],repo_id=1,repo='owner/repo'),policy_hash=self.policy)
+                fresh=controller.step(first['unit_id'])['effect_id']
+                self.assertNotEqual(fresh,old)
+                self.assertEqual(self.driver.step(fresh)['status'],'confirmed')
+                self.assertEqual(controller.step(first['unit_id'])['effect_id'],fresh)
+
+    def test_two_passed_peers_reuse_latest_sibling_green_without_ping_pong(self):
+        first=self.admit();self.passed(first);second=self.admit(8);self.passed(second)
+        controller=MergeController(self.store,admission=self.admission,clock=lambda:self.now)
+        one=controller.step(first['unit_id'])['effect_id'];self.driver.step(one)
+        two=controller.step(second['unit_id'])['effect_id'];self.driver.step(two)
+        for _ in range(3):
+            self.assertEqual(controller.step(first['unit_id'])['effect_id'],one)
+            self.assertEqual(controller.step(second['unit_id'])['effect_id'],two)
+        self.assertEqual(len(self.policy_runs),4)
+
+    def test_latest_policy_observation_requires_exact_current_app_head_and_effect(self):
+        from forge.factory.github import GitHub
+        remote=Mock();remote.connection.return_value={'app_id':10}
+        item={'candidate':{'head':'a'*40}}
+        run=dict(id=1,name='forge/merge-policy',app={'id':10},head_sha='a'*40,
+                 external_id='old',status='completed',conclusion='success')
+        remote.pages.return_value=[run,{**run,'id':2,'external_id':'peer','status':'in_progress','conclusion':None}]
+        self.assertFalse(GitHub.review_policy_current(remote,item,['old']))
+        remote.pages.return_value[1].update(status='completed',conclusion='success')
+        self.assertTrue(GitHub.review_policy_current(remote,item,['old','peer']))
+        remote.pages.return_value[1]['head_sha']='b'*40
+        self.assertFalse(GitHub.review_policy_current(remote,item,['old','peer']))
+
+
+class ForgePeerPolicyTests(unittest.TestCase):
+    from tests.test_store_merge_controller import MergeControllerTests as Helpers
+    setUp=Helpers.setUp
+    current_config=Helpers.current_config
+    authorize=Helpers.authorize
+    view=Helpers.view
+    command=Helpers.command
+    identity=Helpers.identity
+    prepare_candidate=Helpers.prepare_candidate
+
+    def test_forge_success_waits_for_human_peer_then_both_authorities_progress(self):
+        forge=self.prepare_candidate();previous=self.admission(forge)
+        self.assertIsNotNone(previous)
+        human=dict(number=8,title='Human change',body='Expected behavior',state='open',draft=False,merged=False,
+            user={'id':44,'login':'alice','type':'User'},labels=[],
+            head={'sha':'a'*40,'ref':'feature','repo':{'id':2,'full_name':'alice/fork'}},
+            base={'sha':'b'*40,'ref':'main','repo':{'id':1,'full_name':'owner/repo'}})
+        observer=ReviewPullRequests(self.store,clock=lambda:self.now)
+        peer=observer.observe(normalize_source(human,repo_id=1,repo='owner/repo'),policy_hash=self.identity()['policy_hash'])
+        original_pr=self.remote.pr
+        self.remote.pr=lambda item,number:copy.deepcopy(human) if number==8 else original_pr(item,number)
+        effects=Effects(self.store,clock=lambda:self.now)
+        self.assertIsNone(self.admission(forge))
+        with self.assertRaisesRegex(TransitionError,'peer candidates changed'):
+            effects.queue_merge(self.command(),forge['candidate_id'],policy_hash=self.identity()['policy_hash'],authorization=previous)
+        with self.store.read_snapshot() as db:
+            initial=db.execute('SELECT id FROM external_effects WHERE unit_id=?',(peer['unit_id'],)).fetchone()[0]
+        EffectController(self.store,self.remote,admission=self.admission,clock=lambda:self.now).step(initial)
+        # Independent human evidence is fixture data; the Forge side above uses
+        # actual Build/Review/Audit lifecycle acceptance and cleanup receipts.
+        with self.store.write() as db:
+            db.execute("UPDATE units SET state='auditing' WHERE id=?",(peer['unit_id'],))
+            db.execute("UPDATE units SET state='merging' WHERE id=?",(peer['unit_id'],))
+            for role,check in (('review',13),('audit',14)):
+                db.execute('INSERT INTO candidate_evidence(id,unit_id,candidate_id,kind,verdict,actor_id,observed_at,details_json) '
+                    'VALUES(?,?,?,?,?,?,?,?)',(peer['candidate_id']+role,peer['unit_id'],peer['candidate_id'],role,'pass',role,self.now,
+                    json.dumps({'check_id':check})))
+                self.remote.runs.append(dict(id=check,name='forge/'+role,app={'id':101 if role=='review' else 102},
+                    head_sha='a'*40,status='completed',conclusion='success'))
+        proof=self.admission(forge);self.assertIsNotNone(proof)
+        human_proof=self.admission.evaluate_review_policy(peer);self.assertIsNotNone(human_proof)
+        self.assertEqual(len(proof['peer_pins']),2)
+        effects.queue_merge(self.command(),forge['candidate_id'],policy_hash=self.identity()['policy_hash'],authorization=proof)
+        with self.store.read_snapshot() as db:
+            version=db.execute('SELECT version FROM units WHERE id=?',(peer['unit_id'],)).fetchone()[0]
+        effects.queue_review_policy(Command('human-policy','supervisor:review-policy',peer['unit_id'],version),
+            peer['candidate_id'],authorization=human_proof)
+        self.assertEqual(self.remote.merge_calls,0)

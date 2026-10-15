@@ -789,7 +789,7 @@ class GitHub:
             # accepted verdict; the review-policy adapter verifies every peer
             # before publishing success for that shared commit.
             current = (next((run for run in own if run['id'] == accepted['check_id']), None)
-                       if item.get('review_source') else max(own, key=lambda r: r['id']))
+                       if item.get('review_source') or item.get('review_peer_scope') else max(own, key=lambda r: r['id']))
             if current is None:
                 return False
             if (current.get('head_sha', candidate_value['head']) != candidate_value['head']
@@ -797,6 +797,18 @@ class GitHub:
                     or current.get('status') != 'completed'):
                 return False
         return True
+
+    def review_policy_current(self,item,external_ids):
+        """Observe the aggregate head check; never replace/cancel a sibling run."""
+        if not isinstance(external_ids,list) or not 1<=len(external_ids)<=20:
+            raise ValueError('Review policy observation requires bounded exact effect identities')
+        head=item['candidate']['head'];app_id=self.connection('controller')['app_id']
+        runs=self.pages('controller',item,f"/commits/{head}/check-runs?filter=all",'check_runs')
+        owned=[run for run in runs if run.get('name')=='forge/merge-policy' and (run.get('app') or {}).get('id')==app_id]
+        if not owned:return False
+        latest=max(owned,key=lambda run:run['id'])
+        return (latest.get('external_id') in external_ids and latest.get('head_sha')==head
+                and latest.get('status')=='completed' and latest.get('conclusion')=='success')
 
     MERGE_REFUSALS = {
         405: 'branch rules still block it; check required approvals, checks, and the controller bypass in Repository setup',

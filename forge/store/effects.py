@@ -98,6 +98,11 @@ class Effects(Lifecycle):
                                 'ORDER BY observed_at DESC,rowid DESC LIMIT 1', (candidate['id'], role)).fetchone()
             if latest is None or latest[0] != 'pass':
                 raise TransitionError('merge requires current passing review and audit evidence')
+        if db.execute("SELECT 1 FROM units u JOIN candidates c ON c.id=u.current_candidate_id "
+                "JOIN review_candidate_sources s ON s.candidate_id=c.id WHERE u.repository_id=? "
+                "AND c.head_oid=? AND u.state NOT IN ('merged','closed') LIMIT 1",
+                (unit['repository_id'],candidate['head_oid'])).fetchone():
+            self._review_peers_ready(db,unit,candidate,authorization)
 
     @staticmethod
     def _verdict_ready(db, unit, candidate, job_id):
@@ -189,10 +194,6 @@ class Effects(Lifecycle):
         if len(rows)>20 or pins!=authorization.get('peer_pins'):
             raise TransitionError('Review policy peer candidates changed')
         for peer in rows:
-            if peer['source_hash'] is None:
-                confirmed=db.execute("SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
-                    "WHERE c.candidate_id=? AND e.kind='github_merge' AND e.status='confirmed'",(peer['candidate_id'],)).fetchone()
-                if not confirmed:raise TransitionError('Another Forge candidate owns this commit')
             if peer['state']!='merging' or applicable_gates(db,dict(peer),candidate_id=peer['candidate_id']):
                 raise TransitionError('A pull request sharing this commit still has obligations')
             if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0',(peer['id'],)).fetchone():
