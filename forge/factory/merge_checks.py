@@ -28,6 +28,9 @@ class ReviewPullsController:
         return self.config() if callable(self.config) else self.config
 
     def _observe(self, item, remote, *, expected_version):
+        from ..install_scope import pending
+        if pending(self.store):
+            return {'admitted': False, 'reason': 'installation_smoke'}
         config = self._config()
         source = normalize_source(remote, item['repo_id'], item['repo'])
         enabled = bool(config['enabled'])
@@ -40,6 +43,9 @@ class ReviewPullsController:
 
     def reconcile(self, item, pulls):
         """Discover candidates from a complete inventory; bound units refresh in cycle."""
+        from ..install_scope import pending
+        if pending(self.store):
+            return []
         config = self._config()
         if merge_check_scope(config, item['repo_id']) != 'all' or not config['enabled']:
             return []

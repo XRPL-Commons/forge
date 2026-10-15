@@ -44,6 +44,7 @@ class Publisher:
         if (capability['strategy']!=target['strategy'] or capability.get('app_id')!=target['app_id']
                 or target['signing_qualified'] is not True):raise PublicationClaim('publication_capability_changed')
         self.workflows_granted=capability.get('workflows_granted') is True
+        self.workflow_edits_allowed=capability.get('workflow_edits_allowed', True)
         connection=self.github.connection('controller',job['repo_id'])
         if connection.get('app_id')!=target['app_id']:raise PublicationClaim('publication_app_changed')
 
@@ -217,6 +218,8 @@ class Publisher:
             output=self.output_loader(intent['job_id'])
             if output.digest()!=intent['output_digest']:raise PublicationClaim('publication_output_changed')
             self.workflow_needed=any(path.startswith('.github/workflows/') for path in output.facts.get('protected_paths',[]))
+            if self.workflow_needed and not self.workflow_edits_allowed:
+                raise PublicationClaim('workflow_edits_not_allowed')
             target=intent['target'];bot=self.github.publisher('controller')
             base=output.source['base_oid'];before=target['expected_head_oid'];parent=before or base;force=False
             marker='Forge-Publication: '+identifier+'\nForge-Output: '+output.digest()

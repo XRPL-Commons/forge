@@ -30,6 +30,9 @@ DEFAULT = {
     # Which pull requests the forge/merge-policy check covers: 'all' (default)
     # or 'forge' (only Forge-created PRs). Keyed by immutable repository ID.
     'repository_merge_check_scopes': {},
+    # Explicit per-repository installation choices; absent retains existing
+    # App-grant behavior for factories installed before this setting existed.
+    'repository_workflow_edits': {},
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -177,6 +180,11 @@ def _validate(value, installed):
             or any(not isinstance(key,str) or not re.fullmatch(r'[1-9][0-9]*',key)
                    or int(key)>=2**53 or not isinstance(scope,str) or scope not in MERGE_CHECK_SCOPES for key,scope in scopes.items())):
         raise ValueError('Repository merge-check scopes map immutable GitHub IDs to all or forge')
+    workflows = config['repository_workflow_edits']
+    if (not isinstance(workflows, dict) or len(workflows) > 10000
+            or any(not isinstance(key, str) or not re.fullmatch(r'[1-9][0-9]*', key)
+                   or int(key) >= 2**53 or type(allowed) is not bool for key, allowed in workflows.items())):
+        raise ValueError('Repository workflow permissions map immutable GitHub IDs to booleans')
     from .verification import validate_profiles as validate_verification
     validate_verification(config['repository_verification'])
     return config

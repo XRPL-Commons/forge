@@ -78,10 +78,6 @@ def observe(intent, installation, github, *, run=run_bounded):
         tailnet, joined = {}, False
     items.append(finding('local.tailnet', 'pass' if joined else 'needs_you', 'Join this computer to the intended private tailnet.', command=['tailscale', 'up']))
     collisions = [row for row in (tailnet.get('Peer') or {}).values() if row.get('HostName') == intent['hostname']]
-    state = installation.journal.read() or {}
-    same_host = bool(state.get('origin') and any(state['origin'] == 'https://' + row.get('DNSName', '').rstrip('.') for row in collisions))
-    items.append(finding('network.hostname', 'pass' if not collisions or same_host else 'needs_you',
-                         'Tailnet hostname is available or already belongs to this installation.'))
     owner = intent['owner']
     authority = owner['type'] == 'User' and owner['id'] == actor['id']
     if owner['type'] == 'Organization':
@@ -127,6 +123,15 @@ def observe(intent, installation, github, *, run=run_bounded):
         items.append(finding('egress.' + name, 'pass' if reachable else 'needs_you', 'Host TLS egress to ' + name))
     tailnet = remote['tailnet']
     joined = tailnet and tailnet.get('state') == 'Running'
+    # The SSH plan verifies the target before this read-only host observation.
+    # Reset preserves its Tailscale node but archives the installer journal, so
+    # bind collisions to the live node identity instead of a saved origin URL.
+    same_host = bool(joined and tailnet.get('node_id') and tailnet.get('dns_name')
+                     and all(row.get('ID') == tailnet['node_id']
+                             and row.get('DNSName', '').rstrip('.') == tailnet['dns_name'].rstrip('.')
+                             for row in collisions))
+    items.append(finding('network.hostname', 'pass' if not collisions or same_host else 'needs_you',
+                         'Tailnet hostname is available or belongs to the verified SSH target.'))
     items.append(finding('network.certificates', 'pass' if joined and tailnet.get('cert_domains') else 'needs_you' if joined else 'will_fix_automatically',
                          'HTTPS certificate domains must be available after tailnet join.', command=['open', 'https://login.tailscale.com/admin/dns']))
     for provider in intent['providers']:

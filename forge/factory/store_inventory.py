@@ -79,6 +79,9 @@ class StoreInventory:
         number = remote.get('number')
         if type(number) is not int or number < 1 or 'pull_request' in remote:
             return None
+        from ..install_scope import issue_allowed
+        if not issue_allowed(self.store, repo['id'], number):
+            return None
         key = f"{repo['id']}:{number}"
         title, body = remote['title'], remote.get('body') or ''
         if not isinstance(title, str) or not isinstance(body, str) or len(body.encode()) > 1048576:
@@ -306,6 +309,9 @@ class DiscoveryController:
                 'AND d.revision_id=i.current_revision_id AND d.retry_after>?) ORDER BY i.id LIMIT ?', (after, self.config['ready_label'], self.clock(), limit + 1)).fetchall()
         results = []
         for row in rows[:limit]:
+            from ..install_scope import issue_allowed
+            if not issue_allowed(self.store, row['repo_id'], row['github_number']):
+                continue
             item = dict(repo=row['full_name'], repo_id=row['repo_id'], number=row['github_number'])
             try:
                 if not self.settings.admission(item['repo'])['allowed']:

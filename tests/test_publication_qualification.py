@@ -147,6 +147,26 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(self.access.writes, before)
         self.assertIsNone(Configuration(self.store).get('publication_signing', '1'))
 
+    def test_installation_request_survives_lost_response_without_a_new_commit(self):
+        request = 'f' * 32
+        first = self.run_probe(apply=True, request_id=request)
+        self.assertEqual(first['receipt_id'], request)
+        writes = deepcopy(self.access.writes)
+        # The coordinator knows the request identity before sending anything,
+        # so even losing the whole response cannot create another probe.
+        again = self.run_probe(apply=True, request_id=request)
+        self.assertEqual(again['status'], 'qualified')
+        self.assertEqual(self.access.writes, writes)
+
+    def test_installation_uncertainty_is_not_retried_as_a_fresh_probe(self):
+        self.access.uncertain = True
+        request = 'e' * 32
+        first = self.run_probe(apply=True, request_id=request)
+        self.assertEqual(first['status'], 'pending')
+        writes = deepcopy(self.access.writes)
+        self.assertEqual(self.run_probe(apply=True, request_id=request)['status'], 'pending')
+        self.assertEqual(self.access.writes, writes)
+
     def test_active_matching_rule_requires_exact_non_bypass_suite(self):
         self.access.rules = [{'type':'required_signatures','ruleset_id':7}]
         self.access.suite_result = 'bypass'

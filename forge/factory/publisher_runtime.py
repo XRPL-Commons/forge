@@ -134,7 +134,13 @@ class PublicationRuntime:
                 if access['app_id']!=capability['app_id']:raise PublicationClaim('publication_app_changed')
                 capability={**capability,'workflows_granted':access['permissions'].get('workflows')=='write'}
             self.capabilities[job['id']]=capability
-        return self.capabilities[job['id']]
+        from ..store.configuration import Configuration
+        current = Configuration(self.store).get('runtime.json')
+        policy = (current['settings'] if current else {}).get('repository_workflow_edits', {})
+        allowed = policy.get(str(job['repo_id']), True)
+        capability = self.capabilities[job['id']]
+        return {**capability, 'workflow_edits_allowed': allowed,
+                'workflows_granted': capability.get('workflows_granted') is True and allowed}
 
     def output(self,job_id):
         if job_id in self.cached:return self.cached[job_id]

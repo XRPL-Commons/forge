@@ -236,6 +236,8 @@ class Settings:
         with self.database.write() as db:
             writable(db)
             self._generation(db, expected_generation)
+            from .install_scope import check_repositories_in
+            check_repositories_in(db, config['repositories'])
             Configuration(self.database, clock=self.clock).replace_in(
                 db, self.domain, config, expected_revision=expected_revision)
             if self.scope == 'live':

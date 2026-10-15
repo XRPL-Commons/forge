@@ -1,94 +1,116 @@
 # Getting set up
 
-Forge needs a running host, GitHub access and a coding account before it can work on issues. The setup screens check each part; work starts only when you choose **Start Forge** or **Enable automation** for a repository.
+Start a new factory from your computer with `forge install`. The CLI handles
+remote installation, saves progress and prints each required browser action.
+You do not need to SSH into the VM or copy configuration files yourself.
+
+```sh
+uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
+forge install --ssh anvil
+```
+
+`anvil` is an example SSH alias. See the [complete installation guide](cli-fresh-host.md)
+for prerequisites, CLI installation, intent files and agent operations.
 
 ```mermaid
 flowchart TD
-  H[Prepare the host] --> A[Create the four GitHub Apps]
-  A --> R[Give all four Apps repository access]
-  R --> P[Check review rules]
-  P --> C[Connect and verify coding accounts]
-  C --> E[Explicitly enable Forge]
+  I[Interview and preflight] --> H[Prepare host and private HTTPS]
+  H --> A[Register and install one Forge GitHub App]
+  A --> C[Connect coding account and qualify repositories]
+  C --> S[Run the selected smoke issue]
+  S --> M[Verify Triage, Build, Review, Audit and Merge]
+  M --> E[Enable selected repositories]
 ```
 
-![Four friendly role cubes bring a repository to the Forge workbench.](assets/setup-hero.svg)
+## What the CLI asks you to do
 
-## Host installation
+The interview records the GitHub owner, operators, repositories, merge policies,
+coding accounts and smoke target. Review the preflight results and confirm Apply.
+The CLI then guides the browser steps:
 
-Start with `forge setup new` on your computer. The [fresh-host wizard](cli-fresh-host.md) handles SSH and installation, then guides private HTTPS, sign-in, GitHub Apps, a coding account and your first repository. It asks before **Start Forge** and follows your chosen issue to its first verified merge. Resume after sign-in with `forge setup continue --ssh HOST`.
+1. Approve the host joining your Tailscale network when required.
+2. Create the Forge App from the supplied GitHub manifest and install it on the
+   named repositories. GitHub may require your passkey.
+3. Sign in to the selected coding provider using the displayed instructions.
 
-You can also open your Forge address to use **Onboarding**. For an existing server, follow the [operator sign-in guide](operator-sign-in.md) if sign-in is not configured. The [host reference](installation.md) covers manually managed installations.
+Personal GitHub administrator credentials stay on your computer. The host stores
+the Forge App's own credentials. The same App provides GitHub sign-in fallback;
+the installing operator's observed Tailscale identity is linked to their GitHub ID.
+Provider login is separate from operator sign-in and GitHub repository access.
 
-Keep administrator credentials on the operator's computer or in the trusted setup process. Forge's workers never need your personal GitHub administrator token.
+Keep the CLI running during its local GitHub handoff. To inspect or resume:
 
-## GitHub App creation
-
-Onboarding starts at **GitHub**. Follow its App registration links, approve each GitHub manifest and install every App on the same selected repositories.
-
-```mermaid
-flowchart TD
-  F[Forge supervisor] --> B[Build App: branch and pull request writes]
-  F --> R[Review App: publish review evidence]
-  F --> A[Audit App: publish security evidence]
-  F --> C[Controller App: coordinate and merge]
-  R --> RO[Review and Audit workers: read-only repository access]
-  A --> RO
-  C --> S[Controller credential stays with supervisor]
+```sh
+forge install --ssh anvil --status
+forge install --ssh anvil --resume --wait 3600
 ```
 
-These are four reusable Apps, not four new registrations for every repository. The separate operator sign-in App identifies you; it does not grant repository access.
+The saved installation and first-merge timer survive resume. Browser actions and
+blockers are reported explicitly; resuming does not create a second installation.
 
-**Refresh access** checks existing installations. To grant access, use GitHub's installation settings, add the repository to all four Apps, then refresh in Forge.
+## One App, independent workers
 
-## Add a repository
+New installations register **one Forge App**. Build, Review, Audit and Controller
+remain separate responsibilities; Review and Audit are produced by independent
+workers. Their verdicts appear as `forge/review` and `forge/audit` checks, and
+`forge/merge-policy` records the merge decision.
 
-For the first repository, continue through Onboarding's **Repository** and **Start** steps. For another, open **Settings → GitHub access → Add repository**.
+The default repository scope requires Forge Review and Audit for all pull
+requests, including human-authored ones. A repository can instead select
+Forge-created PRs only. Existing CI, signing rules and stronger protections remain
+in force. Workflow-file edits are a separate repository permission, disabled by
+default in the installation interview.
 
-![Illustrative repository setup screen: choose a repository, check App access, review the rules, then explicitly enable automation.](assets/settings-screen.svg)
+The CLI checks App access, branch rules, coding accounts, worker isolation and
+signed publication. It qualifies the full database environment when repository
+requirements need it. Provider verification makes real model calls and can consume
+provider usage. See [GitHub setup](github-settings.md) for permissions and rules.
 
-1. **Repository:** choose the repository you want Forge to manage.
-2. **App access:** check that all four Apps can reach it.
-3. **Review rules:** repair anything missing, then check again.
-4. **Enable:** choose **Enable automation** when the checks pass.
+## The first merge and handover
 
-Checking a repository, downloading a ruleset or leaving the wizard does not enable it. Access checks expire after five minutes; recheck if the screen asks.
+While installation is pending, execution is limited to the exact smoke issue.
+The default creates a private smoke repository and a separate publication-probe
+repository. You can choose a real repository and optionally an existing issue.
+These choices and their merge policies are part of the saved intent.
 
-## GitHub repository protection
+Triage must produce an accepted runnable disposition. An unchanged singleton
+`keep` can be accepted under the installation consent through the normal
+acceptance API. Questions, parking, closure and broader proposals require an
+operator decision. Human merge approval and independent holds remain effective.
 
-The review baseline requires pull requests, two approving reviews and dismissal of stale approvals. The Controller App needs a pull-request bypass because Forge validates its own Review and Audit evidence; read-only workers do not supply GitHub's two native approving reviews.
+Completion requires real Build, Review and Audit evidence, worker cleanup, a
+confirmed merge effect and an independent GitHub read of the exact merged PR and
+completed issue. Only then does handover apply the selected repository policies
+and enable the selected repositories. Disposable repositories remain available
+for diagnosis with automation disabled.
 
-If the baseline is missing:
+A prepared host or passing automated tests do not establish that this live
+installation acceptance has succeeded. The CLI reports the recorded proof and
+time to first merge when the run completes.
 
-1. Download the ruleset offered by Forge.
-2. Import it in **GitHub → Repository settings → Rules → Rulesets**.
-3. Review its target branch and bypass actors, then save.
-4. Return to Forge and choose **Check setup** or **Check again**.
+## Existing factories and recovery
 
-Keep this baseline separate from rules that enforce CI or other protections: a bypass applies to the entire ruleset. Existing organization rules and other repository requirements still apply.
+For an active factory, use **Settings** to manage repository access, accounts and
+configuration. **Settings → GitHub access → Add repository** checks access and
+rules before **Enable automation**. Checking or discovering a repository alone
+does not enable it. Refresh expired checks when prompted.
 
-GitHub sometimes hides bypass details from Apps. When Forge asks you to review them, confirm the actual Controller installation in GitHub; do not treat an unreadable setting as verified.
+Older factories may retain four role Apps and a separate sign-in App. Their
+existing setup commands remain available; creating a new installation uses the
+single-App flow above. See the [GitHub reference](github-settings.md) and
+[host operations reference](installation.md) for existing installations.
 
-For existing protections, adjust the matched rule rather than importing duplicates. See the [protection reference](onboarding-reference.md#github-repository-protection) for exact fields and commands.
+**Reset Forge** in Settings fences work and returns the existing installation to
+setup while retaining its SQLite history. A clean Forge reinstall is a separate
+CLI operation with an explicit resource plan:
 
-## Coding provider accounts
+```sh
+forge install --ssh anvil --reset --json
+forge install --ssh anvil --reset --apply --reset-revision PLAN_DIGEST --json
+```
 
-Forge ships Codex, Claude Code and Grok Build. During initial CLI setup, the wizard runs account login on the host for you. On an active factory, open **Settings → Coding accounts** and use the displayed instructions to connect an account. Provider login is separate from GitHub App access and operator sign-in.
+The CLI archives the owned Forge installation after cleanup. It preserves SSH,
+Tailscale, the operating system and GitHub objects. Read the
+[reset procedure](cli-fresh-host.md#clean-reinstall-on-a-test-vm) before applying.
 
-Back in Onboarding, **Verify repository** checks accounts and worker isolation. It makes small real model calls, which can consume provider usage; unchanged successful account checks can be reused for fifteen minutes.
-
-Choose **Start Forge** when verification passes. Ready issues in enabled repositories can then enter the pipeline; see [How an issue moves](issue-state-machine.md).
-
-## Configuration and recovery
-
-Use **Settings** for repository access, accounts and factory configuration. If an issue shows **fix setup**, open it to read the specific problem before retrying.
-
-- **Missing App access:** change the installation in GitHub, then refresh access.
-- **Missing protection:** repair the rule, then check setup again.
-- **Account unavailable:** reconnect or wait for the displayed cooldown in Coding accounts.
-- **Host or isolation failure:** follow [installation troubleshooting](installation.md); verification must pass before work starts.
-
-**Reset Forge** in Settings stops and fences work, checks cleanup and returns the installation to setup. It retains history in the selected SQLite runtime and does not undo published GitHub work; read the confirmation before using it.
-
-A discovered deployment profile is a separate choice. **Confirm** starts observing that deployment; it is not needed merely to enable issue processing.
-
-Continue with [How an issue moves](issue-state-machine.md), or use the [detailed setup reference](onboarding-reference.md) for host commands and protection repair.
+Continue with [How an issue moves](issue-state-machine.md).

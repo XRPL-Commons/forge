@@ -79,6 +79,9 @@ def parser():
     action.add_argument('--resume', action='store_true', help='Re-observe saved stages and resume the same intent')
     action.add_argument('--status', action='store_true', help='Read the local stage journal')
     install.add_argument('--waive', action='append', default=[], help='Explicitly waive a finding marked waivable; repeat for each ID')
+    install.add_argument('--wait', type=int, default=0, help='Follow automated stages for up to 3600 seconds; browser actions remain explicit')
+    install.add_argument('--reset', action='store_true', help='Plan a clean Forge reinstall on this VM; archives the old installation and retains SSH/Tailscale')
+    install.add_argument('--reset-revision', help='Exact reset plan digest; required with --reset --apply')
     install.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     version = sub.add_parser('version', help='Show this client revision and compare an installed server')
     version.add_argument('--ssh', help='Saved SSH destination; read the actual installed server revision')
@@ -92,6 +95,7 @@ def parser():
     login.add_argument('--ssh', required=True)
     login.add_argument('--kind', choices=('browser', 'api_key', 'token'), default='browser')
     login.add_argument('--secret-stdin', action='store_true', help='Read the provider credential privately from stdin')
+    login.add_argument('--retry', action='store_true', help='Start a new Codex device login after the previous attempt failed or expired')
     login.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
     qualification = verb(fresh, 'qualify-boundary', help='Run disposable native worker isolation canaries on the selected host')
@@ -157,7 +161,7 @@ def parser():
             command.add_argument('--apply', action='store_true', help='Apply this explicit setup step')
         if action == 'apps':
             command.add_argument('--role', choices=('build', 'review', 'audit', 'controller'))
-            command.add_argument('--owner', help='GitHub organization or user that owns all four Apps')
+            command.add_argument('--owner', help='GitHub organization or user that owns the Forge App')
         if action == 'account':
             command.add_argument('--provider', required=True, choices=('codex', 'claude', 'grok'))
             command.add_argument('--kind', choices=('browser', 'api_key', 'token'), default='browser')
@@ -250,6 +254,12 @@ def parser():
 
 def execute(args):
     if args.command == 'install':
+        if args.reset:
+            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file),
+                    'invalid_reset', 'Use --reset --ssh HOST, then --reset --apply --reset-revision DIGEST.')
+            from .installer_reset import execute as reset
+            return reset(args)
+        require(args.reset_revision is None, 'invalid_reset', '--reset-revision requires --reset.')
         from .installation import execute as install
         return install(args)
     if args.command == 'version':
@@ -259,6 +269,14 @@ def execute(args):
         from .version import update
         return update(revision=args.revision)
     if args.command == 'account':
+        if args.provider == 'codex' and args.kind == 'browser' and (args.json or args.retry):
+            from .factory_setup import FactorySetup
+            from .install import Installation
+            require(not args.secret_stdin, 'invalid_account', 'Browser sign-in does not accept a secret.')
+            workflow = Installation(args.ssh)
+            with connection_lock(workflow.key, workflow.journal.root):
+                return FactorySetup(workflow).call('device_account', provider='codex', apply=True, retry=args.retry)
+        require(not args.retry, 'invalid_account', '--retry is for Codex browser sign-in.')
         from .factory_setup import execute as account_login
         args.setup_command = 'account'
         args.apply = True
@@ -293,6 +311,11 @@ def execute(args):
             require(args.ssh, 'ssh_required', 'Run forge setup sign-in --ssh HOST with your saved SSH destination.')
             return sign_in(Installation(args.ssh), operator=args.operator, client_id=args.client_id)
         if args.setup_command == 'new' and not args.json and sys.stdin.isatty():
+            if not any((args.name, args.revision, args.host_key, args.new_run)):
+                from .installation import execute as install_factory
+                from types import SimpleNamespace
+                return install_factory(SimpleNamespace(ssh=args.ssh, json=False, intent_file=None,
+                    status=False, resume=False, preflight=False, apply=False, wait=0, waive=[]))
             return wizard(args)
         return install(args)
     if args.command == 'migrate':
@@ -397,13 +420,9 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         result = execute(args)
-        if args.command == 'install' and not args.json and result.get('status') == 'preflight':
-            for row in result['items']:
-                print(row['status'].replace('_', ' ').ljust(23) + row['id'] + ': ' + row['detail'])
-                if row.get('command'):
-                    import shlex
-                    print('  ' + shlex.join(row['command']))
-            print('Saved. Apply with: forge install --ssh ' + (args.ssh or result['host']['ssh']) + ' --apply')
+        if args.command == 'install' and not args.json:
+            from .installation import display
+            display(result)
             return 0
         if args.command == 'skill' and not args.json:
             print(result['skill'])

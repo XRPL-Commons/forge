@@ -83,8 +83,9 @@ def signing_context(call, ref):
 
 class Access:
     """Target read token and scratch write token are separate, repository scoped."""
-    def __init__(self, settings):
+    def __init__(self, settings, *, installation_targets=()):
         self.settings = settings
+        self.installation_targets = installation_targets
         self.github = GitHub(settings, {})
         self.client = settings.client
         self.tokens = []
@@ -108,6 +109,8 @@ class Access:
     def open(self, target_name, scratch_name, *, write=False):
         configured = self.settings.load()
         matches = [row for row in configured['repositories'] if row.get('name') == target_name]
+        if not matches:
+            matches = [row for row in self.installation_targets if row.get('name') == target_name]
         # An operator must connect the target first.
         require(len(matches) == 1, 'target_repository_not_configured')
         repository_id = matches[0].get('id', matches[0].get('repo_id'))
@@ -329,11 +332,14 @@ class Qualification:
                     positive_test=('observed' if 'with_existing_grant' in checks else 'waiting_for_previous_case') if len(cases) == 2 else 'existing_workflows_grant_missing',
                     permission_cause_proven=False, ordinary_qualification_unchanged=True)
 
-    def execute(self, target_name, scratch_name, *, target_branch=None, probe_ref=None, apply=False, receipt_id=None, check_workflow=False):
+    def execute(self, target_name, scratch_name, *, target_branch=None, probe_ref=None, apply=False, receipt_id=None, check_workflow=False, request_id=None):
         require(REPO_PATTERN.fullmatch(target_name or '') and REPO_PATTERN.fullmatch(scratch_name or '') and target_name != scratch_name,
                 'invalid_repository')
         require(receipt_id is None or re.fullmatch('[a-f0-9]{32}', receipt_id), 'invalid_receipt')
-        previous = self.configuration.get('publication_signing_probe', receipt_id) if receipt_id else None
+        require(request_id is None or isinstance(request_id, str) and re.fullmatch('[a-f0-9]{32}', request_id)
+                and receipt_id is None, 'invalid_request_id')
+        identifier = receipt_id or request_id
+        previous = self.configuration.get('publication_signing_probe', identifier) if identifier else None
         require(not receipt_id or previous is not None, 'probe_receipt_missing')
         saved = previous['settings'] if previous else None
         if saved:
@@ -357,7 +363,7 @@ class Qualification:
                     'workflows_granted': self.access.permissions.get('workflows') == 'write', 'workflow_test': 'separate_probe_required'}
         if check_workflow:
             return self.workflow(saved)
-        receipt = saved or dict(id=uuid.uuid4().hex, version=2, stage='prepared', observed_at=self.clock(), **context)
+        receipt = saved or dict(id=request_id or uuid.uuid4().hex, version=2, stage='prepared', observed_at=self.clock(), **context)
         try:
             if not saved:
                 self.save(receipt)
@@ -396,7 +402,7 @@ def main():
             and type(value['apply']) is bool and type(value['check_workflow']) is bool, 'invalid_request')
     store = selected(args.root)
     require(store is not None, 'sqlite_runtime_required')
-    access = Access(Settings(args.root))
+    access = Access(Settings(args.root, scope='active'))
     try:
         with request_scope(until=time.monotonic() + 210):
             report = Qualification(store, access).execute(value['repo'], value['probe_repo'], target_branch=value['target_branch'],

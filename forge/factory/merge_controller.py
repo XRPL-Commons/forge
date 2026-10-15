@@ -71,7 +71,8 @@ class MergeAdmission:
             return {'authorization': authorization, 'approval_observation': observation, 'mergeability_observation': mergeability}
 
         item = candidate_snapshot(self.store, effect['unit_id'])
-        if item is None or item['candidate_id'] != effect['candidate_id'] or item.get('review_source'):
+        from ..install_scope import execution_allowed
+        if item is None or item['candidate_id'] != effect['candidate_id'] or item.get('review_source') or not execution_allowed(self.store, item):
             return result(None)
         config = self.config()
         if not isinstance(config, dict) or any(key not in config for key in ('human_required', 'human_reviewers', 'merge_method')):

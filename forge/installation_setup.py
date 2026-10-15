@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 
-from .installation_apps import RoleAppHandoff
+from .installation_apps import RoleAppHandoff, FreshAppConsent
 from .onboarding import Onboarding
 from .repository_requirements import describe
 from .repository_setup import RepositorySetup
@@ -26,6 +26,15 @@ class InstallationSetup:
     def call(self, request):
         fields(request, ('version', 'setup_id', 'actor_id', 'generation', 'action', 'parameters'))
         require(request['version'] == 1)
+        # This module is invoked only by the pinned, administrative SSH installer.
+        # Bootstrap must precede operator authentication on a fresh instance.
+        if request['action'] == 'consent':
+            params = request['parameters']
+            fields(params, ('action', 'binding', 'parameters'))
+            require(params['binding'].get('setup_id') == request['setup_id'])
+            require(type(request['actor_id']) is int and request['actor_id'] in params['binding'].get('operators', []), 'operator_required')
+            return FreshAppConsent(self.root, setup=self.setup).call(
+                params['action'], params['binding'], **params['parameters'])
         self.handoff.operator(request['actor_id'])
         data = self.setup.read()
         action, params = request['action'], request['parameters']
@@ -33,6 +42,11 @@ class InstallationSetup:
                    'authorize': ('instance', 'repository', 'capability'), 'requirements': ('repository',),
                    'verify_repository': ('repository', 'revision'), 'check': ('revision',),
                    'start': ('revision',), 'account': ('provider', 'kind', 'secret'),
+                   'smoke_bind': ('binding',), 'smoke_status': (), 'smoke_handover': (), 'smoke_launch': (),
+                   'smoke_issue': ('intent_digest', 'repository', 'number', 'started_at'),
+                   'publication': ('repository', 'probe_repository', 'request_id', 'apply'),
+                   'identity': ('tailnet_operator', 'apply'),
+                   'device_account': ('provider', 'apply', 'retry'),
                    'pilot': ('repository', 'number', 'started_at')}
         require(action in allowed, 'invalid_action', 'Unknown installation setup action.')
         fields(params, allowed[action])
@@ -43,7 +57,22 @@ class InstallationSetup:
             return proof(self.root, **params)
         if action == 'status':
             return self.view()
-        require(data['phase'] == 'setup' or action == 'account' and data['phase'] == 'active', 'setup_complete', 'Factory is active; use the scoped repository commands.')
+        if action.startswith('smoke_'):
+            from .installation_smoke import InstallationSmoke
+            return InstallationSmoke(self.root, setup=self.setup).call(action.removeprefix('smoke_'), params,
+                setup_id=request['setup_id'], generation=request['generation'])
+        if action == 'publication':
+            from .installation_publication import qualify
+            return qualify(root=self.root, setup=self.setup, **params)
+        if action == 'identity':
+            from .installation_identity import configure
+            return configure(self.root, setup=self.setup, actor_id=request['actor_id'], **params)
+        if action == 'device_account':
+            from .installation_accounts import DeviceAccount
+            return DeviceAccount(self.root, setup=self.setup).call(**params,
+                setup_id=request['setup_id'], generation=request['generation'])
+        require(data['phase'] == 'setup' or action in ('account', 'requirements', 'verify_repository', 'authorize')
+                and data['phase'] == 'active', 'setup_complete', 'Factory is active; use the scoped repository commands.')
         if action == 'app':
             return self.handoff.begin(setup_id=request['setup_id'], actor_id=request['actor_id'],
                                       generation=request['generation'], **params)
@@ -51,7 +80,11 @@ class InstallationSetup:
             self.setup.refresh()
         elif action in ('authorize', 'requirements', 'verify_repository', 'select'):
             target = repository(params['repository'])
-            settings = self.setup.settings()
+            if data['phase'] == 'active':
+                from .settings import Settings
+                settings = Settings(self.root, scope='active')
+            else:
+                settings = self.setup.settings()
             if action == 'authorize':
                 require(params['instance'] == self.store.instance_id
                         and params['capability'] in ('repositories:read', 'repositories:prepare'),
@@ -60,7 +93,7 @@ class InstallationSetup:
             if action == 'verify_repository':
                 require(params['revision'] == settings.view()['revision'], 'setup_changed', 'Repository setup changed.')
                 require(settings.refresh(), 'setup_busy', 'Repository access refresh is already running.')
-                view = describe(settings, target, initial_setup=True)
+                view = describe(settings, target, initial_setup=data['phase'] != 'active')
                 if view['readiness']['discovered']:
                     require(RepositorySetup(settings).check(target['id'], params['revision']),
                             'setup_busy', 'Repository checks are already running.')
@@ -70,7 +103,7 @@ class InstallationSetup:
                 if data.get('selected') != target:
                     self.setup.select(target['id'])
             else:
-                return describe(settings, target, initial_setup=True)
+                return describe(settings, target, initial_setup=data['phase'] != 'active')
         elif action == 'account':
             require(params['kind'] in ('api_key', 'token') and isinstance(params['secret'], str)
                     and 16 <= len(params['secret']) <= 16384, 'invalid_account', 'Enter the selected provider credential privately.')
