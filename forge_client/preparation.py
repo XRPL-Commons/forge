@@ -131,8 +131,10 @@ class Preparation:
                                     'kind': 'open_url',
                                     'url': self.github.installation_url(target, step['installation_id']),
                                     'reason': 'Check this App installation and grant the repository access.'}]}
-            elif step['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass'):
+            elif step['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass', 'github.ruleset.repair_baseline'):
                 from .rules import apply as repair
+                require(fresh['readiness']['access_ready'], 'app_access_unverified',
+                        'Verify the current Forge App installation before changing branch protections.')
                 try:
                     self.progress('started', step)
                     repair(self.github, target, step, self.apps['controller']['app_id'])

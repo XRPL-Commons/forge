@@ -141,7 +141,7 @@ class Workflow:
             if action in ('setup', 'verify'):
                 observed = self.verify(self.target, self.requirements(self.target)['revision'])
             if uncertain:
-                if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass'):
+                if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass', 'github.ruleset.repair_baseline'):
                     from .rules import confirmed
                     if not confirmed(self.github, self.github.repository(self.target['name']), uncertain):
                         return self.result({'status': 'write_unconfirmed', 'next_actions': [{'kind': 'inspect_previous_bypass_write'}]})
