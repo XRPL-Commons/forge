@@ -72,7 +72,9 @@ class IdentityMigration:
 
     def apply_apps(self, revision):
         try:
-            return self.apps.apply(revision)
+            result = self.apps.apply(revision)
+            checked = self.settings.refresh_all()
+            return {**result, 'protection_check': 'complete' if checked else 'pending'}
         except ConsolidationError as error:
             raise MigrationError(error.code, str(error)) from None
 

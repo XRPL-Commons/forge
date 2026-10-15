@@ -224,6 +224,10 @@ def project_unit(db, unit_id):
                 display_status=status.describe(blocker["code"] if blocker else unit["state"]),
                 reason_code=blocker["code"] if blocker else None,
                 members=members, charged_failures=_charges(db, unit))
+    from .scheduling import current_in, execution_condition_in
+    unit['execution_condition'] = execution_condition_in(db, unit,
+        gates=[member['current_blocker'] for member in members if member['current_blocker']],
+        action=current_in(db, unit))
     return unit
 
 

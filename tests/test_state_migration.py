@@ -4,8 +4,6 @@ import unittest
 from unittest.mock import patch
 
 from forge.store import db as storage, upgrade
-from forge.store.queries import Queries
-from forge.store.transitions import project_unit
 from tests import test_publications as publication_fixture
 
 
@@ -17,10 +15,10 @@ class StateMigrationTests(unittest.TestCase):
         self.check_migration('uncertain')
 
     def check_migration(self, publication_status):
-        def old_unit(query,unit_id):
-            # Schema 3 predates the unified-outbox execution-condition query.
-            with query.store.read_snapshot() as db:return project_unit(db,unit_id)
-        with patch('forge.store.db._migrations',return_value=storage._migrations()[:3]), patch.object(Queries,'unit',old_unit):
+        # Build the historical fixture without the schema-4-only read projection.
+        # The actual upgrade and all preservation assertions run without mocks.
+        with patch('forge.store.db._migrations',return_value=storage._migrations()[:3]), \
+                patch('forge.store.scheduling.execution_condition_in',return_value=None):
             fixture=publication_fixture.PublicationLedgerTests()
             fixture.setUp()
         self.addCleanup(fixture.doCleanups)

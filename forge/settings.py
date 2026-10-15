@@ -472,7 +472,8 @@ class Settings:
     def refresh_all(self):
         from .repository_setup import RepositorySetup
         if self.refresh():
-            RepositorySetup(self).check()
+            return RepositorySetup(self).check()
+        return False
 
     def watch(self):
         while True:

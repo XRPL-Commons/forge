@@ -42,7 +42,7 @@ class StoreQueryTests(unittest.TestCase):
             db.execute(
                 'INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at,close_code) '
                 "VALUES(?,1,'main',?,1,1,?)",
-                (unit, 'closed' if number == 4 else 'queued', 'operator_closed' if number == 4 else None),
+                (unit, 'closed' if number == 4 else 'building', 'operator_closed' if number == 4 else None),
             )
             db.execute(
                 'INSERT INTO events(transaction_id,unit_id,kind,at,payload_json) '

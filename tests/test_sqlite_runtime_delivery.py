@@ -68,6 +68,13 @@ class Runner(DeliveryRunner):
     def capture(self,job):
         if job['role']!='triage':
             return super().capture(job)
+        context=self.planning_contexts[job['id']]
+        if 'steward_dossiers' in context:
+            from tests.steward_subject_fixture import output, row_choice
+            decisions=[output(dossier,[row_choice('keep',dossier['authority']['anchor_issue_id'])])
+                       for dossier in context['steward_dossiers']]
+            return {'result':{'version':1,'decisions':decisions,'metadata':{'reply':'Keep current work','notes':[],'handoff':None}},
+                    'logs':'Read-only planning complete','execution':{'exit_code':0}}
         return {'result':{'version':1,'attempt':job['id'],'role':'triage','outcome':'pass',
             'summary':'Keep the current delivery plan','rows':[
                 {'action':'keep','members':[issue['issue_id']],'reason':'Existing work remains useful',

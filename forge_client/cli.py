@@ -227,6 +227,14 @@ def parser():
     mode.add_argument('--apply', action='store_true', help='Configure the selected host')
     mode.add_argument('--resume', action='store_true', help='Finish an interrupted setup without another secret')
     setup.add_argument('--secret-stdin', action='store_true', help='Read the identity-app secret from stdin; never a command argument')
+    identity = server.add_parser('identity', help='Migrate an existing installation to one App and trusted operator sign-in')
+    identity.add_argument('identity_command', choices=('plan','apps','sign-in','tailscale'))
+    for name in ('ssh','source','root','service-user'):
+        identity.add_argument('--'+name, required=True)
+    identity.add_argument('--revision', help='Exact revision returned by the identity plan; required for apps')
+    identity.add_argument('--mode', choices=('tailscale','github'), default='tailscale')
+    identity.add_argument('--secret-stdin', action='store_true', help='Read the same-App sign-in secret privately from stdin')
+    identity.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     migration = sub.add_parser('migrate', help='Apply a schema upgrade to an installation that already uses SQLite')
     migration.add_argument('migration_command', choices=('upgrade',))
     for name in ('ssh','source','root'):
@@ -295,6 +303,9 @@ def execute(args):
         from importlib.resources import files
         return {'skill': files('forge_client').joinpath('skills/forge-repositories/SKILL.md').read_text()}
     if args.command == 'server':
+        if args.server_command == 'identity':
+            from .server_identity import execute as identity_migration
+            return identity_migration(args)
         from .bootstrap import setup
         return setup(args)
     if args.command == 'commands':
@@ -302,7 +313,7 @@ def execute(args):
         from forge.planning_contract import commands as planning_commands
         from .install import schemas
         from .installation import schemas as installation_schemas
-        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup qualify-roles', 'setup qualification-diagnostic', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup qualify-roles', 'setup qualification-diagnostic', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume', 'server identity plan', 'server identity apps', 'server identity sign-in', 'server identity tailscale'],
                 'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),

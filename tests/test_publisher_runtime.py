@@ -126,7 +126,8 @@ class IntegratedPublicationTests(unittest.TestCase):
             pull_number=None,app_id=42,strategy='rest',signing_qualified=True,authorization=authority)
         fixture=SimpleNamespace(store=f.store,source=source,job=job['id'],launch=job,target=target)
         ledger.bind_source(fixture)
-        report=dict(version=1,attempt=job['id'],role='build',outcome='pass',summary='Combined change',delegation_plan=None,
+        report=dict(version=2,attempt=job['id'],role='build',outcome='done',summary='Combined change',delegation_plan=None,
+                    headline='Combined change',plain='The change is complete.',operator_summary='The change is complete.',claims=[],verification=None,
                     output_commit=head,pr_title='Combined change',pr_body='Fixes #1\nFixes #2')
         export=dict(version=1,job_id=job['id'],input_manifest_hash=source['manifest_digest'],base_oid=f.base,local_head_oid=head,
                     object_format='sha1',source_digest=source_inputs.digest(source),bundle_digest=hashlib.sha256(content).hexdigest(),bundle_size=len(content))

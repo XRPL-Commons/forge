@@ -60,8 +60,11 @@ class IdentityMigrationTests(unittest.TestCase):
         # A crash after the sign-in step: the apps step still applies later.
         self.migration.apply_sign_in('a' * 40)
         self.assertEqual(self.migration.apply_sign_in('a' * 40), {'status': 'unchanged'})
-        self.migration.apply_apps(plan['revision'])
-        self.migration.apply_apps(plan['revision'])
+        with patch('forge.repository_setup.RepositorySetup') as setup:
+            setup.return_value.check.return_value = True
+            self.assertEqual(self.migration.apply_apps(plan['revision'])['protection_check'], 'complete')
+            self.migration.apply_apps(plan['revision'])
+            self.assertEqual(setup.return_value.check.call_count, 2)
         self.migration.apply_tailscale()
         self.assertEqual(self.migration.apply_tailscale(), {'mode': 'tailscale', 'changed': False})
         after = self.migration.plan(app_client_id='Iv23liForgeApp')
@@ -74,6 +77,16 @@ class IdentityMigrationTests(unittest.TestCase):
         for table in ('operator_identities', 'external_effects', 'client_connections'):
             self.assertEqual(current[table], before[table])
         self.assertGreater(current['operator_audit'], before['operator_audit'])
+
+    def test_skipped_protection_refresh_is_reported_pending_and_repeatable(self):
+        plan = self.migration.plan(app_client_id='Iv23liForgeApp')
+        with patch.object(self.settings, 'refresh', return_value=False), \
+                patch('forge.repository_setup.RepositorySetup') as setup:
+            self.assertEqual(self.migration.apply_apps(plan['revision'])['protection_check'], 'pending')
+            setup.assert_not_called()
+        with patch('forge.repository_setup.RepositorySetup') as setup:
+            setup.return_value.check.return_value = True
+            self.assertEqual(self.migration.apply_apps(plan['revision'])['protection_check'], 'complete')
 
     def test_sign_in_only_moves_to_the_forge_apps_own_client(self):
         with self.assertRaises(MigrationError) as raised:

@@ -22,7 +22,7 @@ class StoreArtifactTests(unittest.TestCase):
         self.expiry = 100.0 + 30 * 86400
         with self.store.write() as db:
             db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'owner/repo')")
-            db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES('u',1,'main','queued',0,0)")
+            db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES('u',1,'main','building',0,0)")
         self.job("j")
 
     def job(self, job_id, *, cleaned=True, candidate_id=None):

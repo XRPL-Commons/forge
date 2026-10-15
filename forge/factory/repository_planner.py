@@ -130,6 +130,7 @@ class RepositoryPlanner:
             return {'phase':'collecting','error':'triage_worker_unavailable'}
 
     def _finish(self,job):
+        job=self.plans.job(job['id'],context=True)
         capture=job.get('capture') or {};result=capture.get('result')
         steward=bool(job.get('steward_mode')=='triage')
         valid=(isinstance(result,dict) and result.get('attempt')==job['id'] and result.get('role')=='triage'

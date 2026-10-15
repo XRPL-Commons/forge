@@ -50,10 +50,6 @@ class Queries:
     def unit(self, unit_id):
         with self.store.read_snapshot() as connection:
             unit = project_unit(connection, unit_id)
-            from .scheduling import current_in, execution_condition_in
-            unit['execution_condition'] = execution_condition_in(connection, unit,
-                gates=[member['current_blocker'] for member in unit['members'] if member['current_blocker']],
-                action=current_in(connection, unit))
             return unit
 
     @staticmethod

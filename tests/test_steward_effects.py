@@ -52,7 +52,7 @@ class StewardEffectsTests(unittest.TestCase):
         self.assertEqual(self.service.view('i')['decision']['application']['status'],'pending')
         self.assertEqual(self.driver.step(effects[0])['status'],'confirmed')
         self.assertEqual(self.service.view('i')['decision']['application']['status'],'applied')
-        self.assertEqual(self.f.view()['state'],'queued')
+        self.assertEqual(self.f.view()['state'],'building')
         self.driver.step(effects[0]); self.assertEqual(len(self.writes),1)
 
     def test_lost_post_reply_is_reconciled_without_resending(self):
@@ -115,7 +115,7 @@ class StewardEffectsTests(unittest.TestCase):
     def test_drop_comments_before_closing_and_only_then_settles_locally(self):
         _,effects=self.queue('drop',{'intent_note':'This work is no longer needed.'})
         self.assertEqual(self.driver.step(effects[-1])['reason'],'earlier_step')
-        self.driver.step(effects[0]); self.assertEqual(self.f.view()['state'],'queued')
+        self.driver.step(effects[0]); self.assertEqual(self.f.view()['state'],'building')
         self.driver.step(effects[1]); self.assertEqual(self.f.view()['state'],'closed')
         self.assertEqual([write[0] for write in self.writes],['POST','PATCH'])
 
@@ -143,7 +143,7 @@ class StewardEffectsTests(unittest.TestCase):
         observed=self.observe_closure()
         self.assertEqual(observed['pending'],'steward_issue')
         self.assertEqual(observed['effect_id'],effects[-1])
-        self.assertEqual(self.f.view()['state'],'queued')
+        self.assertEqual(self.f.view()['state'],'building')
         self.f.now+=31
         self.assertEqual(self.driver.step(effects[-1])['status'],'confirmed')
         self.assertEqual(self.f.view()['state'],'closed')
@@ -155,7 +155,7 @@ class StewardEffectsTests(unittest.TestCase):
     def test_single_issue_observation_leaves_settlement_to_the_pending_closure(self):
         _,effects=self.lost_closure(approved=False)
         self.assertEqual(self.observe_closure()['pending'],'steward_issue')
-        self.assertEqual(self.f.view()['state'],'queued')
+        self.assertEqual(self.f.view()['state'],'building')
         self.f.now+=31
         self.assertEqual(self.driver.step(effects[-1])['status'],'confirmed')
         self.assertEqual(self.f.view()['state'],'closed')
