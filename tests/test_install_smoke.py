@@ -149,6 +149,58 @@ class SmokeTests(unittest.TestCase):
             check_repositories_in(db, [{**self.target, 'enabled': True}])
             with self.assertRaises(ValueError): check_repositories_in(db, [{'id': 2, 'name': 'owner/other', 'enabled': True}])
 
+    def test_controller_contention_is_waitable_without_any_smoke_mutation(self):
+        from forge.factory.control import controller_lock
+        self.bind()
+        self.github.reset_mock()
+        before = self.service.saved()
+        with controller_lock(self.root):
+            result = self.call('launch')
+        self.assertEqual((result['status'], result['phase']), ('smoke_pending', 'controller'))
+        self.assertEqual(self.service.saved(), before)
+        self.github.call.assert_not_called()
+
+    def active_smoke(self):
+        self.bind()
+        with self.setup.store.transaction() as data: data['phase'] = 'active'
+        self.issue.update(title='Smoke', updated_at='2026-10-08T10:00:00Z', labels=[{'name': 'ready'}])
+        self.github.issue.side_effect = lambda item: (self.issue, 'full-requirements-digest')
+        self.github.target.return_value = 'main'
+        self.service.prove = Mock(return_value={'status': 'pending'})
+        from forge.factory.store_inventory import StoreInventory
+        StoreInventory(self.store, Mock(), self.github, config=load(self.root), clock=lambda: self.now).record(
+            dict(self.target, enabled=True), self.issue, 'full-requirements-digest')
+
+    def test_launch_reuses_exact_supervisor_triage_instead_of_queueing_twice(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        existing = RepositoryPlanning(self.store, clock=lambda: self.now).queue(1,
+            request_id='automatic-triage', actor_id='supervisor:nightly-triage', base_branch='main')
+        self.assertEqual(self.call('launch')['status'], 'smoke_pending')
+        with self.store.read_snapshot() as db:
+            runs = list(db.execute('SELECT id FROM repository_triage_runs'))
+        self.assertEqual([row[0] for row in runs], [existing['proposal_id']])
+
+    def test_launch_waits_for_nonmatching_pending_capture_without_adopting_it(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        existing = RepositoryPlanning(self.store, clock=lambda: 50).queue(1,
+            request_id='old-triage', actor_id='supervisor:nightly-triage', base_branch='main')
+        result = self.call('launch')
+        self.assertEqual((result['status'], result['phase']), ('smoke_pending', 'triage'))
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM repository_triage_runs').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT status FROM triage_proposals WHERE id=?',
+                                       (existing['proposal_id'],)).fetchone()[0], 'draft')
+
+    def test_completed_smoke_triage_does_not_schedule_another_run(self):
+        self.active_smoke()
+        with patch('forge.installation_smoke.triage_run_in', return_value={'id': 'complete'}), \
+             patch.object(self.service, 'accept_keep', return_value=None), \
+             patch('forge.store.repository_planning.RepositoryPlanning.queue') as queue:
+            self.assertEqual(self.call('launch')['status'], 'smoke_pending')
+        queue.assert_not_called()
+
     def test_launch_never_readds_ready_after_operator_removal(self):
         self.bind()
         with self.setup.store.transaction() as data: data['phase'] = 'active'
@@ -421,6 +473,15 @@ class SmokeClientTests(unittest.TestCase):
         self.factory.github.merged_pull.return_value = {'merged': True, 'head_sha': 'h', 'merge_sha': 'm', 'merged_at': '1970-01-01T00:02:30Z'}
         self.factory.github.pilot_issue.return_value = {'state': 'closed', 'number': 10}
         self.factory.call.side_effect = lambda action: self.result if action == 'smoke_status' else {'status': 'handover_complete'}
+
+    def test_busy_binding_cannot_select_or_start_factory(self):
+        busy = {'status': 'smoke_pending', 'phase': 'controller'}
+        self.factory.call.side_effect = None
+        self.factory.call.return_value = busy
+        with patch.object(self.client, 'prepare', return_value={'status': 'smoke_repository_ready'}):
+            self.assertEqual(self.client.run(apply=True), busy)
+        self.assertEqual([call.args[0] for call in self.factory.call.call_args_list], ['smoke_bind'])
+        self.factory.check.assert_not_called()
 
     def test_readonly_handover_verifies_without_activating(self):
         self.assertEqual(self.client.handover()['status'], 'smoke_verified')

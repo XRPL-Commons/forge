@@ -46,7 +46,9 @@ class InstallSmoke:
         binding = {**saved, 'intent_digest': self.state['inputs_digest'], 'started_at': self.state['started_at'],
                    'repositories': [{**row, 'target': {key: row['target'][key] for key in ('id', 'name')}}
                                     for row in self.state['intent']['repositories']]}
-        self.factory.call('smoke_bind', binding=binding)
+        bound = self.factory.call('smoke_bind', binding=binding)
+        if bound.get('phase') == 'controller':
+            return bound
         view = self.factory.call('status')
         if view['phase'] == 'setup':
             if view.get('selected') != saved['repository']:
