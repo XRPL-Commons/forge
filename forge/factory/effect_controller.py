@@ -75,6 +75,9 @@ class EffectController:
 
     @staticmethod
     def _matches(effect, pr):
+        if effect.get('review_source'):
+            from ..store.review_pulls import exact_source_matches
+            return exact_source_matches(pr,effect['review_source'])
         candidate = effect['identity']
         return (isinstance(pr, dict) and pr.get('number') == candidate['pull_number']
                 and (pr.get('head') or {}).get('sha') == candidate['head_oid']
@@ -163,6 +166,10 @@ class EffectController:
                     base_oid=effect['identity']['base_oid'],repository_id=effect['repo_id'],base_branch=effect['target_branch'],observed_at=self.clock()))
                 effect=self.queries.get(effect_id)
             authorization = None
+            if effect['kind']=='github_check' and effect['payload'].get('review_only') is True:
+                from .merge_controller import MergeAdmission
+                authorization=self.admission.evaluate_review_policy(effect) if isinstance(self.admission,MergeAdmission) else None
+                if authorization is None:return self._withdraw(effect,'review_policy_changed')
             if effect['kind'] == 'github_merge':
                 authorization = self.admission(effect) if self.admission else None
                 if pr.get('mergeable') is not True:

@@ -28,6 +28,9 @@ class VerificationController:
 
     @staticmethod
     def _current(item, pr):
+        if item.get('review_source'):
+            from ..store.review_pulls import exact_source_matches
+            return exact_source_matches(pr,item['review_source'])
         identity = item['identity']
         return (isinstance(pr, dict) and pr.get('number') == identity['pull_number']
                 and pr.get('state') == 'open' and pr.get('draft') is False and pr.get('merged') is False
@@ -40,6 +43,8 @@ class VerificationController:
     def _issue_current(self, item):
         if item['requirements_hash']!=item['identity']['requirements_hash']:
             return False
+        if item.get('review_source'):
+            return not set(item['review_source']['labels']).intersection(self.hold_labels)
         from .ownership import publication_context
         item=publication_context(self.store,item['unit']['id'],item)
         for member in item['members']:

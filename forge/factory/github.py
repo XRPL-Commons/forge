@@ -785,8 +785,15 @@ class GitHub:
             own = [r for r in runs if r.get('name') == 'forge/' + role and r.get('app', {}).get('id') in apps]
             if not own:
                 return False
-            current = max(own, key=lambda r: r['id'])
-            if (current['id'] != accepted['check_id'] or current.get('conclusion') != 'success'
+            # Review-only PRs may share a commit. Each keeps its own exact
+            # accepted verdict; the review-policy adapter verifies every peer
+            # before publishing success for that shared commit.
+            current = (next((run for run in own if run['id'] == accepted['check_id']), None)
+                       if item.get('review_source') else max(own, key=lambda r: r['id']))
+            if current is None:
+                return False
+            if (current.get('head_sha', candidate_value['head']) != candidate_value['head']
+                    or current['id'] != accepted['check_id'] or current.get('conclusion') != 'success'
                     or current.get('status') != 'completed'):
                 return False
         return True

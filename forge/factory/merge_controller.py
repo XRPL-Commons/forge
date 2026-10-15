@@ -58,9 +58,10 @@ class MergeAdmission:
     config() and repository_ready(repo) must use the selected configuration and
     readiness authority. Neither callback may grant admission from worker output.
     """
-    def __init__(self, store, github, *, config, repository_ready, clock=time.time):
+    def __init__(self, store, github, *, config, repository_ready, review_repository_ready=None, clock=time.time):
         self.store, self.github = store, github
         self.config, self.repository_ready, self.clock = config, repository_ready, clock
+        self.review_repository_ready=review_repository_ready or repository_ready
 
     def evaluate_observation(self, effect):
         """Return authorization and display evidence without writing the store."""
@@ -70,7 +71,7 @@ class MergeAdmission:
             return {'authorization': authorization, 'approval_observation': observation, 'mergeability_observation': mergeability}
 
         item = candidate_snapshot(self.store, effect['unit_id'])
-        if item is None or item['candidate_id'] != effect['candidate_id']:
+        if item is None or item['candidate_id'] != effect['candidate_id'] or item.get('review_source'):
             return result(None)
         config = self.config()
         if not isinstance(config, dict) or any(key not in config for key in ('human_required', 'human_reviewers', 'merge_method')):
@@ -149,6 +150,67 @@ class MergeAdmission:
             policy_hash=identity['policy_hash'], requirements_hash=identity['requirements_hash'],
             observed_at=self.clock(), human_approved=human))
 
+    def _single_review_policy(self,effect):
+        """Technical check authority never grants a merge or repository bypass."""
+        from ..store.review_pulls import exact_source_matches
+        item=candidate_snapshot(self.store,effect['unit_id'])
+        if item is None or item['candidate_id']!=effect['candidate_id'] or not item.get('review_source'):
+            return None
+        config=self.config();identity=item['identity'];source=item['review_source']
+        if (not config.get('enabled') or self.review_repository_ready(item['repo']) is not True
+                or digest(policy(config,item['repo_id'],repository_name=item['repo']))!=identity['policy_hash']):
+            return None
+        if set(source['labels']) & set(config.get('hold_labels',['hold','blocked'])):
+            return None
+        remote=self.github.pr(item,identity['pull_number'])
+        if not exact_source_matches(remote,source):return None
+        if any(type(item['evidence'].get(role,{}).get('check_id')) is not int for role in ('review','audit')):
+            return None
+        checks={};explicit_approval=False
+        for gate in item['gates']:
+            if gate['code'] in {'verification_ci','verification_human'}:
+                if gate['resolved_at'] is None:return None
+                for check in gate['details'].get('ci',[]):checks[(check['name'],check['app_id'])]=check
+            if gate['code']=='approval_required' and gate['resolved_at'] is None:
+                explicit_approval=True
+        if checks and not ci_result(self.github.ci_evidence(item),item['candidate'],list(checks.values())):
+            return None
+        if not self.github.gates(item):return None
+        human=False
+        if explicit_approval:
+            reviews=self.github.approvals(item,remote)
+            if any(review['state']=='CHANGES_REQUESTED' for review in reviews):return None
+            human=any(review['counted'] for review in reviews)
+            if not human:return None
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT source_hash FROM review_candidate_sources WHERE candidate_id=?',(identity['id'],)).fetchone()
+        if row is None:return None
+        return dict(verified=True,review_only=True,checks_passed=True,source_hash=row['source_hash'],
+            candidate_id=identity['id'],head_oid=identity['head_oid'],base_oid=identity['base_oid'],
+            policy_hash=identity['policy_hash'],requirements_hash=identity['requirements_hash'],
+            observed_at=self.clock(),human_approved=human)
+
+    def evaluate_review_policy(self,effect):
+        authorization=self._single_review_policy(effect)
+        if authorization is None:return None
+        with self.store.read_snapshot() as db:
+            rows=[dict(row) for row in db.execute("SELECT u.id,u.current_candidate_id AS candidate_id,u.fencing_generation,u.membership_generation,"
+                "s.source_hash FROM units u JOIN candidates c ON c.id=u.current_candidate_id "
+                "LEFT JOIN review_candidate_sources s ON s.candidate_id=c.id WHERE u.repository_id=(SELECT repository_id FROM units WHERE id=?) "
+                "AND c.head_oid=? AND u.state NOT IN ('merged','closed') ORDER BY u.id LIMIT 21",
+                (effect['unit_id'],authorization['head_oid']))]
+        if len(rows)>20:return None
+        for peer in rows:
+            if peer['id']==effect['unit_id']:continue
+            if peer['source_hash'] is None:
+                with self.store.read_snapshot() as db:
+                    confirmed=db.execute("SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
+                        "WHERE c.candidate_id=? AND e.kind='github_merge' AND e.status='confirmed'",(peer['candidate_id'],)).fetchone()
+                if not confirmed:return None
+            elif self._single_review_policy({'unit_id':peer['id'],'candidate_id':peer['candidate_id']}) is None:
+                return None
+        return {**authorization,'peer_pins':rows}
+
 
     def evaluate(self, effect):
         return self.evaluate_observation(effect)['authorization']
@@ -181,6 +243,8 @@ class MergeController:
         item = candidate_snapshot(self.store, unit_id)
         if item is None or item['state'] != 'merging':
             return {'unit_id': unit_id, 'pending': 'technical_evidence'}
+        if item.get('review_source'):
+            return self._review_policy(item)
         with self.store.read_snapshot() as db:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot request merges')
@@ -228,6 +292,26 @@ class MergeController:
         command = Command(str(uuid.uuid4()), 'supervisor:merge', unit_id, unit['version'])
         return {'unit_id': unit_id, **self.effects.queue_merge(command, item['candidate_id'],
             policy_hash=item['identity']['policy_hash'], authorization=authorization)}
+
+    def _review_policy(self,item):
+        unit_id=item['unit_id']
+        with self.store.read_snapshot() as db:
+            row=db.execute("SELECT e.id FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
+                "WHERE c.candidate_id=? AND e.kind='github_check' AND json_extract(e.payload_json,'$.review_only')=1 "
+                "AND e.status IN ('pending','running','uncertain','confirmed') ORDER BY e.created_at DESC LIMIT 1",
+                (item['candidate_id'],)).fetchone()
+        if row:return {'unit_id':unit_id,'effect_id':row['id'],'review_only':True}
+        authorization=self.admission.evaluate_review_policy(item) if isinstance(self.admission,MergeAdmission) else None
+        if authorization is None:return {'unit_id':unit_id,'pending':'review_policy'}
+        for gate in item['gates']:
+            if gate['code']=='approval_required' and gate['resolved_at'] is None:
+                if not authorization.get('human_approved'):return {'unit_id':unit_id,'pending':'human_approval'}
+                unit=self.queries.unit(unit_id)
+                self.commands.resolve_gate(Command(str(uuid.uuid4()),'supervisor:approval',unit_id,unit['version']),
+                    gate['id'],release='evidence',evidence=authorization)
+        unit=self.queries.unit(unit_id)
+        command=Command(str(uuid.uuid4()),'supervisor:review-policy',unit_id,unit['version'])
+        return {'unit_id':unit_id,'review_only':True,**self.effects.queue_review_policy(command,item['candidate_id'],authorization=authorization)}
 
     def cycle(self, *, after=None, limit=50):
         page = self.queries.units(after=after, limit=limit)

@@ -47,6 +47,9 @@ class ResultController:
 
     @staticmethod
     def _current_pr(pr, job):
+        if job.get('review_source'):
+            from ..store.review_pulls import exact_source_matches
+            return exact_source_matches(pr,job['review_source'])
         selected = job['candidate']
         return (pr.get('number') == selected['pr'] and pr.get('state') == 'open'
                 and pr.get('draft') is False and not pr.get('merged')
@@ -98,6 +101,12 @@ class ResultController:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot classify worker results')
         job = self.queries.job(job_id)
+        from ..store.review_pulls import review_only_in, source_in
+        with self.store.read_snapshot() as db:
+            review_only=review_only_in(db,job['unit_id']) is not None
+            if review_only:job['review_source']=source_in(db,job['candidate_id'])
+        if review_only and job['role'] not in {'review','audit'}:
+            raise TransitionError('Review-only pull requests cannot run implementation work')
         if job['role'] in {'recovery','steward'}:
             return {'job_id': job_id, 'pending': job['role']+'_controller'}
         if job['outcome'] is not None:
@@ -158,7 +167,12 @@ class ResultController:
                     input_manifest=job['input_manifest'], details=fault)}
         evidence = {'report': report, 'capture_job_id': job_id}
         item = publication_context(self.store, job['unit_id'], dict(repo=job['repo'], repo_id=job['repo_id'], number=job['issue_number']))
-        members = job.get('members') or [{'issue_number': job['issue_number'], 'requirements': job['requirements']}]
+        if review_only:
+            if not job['review_source'] or not self._current_pr(self.github.pr(item,job['candidate']['pr']),job):
+                return {'job_id':job_id,'pending':'candidate_reconciliation'}
+            if set(job['review_source']['labels']) & self.hold_labels:
+                return {'job_id':job_id,'pending':'candidate_reconciliation'}
+        members = [] if review_only else job.get('members') or [{'issue_number': job['issue_number'], 'requirements': job['requirements']}]
         for member in members:
             remote, pinned = self.github.issue({**item, 'number': member['issue_number']})
             if remote.get('state') != 'open' or pinned != member['requirements']:
@@ -311,6 +325,8 @@ class ResultController:
                 # Durable effect intent advances the version. Assignment identity
                 # remains pinned; lifecycle fencing still rejects raced decisions.
                 job = self.queries.job(job_id)
+                if review_only:
+                    with self.store.read_snapshot() as db:job['review_source']=source_in(db,job['candidate_id'])
                 if receipt is None:
                     return {'job_id': job_id, 'pending': 'verdict_effect'}
                 if not self._current_pr(self.github.pr(item, job['candidate']['pr']), job):
@@ -320,7 +336,7 @@ class ResultController:
                 if report['outcome'] == 'reject':
                     return {'job_id': job_id, **self.commands.reject_job(self._command(job), job_id, **self._args(job, evidence))}
                 gates = []
-                if job['role'] == 'audit' and (current_policy.get('human_required') or report['human_required'] != 'not_required'):
+                if job['role'] == 'audit' and ((not review_only and current_policy.get('human_required')) or report['human_required'] != 'not_required'):
                     reason = report['human_reason'] if report['human_required'] != 'not_required' else 'Repository policy requires human approval'
                     gates = [{'code': 'approval_required', 'details': {'reason': reason, 'job_id': job_id}}]
                 return {'job_id': job_id, **self.commands.finish_job(self._command(job), job_id,
