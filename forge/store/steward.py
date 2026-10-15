@@ -18,6 +18,24 @@ def artifact_in(db, job_id, kind):
     return json.loads(read_in(db, job_id, kind).content)
 
 
+def reusable_deferral_in(db, job_id, now):
+    """Only a trusted provider or pre-agent Forge failure reuses its cycle.
+
+    The controller asks this before launching a physical retry so an
+    unauthorized retry becomes one operator wait, not a rejected reservation
+    in every supervisor cycle.
+    """
+    from ..factory.execution_problems import classify
+    state = db.execute('SELECT container_id FROM job_execution_state WHERE job_id=?', (job_id,)).fetchone()
+    evidence = artifact_in(db, job_id, 'result')
+    observed = classify({'id': job_id, 'container_id': state['container_id'] if state else None},
+                        artifact_in(db, job_id, 'worker_capture'), now)
+    provider = observed and observed['kind'] == 'provider_error' and evidence.get('kind') == 'provider_error'
+    before_agent = (observed and observed['kind'] == 'forge_problem' and observed['details'].get('phase') == 'before_agent'
+                    and evidence.get('reason') == 'forge_problem')
+    return bool(provider or before_agent)
+
+
 def dossier_in(db, job_id):
     return artifact_in(db, job_id, 'steward_dossier')
 
@@ -114,12 +132,7 @@ class Steward(Executions):
             latest = db.execute('SELECT job_id FROM steward_turns WHERE unit_id=? AND trigger_key=? '
                 'ORDER BY cycle DESC,physical_attempt DESC LIMIT 1', (unit['id'],dossier['trigger_key'])).fetchone()
             require(latest and latest[0]==retry_of, 'Steward retry must continue the latest physical attempt')
-            from ..factory.execution_problems import classify
-            evidence = artifact_in(db,retry_of,'result')
-            observed = classify({'id':retry_of,'container_id':prior['container_id']}, artifact_in(db,retry_of,'worker_capture'), self.clock())
-            provider = observed and observed['kind']=='provider_error' and evidence.get('kind')=='provider_error'
-            before_agent = observed and observed['kind']=='forge_problem' and observed['details'].get('phase')=='before_agent' and evidence.get('reason')=='forge_problem'
-            require(provider or before_agent, 'Only trusted provider or pre-agent Forge failure can reuse a cycle')
+            require(reusable_deferral_in(db, retry_of, self.clock()), 'Only trusted provider or pre-agent Forge failure can reuse a cycle')
             cycle = prior['cycle']
             physical = db.execute('SELECT count(*) FROM steward_turns WHERE unit_id=? AND cycle=?',(unit['id'],cycle)).fetchone()[0]+1
             require(physical <= 3, 'Steward physical retry limit reached; owned wait requires operator attention')

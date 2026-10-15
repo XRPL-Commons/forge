@@ -164,7 +164,7 @@ class StewardExecutions(Executions):
         return self._apply(command, 'retire_steward_wait', {'decision_id':decision_id}, change)
 
     def limit_wait(self, command, *, trigger_key, reason):
-        if reason not in {'cycle_limit', 'physical_retry_limit'}:
+        if reason not in {'cycle_limit', 'physical_retry_limit', 'retry_unauthorized'}:
             raise TransitionError('Unknown steward execution limit')
         def change(db, unit):
             existing = db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='decision_required' AND subject_key='unit' AND resolved_at IS NULL", (unit['id'],)).fetchone()
