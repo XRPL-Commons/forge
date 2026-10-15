@@ -329,8 +329,9 @@ def entrypoint():
         output = Path('/work/result.json.tmp'); output.write_text(json.dumps(report)); output.replace('/work/result.json')
         raise SystemExit(0)
     except (PreparationError, OSError) as error:
-        note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
-        runpy.run_path('/opt/forge/build_environment.py')['blocked'](note, 'Forge could not prepare the disposable checkout before work started. Check repository access, revision availability and disk space.', 'dependency_access')
+        # No worker result exists when checkout preparation fails. Record the
+        # image-owned failure before finally can seal a misleading 'ok' receipt.
+        execution['write_receipt'](note, 'harness_error', harness_error=execution['exception_fault'](error))
         raise SystemExit(125) from None
 
     except Exception as error:

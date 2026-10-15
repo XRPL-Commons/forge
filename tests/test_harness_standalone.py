@@ -24,6 +24,42 @@ class StandaloneHarnessTests(unittest.TestCase):
     def test_planning_outcomes_match_the_contract(self):
         self.assertEqual(runpy.run_path(str(HARNESS))['PLANNING_OUTCOMES'], PLANNING_OUTCOMES)
 
+    def test_checkout_failure_is_a_private_harness_fault_without_worker_result(self):
+        from forge.harnesses.execution import finalize, write_receipt
+        from forge.factory.execution_problems import classify, contract_problem
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            note = {'id': 'checkout', 'role': 'build', 'repo': 'example/project'}
+            assignment = root / 'assignment.json'; assignment.write_text(json.dumps(note))
+            receipt, envelope = root / 'receipt.json', root / 'envelope.json'
+            execution = runpy.run_path(str(HARNESS.parent.parent / 'harnesses/execution.py'))
+            execution.update(RECEIPT=receipt, write_receipt=lambda *args, **kwargs:
+                             write_receipt(*args, **kwargs, path=receipt))
+            # Exercise the real clone path, before adapter loading. Neither a
+            # failed Git process nor a failed process launch is model output.
+            for failure in (SimpleNamespace(returncode=128, stderr='HTTP 503 expected packfile'),
+                            OSError('private path or credential')):
+                harness = runpy.run_path(str(HARNESS))
+                process = Mock(side_effect=failure) if isinstance(failure, Exception) else Mock(return_value=failure)
+                with self.subTest(failure=type(failure).__name__), \
+                     patch.dict(os.environ, {'FORGE_ASSIGNMENT': str(assignment)}), \
+                     patch('subprocess.run', process), \
+                     patch('builtins.print'), \
+                     patch('runpy.run_path', return_value=execution) as load, \
+                     self.assertRaises(SystemExit) as exited:
+                    harness['entrypoint']()
+                self.assertEqual(exited.exception.code, 125)
+                load.assert_called_once_with('/opt/forge/harnesses/execution.py')
+                value = finalize(note, 125, receipt_path=receipt, envelope_path=envelope)
+                self.assertEqual(value['harness_status'], 'harness_error')
+                self.assertEqual(value['harness_error']['exception'], 'PreparationError')
+                self.assertNotIn('private', json.dumps(value))
+                captured = dict(execution={'id': 'container', 'image_id': 'sha256:'+'a'*64,
+                    'exit_protocol': '1', 'running': False, 'exit_code': 125}, execution_envelope=value)
+                job = dict(note, container_id='container')
+                self.assertEqual(classify(job, captured, 100)['kind'], 'forge_problem')
+                self.assertIsNone(contract_problem(job, captured))
+
     def test_steward_subject_notes_reach_adapter_through_standalone_harness(self):
         from forge.factory.config import DEFAULT
         from forge.factory.contracts import triage_note
