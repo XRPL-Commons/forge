@@ -207,8 +207,21 @@ describe('connectionCards', () => {
   it('lists missing permissions as an error', () => {
     const audit = connectionCards(settings, onboarding)[2]
     expect(audit.status).toBe('Permissions missing')
-    expect(audit.identity).toBe('No App connected')
+    expect(audit.identity).toBe('App 3')
     expect(audit.errors).toEqual(['Missing contents: write'])
+  })
+  it('shows one shared App and retains every role permission failure', () => {
+    const shared = { ...settings, config: { ...settings.config, connections: Object.fromEntries(['build', 'review', 'audit', 'controller'].map(role => [role, { app_id: 42, private_key_env: 'K' }])) },
+      roles: { build: access(), review: access(), audit: access({ status: 'missing_permissions', missing_permissions: ['checks: write'] }), controller: access() } }
+    const cards = connectionCards(shared, null)
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toMatchObject({ label: 'Forge App', identity: 'App 42', ready: false, status: 'Permissions missing', errors: ['Missing checks: write'] })
+  })
+  it('counts verified repositories only when all shared roles have access', () => {
+    const shared = { ...settings, config: { ...settings.config, connections: Object.fromEntries(['build', 'review', 'audit', 'controller'].map(role => [role, { app_id: 42, private_key_env: 'K' }])) },
+      roles: { build: access(), review: access(), audit: access(), controller: access() },
+      repositories: [row(), row({ access: { build: 'ready', review: 'ready', audit: 'missing_access', controller: 'ready' } })] }
+    expect(connectionCards(shared, null)[0]).toMatchObject({ label: 'Forge App', ready: true, observation: '1 repository with verified access' })
   })
   it('counts a single repository in the singular', () => {
     const one: SettingsView = { ...settings, repositories: [row({ id: 1, enabled: true })] }
