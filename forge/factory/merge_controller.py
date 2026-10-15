@@ -9,7 +9,7 @@ from ..store.effects import Effects
 from ..store.models import Command, TransitionError
 from ..store.queries import Queries
 from ..store.transitions import Lifecycle, manifest_hash
-from .config import policy
+from .config import merge_check_scope, policy
 from .contracts import digest
 from .github import GitHubUnavailable
 from .ownership import ownership
@@ -157,7 +157,8 @@ class MergeAdmission:
         if item is None or item['candidate_id']!=effect['candidate_id'] or not item.get('review_source'):
             return None
         config=self.config();identity=item['identity'];source=item['review_source']
-        if (not config.get('enabled') or self.review_repository_ready(item['repo']) is not True
+        if (not config.get('enabled') or merge_check_scope(config,item['repo_id'])!='all'
+                or self.review_repository_ready(item['repo']) is not True
                 or digest(policy(config,item['repo_id'],repository_name=item['repo']))!=identity['policy_hash']):
             return None
         if set(source['labels']) & set(config.get('hold_labels',['hold','blocked'])):

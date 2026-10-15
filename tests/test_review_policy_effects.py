@@ -196,3 +196,22 @@ class ReviewPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(TransitionError,'still has obligations'):
             self.effects.claim(effect,expected_version=value['unit_version'],authorization=auth)
         self.assertEqual(EffectQueries(self.store).get(effect)['attempts'],0)
+
+    def test_scope_change_blocks_queued_success_before_observer_fences_candidate(self):
+        row=self.admit();self.passed(row)
+        result=MergeController(self.store,admission=self.admission,clock=lambda:self.now).step(row['unit_id'])
+        self.config['repository_merge_check_scopes']={'1':'forge'}
+        # Scope is not part of the existing candidate policy hash. Admission
+        # must read it explicitly before issuing a queued success publication.
+        self.assertEqual(digest(policy(self.config,1,repository_name='owner/repo')),self.policy)
+        self.github.check.reset_mock()
+        self.github.pr.reset_mock()
+        self.assertIsNone(self.authorization(row))
+        self.github.pr.assert_not_called()
+        receipt=self.driver.step(result['effect_id'])
+        self.assertEqual(receipt['status'],'superseded')
+        self.assertEqual(receipt['attempts'],0)
+        self.github.check.assert_not_called()
+        with self.store.read_snapshot() as db:
+            unit=db.execute('SELECT current_candidate_id,state FROM units WHERE id=?',(row['unit_id'],)).fetchone()
+        self.assertEqual(tuple(unit),(row['candidate_id'],'merging'))
