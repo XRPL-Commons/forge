@@ -60,6 +60,9 @@ def run(note, directory, env, result_schema):
     if code:
         provider = EXECUTION['codex_provider_error'](events)
         if provider is not None:
+            session = EXECUTION['codex_session_diagnostic'](events, client / 'sessions')
+            if session is not None:
+                provider['diagnostic']['session'] = session
             EXECUTION['write_receipt'](note, 'provider_error', provider_error=provider)
     output = Path('/work/final-result.json')
     RESULTS['publish_result'](note, output)

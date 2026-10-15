@@ -85,6 +85,44 @@ class CodexFailureDiagnosticsTests(unittest.TestCase):
             hostile = dict(status='failed', failure={'execution_envelope': invalid})
             self.assertNotIn('PRIVATE', json.dumps(RoleQualificationFailed(hostile).report))
 
+    def test_adapter_retains_native_metadata_in_failure_receipt_and_client_report(self):
+        module = adapter('codex'); namespace = module['run'].__globals__
+        thread = '12345678-1234-1234-1234-123456789abc'
+        events = [{'type': 'thread.started', 'thread_id': thread},
+                  {'type': 'turn.failed', 'error': {'message': 'PRIVATE'}}]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); sessions = root/'.codex/sessions/2026/10/15'; sessions.mkdir(parents=True)
+            (sessions/('rollout-test-'+thread+'.jsonl')).write_text('\n'.join(map(json.dumps, [
+                {'type': 'session_meta', 'payload': {'id': thread, 'base_instructions': 'PRIVATE'}},
+                {'type': 'turn_context', 'payload': {'model': 'gpt-6-astra', 'effort': 'low', 'cwd': 'PRIVATE'}},
+                {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {
+                    'last_token_usage': {'output_tokens': 1024, 'reasoning_output_tokens': 1000}}}},
+            ]))+'\n')
+            with patch.dict(namespace, {'Path': lambda path: root/Path(path).name,
+                                        'prepare_tool_environment': lambda *args: {}}), \
+                 patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0)), \
+                 patch('runpy.run_path', return_value={}), \
+                 patch.dict(module['EXECUTION'], {'stream': lambda *args: (1, events)}), \
+                 patch.dict(module['RESULTS'], {'publish_result': lambda *args: None}), \
+                 patch.dict(module['EXECUTION'], {'write_receipt': lambda note, status, **fields:
+                      write_receipt(note, status, path=root/'receipt', **fields)}):
+                code = module['run']({'id': 'job', 'role': 'triage'}, root, {}, {})
+            envelope = finalize({'id': 'job'}, code, receipt_path=root/'receipt', envelope_path=root/'envelope')
+        self.assertTrue(valid(envelope, 'job', final=True))
+        session = envelope['provider_error']['diagnostic']['session']
+        self.assertEqual(session['model'], 'gpt-6-astra')
+        self.assertEqual(session['reasoning_effort'], 'low')
+        self.assertEqual(session['last_token_usage']['output_tokens'], 1024)
+        capture = dict(result=None, logs='PRIVATE', execution_envelope=envelope,
+            execution=dict(id='container', image_id='sha256:'+'a'*64, exit_protocol='1',
+                           running=False, exit_code=1, oom_killed=False))
+        report = RoleQualificationFailed(dict(status='failed', failure=capture_evidence(capture, {'id': 'job', 'role': 'triage'}))).report
+        self.assertEqual(report['failure']['execution_envelope']['provider_error']['diagnostic']['session'], session)
+        self.assertNotIn('PRIVATE', json.dumps(report))
+        problem = classify({'id': 'job', 'role': 'triage', 'container_id': 'container'}, capture, 100)
+        self.assertEqual(problem['details']['reason'], 'provider_unknown')
+        self.assertEqual(problem['details']['retry_at'], 130)
+
     def test_codex_adapter_writes_diagnostic_receipt_from_terminal_protocol(self):
         module = adapter('codex')
         namespace = module['run'].__globals__
