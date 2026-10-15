@@ -125,18 +125,18 @@ class TaskPipelineTests(unittest.TestCase):
                         self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
                 self.assertTrue(f.dispatch.step('batch')['reserved'])
 
-    def test_joint_wait_rejects_own_scope_and_unassigned_quotes(self):
+    def test_joint_wait_rejects_own_scope_and_grounds_identity_without_prose(self):
         from forge.factory.contracts import result
         job = self.waiting_assignment(); f = self.f
         report = dict(version=1, attempt=job['id'], role='build', outcome='waiting_on_issues', summary='Waiting',
                       delegation_plan=None, output_commit=None, issues=[1], evidence='Depends on #1')
         for pin in job['members']:
             with self.assertRaises(ValueError): result({**report, 'issues': [pin['issue_number']]}, job)
-        # Well-shaped but ungrounded prose still fails normal result verification.
-        rejected = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Invented #10 requirement')
-        self.assertTrue(rejected['charged'])
+        # Historical typed numbers are grounded remotely; prose is explanatory.
+        accepted = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Requires the shared interface')
+        self.assertFalse(accepted['charged'])
         with f.store.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], len(job['members']))
 
     def test_task_wait_does_not_approve_an_internal_member_dependency(self):
         from forge.factory.prerequisites import collect

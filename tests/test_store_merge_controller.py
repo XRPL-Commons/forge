@@ -429,7 +429,7 @@ class MergeControllerTests(unittest.TestCase):
         return fact
 
     def test_merge_prerequisites_are_fresh_typed_and_bound(self):
-        self.remote.issue_value['body']='Depends on other/repo#2'
+        self.remote.issue_value['body']='Depends on: other/repo#2'
         fact=self.prerequisite()
         effect=self.prepare_candidate()
         self.assertIsNotNone(self.admission(effect))
@@ -443,7 +443,7 @@ class MergeControllerTests(unittest.TestCase):
         self.assertTrue(all(binding['github_id']==202 for binding in self.remote.bindings_read))
 
     def test_closed_pr_requires_merge_and_unknown_binding_cannot_authorize_merge(self):
-        self.remote.issue_value['body']='Depends on other/repo#2 and other/repo#3'
+        self.remote.issue_value['body']='Depends on: other/repo#2, other/repo#3'
         first=self.prerequisite(kind='pull_request')
         self.remote.prerequisites['other/repo#3']=dict(first, reference='other/repo#3', number=3, github_id=203, kind='issue')
         effect=self.prepare_candidate()
@@ -454,7 +454,7 @@ class MergeControllerTests(unittest.TestCase):
         self.assertIsNotNone(self.admission(effect))
 
     def test_prerequisite_reopened_after_check_prevents_merge(self):
-        self.remote.issue_value['body']='Depends on other/repo#2'
+        self.remote.issue_value['body']='Depends on: other/repo#2'
         fact=self.prerequisite()
         self.prepare_candidate()
         queued=self.controller.step('u')
@@ -490,7 +490,7 @@ class MergeControllerTests(unittest.TestCase):
         self.assertIsNone(self.admission(effect))
 
     def test_admission_never_writes_or_advances_versions(self):
-        self.remote.issue_value['body']='Depends on other/repo#2'
+        self.remote.issue_value['body']='Depends on: other/repo#2'
         self.prerequisite()
         effect=self.prepare_candidate(human_required=True)
         self.remote.approve()

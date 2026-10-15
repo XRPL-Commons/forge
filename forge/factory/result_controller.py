@@ -4,7 +4,6 @@ No external operation runs in a SQL transaction. The lifecycle rechecks the
 assignment and version at commit; an observation or operator decision racing
 with GitHub reads therefore cannot advance a superseded candidate.
 """
-import re
 import subprocess
 import time
 import uuid
@@ -61,7 +60,7 @@ class ResultController:
     def _verification(job, report, *, recovery=None):
         inherited = job.get('input_manifest', {}).get('verification_requests', [])
         requests = [row['verification'] for row in job['verification_requests']] if inherited else []
-        if report and report.get('outcome') == 'needs_human_verification':
+        if report and (report.get('outcome') == 'needs_human_verification' or report.get('version')==2 and report.get('verification') is not None):
             requests.append(report['verification'])
         if recovery is not None:
             requests.append(recovery['verification'])
@@ -160,7 +159,6 @@ class ResultController:
         evidence = {'report': report, 'capture_job_id': job_id}
         item = publication_context(self.store, job['unit_id'], dict(repo=job['repo'], repo_id=job['repo_id'], number=job['issue_number']))
         members = job.get('members') or [{'issue_number': job['issue_number'], 'requirements': job['requirements']}]
-        remote_members = []
         for member in members:
             remote, pinned = self.github.issue({**item, 'number': member['issue_number']})
             if remote.get('state') != 'open' or pinned != member['requirements']:
@@ -170,7 +168,6 @@ class ResultController:
                     'candidate': job['candidate'], 'reviewers_requested': job.get('reviewers_requested'),
                     'unit_state': job['unit_state']}, job['repo']):
                 return {'job_id': job_id, 'pending': 'issue_reconciliation'}
-            remote_members.append(remote)
         requirements = job['requirements']
         current_policy = self.policy(job)
         if digest(current_policy) != job['input_manifest']['policy_hash']:
@@ -181,6 +178,26 @@ class ResultController:
                     execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
                     policy_hash=digest(current_policy))
             return {'job_id': job_id, 'pending': 'policy_reconciliation'}
+        if report and report.get('version')==2 and report['outcome']=='cannot_complete':
+            if not report['claims']:
+                return {'job_id':job_id,**self._failure(job,{**evidence,'reason':'cannot_complete'})}
+            from .prerequisites import ground_claims
+            try:
+                dependencies=ground_claims(self.store,self.github,report['claims'])
+            except ValueError:
+                return {'job_id':job_id,**self._failure(job,{**evidence,'reason':'ungrounded_dependencies'})}
+            # A single typed service claim can use the existing bounded repair.
+            # Multiple independent claims must all survive in one transaction.
+            if len(report['claims'])==1 and report['claims'][0]['type']=='environment' and self.requirements:
+                claim=report['claims'][0]
+                retry=self.requirements.classify(job,capture,{**report,'outcome':'blocked_environment',
+                    'blocker':claim['reason'],'required_services':claim['services']})
+                if retry is not None:
+                    return {'job_id':job_id,**retry}
+            from ..store.build_claims import BuildClaims
+            return {'job_id':job_id,**BuildClaims(self.store,clock=self.clock).defer(
+                self._command(job),job_id,execution_fence=job['execution_fence'],input_manifest=job['input_manifest'],
+                report=report,dependencies=dependencies)}
         if self.requirements is not None:
             retry = self.requirements.classify(job, capture, report)
             if retry is not None:
@@ -196,7 +213,7 @@ class ResultController:
                     'operator_summary': report['operator_summary'],
                     'required_services': report.get('required_services', []), 'job_id': job_id})}
         if job['role'] == 'build':
-            if report and report['outcome'] == 'delegate' and job.get('builder_stage') == 'planning':
+            if report and report['outcome'] in {'delegate','done'} and job.get('builder_stage') == 'planning':
                 from ..store.delivery import Delivery
                 try:
                     planned = Delivery(self.store, clock=self.clock).save_task_plan(self._command(job), job_id,
@@ -222,13 +239,9 @@ class ResultController:
                 return {'job_id': job_id, **self._defer(job, evidence, 'decision_required',
                     {**report['decision'], 'job_id': job_id})}
             if report and report['outcome'] == 'waiting_on_issues':
-                quote = report['evidence'].strip()
-                # A task's requirements are its exact combined member context.
-                # The quote must occur in that context, not in every member;
-                # the resulting wait applies to the entire assigned scope.
-                if not any(quote in (remote.get('body') or '') for remote in remote_members) or not all(
-                        re.search(rf'(?<![\w/])#{number}\b', quote) for number in report['issues']):
-                    return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'ungrounded_dependencies'})}
+                # Historical v1 captures retain typed issue numbers. Their prose
+                # is evidence only; the host grounds every identity independently.
+                quote = report['evidence']
                 blocked = []
                 for number in report['issues']:
                     prerequisite, _ = self.github.issue({**item, 'number': number})

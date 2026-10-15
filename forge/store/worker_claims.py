@@ -55,6 +55,7 @@ def identity_in(db, job, details):
     if not members:
         raise TransitionError('worker claim needs exact assigned member requirements')
     return manifest_hash({'reason':details['reason'],'services':sorted(details.get('required_services',[])),
+                          **({'environment_id':details['environment_id']} if details.get('environment_id') else {}),
                           'role':job['role'],'members':members})
 
 
@@ -99,59 +100,66 @@ class WorkerClaims(Lifecycle):
                 or set(details.get('required_services',[]))-{'mongodb','postgres','redis'}):
             raise TransitionError('worker claim needs a typed blocker and bounded services')
         payload = dict(job_id=job_id,execution_fence=execution_fence,input_manifest=input_manifest,evidence=evidence,details=details)
-        def change(db,unit):
-            job,current = self._job(db,unit,job_id,execution_fence,input_manifest)
-            if not current:
-                self._result(db,command,job,evidence,'stale_deferred')
-                return {'accepted':False,'charged':False}
-            if job['role'] not in {'build','integration','review','audit'}:
-                raise TransitionError('worker claims require a pipeline assignment')
-            key = identity_in(db,job,details)
-            revisions = revisions_in(db,unit,job_id,details['reason'])
-            previous = db.execute('SELECT c.* FROM worker_claim_attempts c WHERE claim_key=? AND revisions_json=? AND EXISTS(SELECT 1 FROM worker_claim_obligations o WHERE o.job_id=c.job_id AND o.released_at IS NOT NULL) ORDER BY created_at DESC LIMIT 1', (key,_json(revisions))).fetchone()
-            now = self.clock()
-            # Retest attempts remain bounded even when the worker varies its claim.
-            count = db.execute('SELECT COUNT(*) FROM worker_claim_attempts c JOIN jobs j ON j.id=c.job_id '
-                'WHERE j.unit_id=? AND j.role=? AND c.revisions_json=? AND EXISTS(SELECT 1 FROM worker_claim_obligations o WHERE o.job_id=c.job_id AND o.released_at IS NOT NULL) '
-                'AND NOT EXISTS(SELECT member_id FROM job_members WHERE job_id=j.id EXCEPT SELECT member_id FROM job_members WHERE job_id=?) '
-                'AND NOT EXISTS(SELECT member_id FROM job_members WHERE job_id=? EXCEPT SELECT member_id FROM job_members WHERE job_id=j.id)', (unit['id'],job['role'],_json(revisions),job_id,job_id)).fetchone()[0]
-            delays = tuple(_settings(db,'runtime.json').get('reliability',{}).get('claim_retest_seconds',RETRY_SECONDS))
-            if not delays or any(type(value) is not int or not 30<=value<=7200 for value in delays) or list(delays)!=sorted(set(delays)) or len(delays)>8:
-                raise TransitionError('claim retest delays require ascending bounded seconds')
-            repeated = previous is not None or count >= len(delays)
-            retry_at = now + delays[min(count,len(delays)-1)]
-            db.execute('INSERT INTO worker_claim_attempts VALUES(?,?,?,?,?,?,?,?)',
-                (job_id,key,details['reason'],_json(details),_json(revisions),'repeated' if repeated else 'deferred',retry_at,now))
-            if repeated:
-                failure = {**evidence,'reason':'repeated_worker_claim','claim_key':key,'claim_revisions':revisions}
-                self._result(db,command,job,failure,'failure')
-                from .recovery import record_failure_facts
-                record_failure_facts(db,unit,job,failure,now,store=self.store)
-                charge_id = _id(command.request_id,'charge')
-                db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','execution_failure',?)", (charge_id,job['attempt_id'],now))
-                self._event(db,command,'budget_charged',{'charge_id':charge_id,'reason':'repeated_worker_claim'},job_id=job_id)
-                if job['member_id']:
-                    db.execute("UPDATE unit_issues SET state='failed' WHERE id=?", (job['member_id'],))
-                self._open_gate(db,command,'recovery_pending',{'job_id':job_id,'reason':'repeated_worker_claim'},job_id=job_id)
-                if _charges(db,unit)>=3:
-                    self._open_gate(db,command,'budget_exhausted',{'limit':3})
-                    self._fence(db,command)
-                return {'accepted':True,'charged':True,'recovery_required':True,'claim_key':key}
-            self._result(db,command,job,evidence,'deferred')
-            gates = []
-            for pin in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (job_id,)).fetchall():
-                prior = db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL", (unit['id'],pin[0])).fetchone()
-                if prior:
-                    if not eligible_gate_in(db,prior):
-                        raise TransitionError('independent environment decision must finish before accepting a worker claim')
+        return self._apply(command,'defer_worker_claim',payload,
+            lambda db,unit:self.defer_claim_in(db,command,unit,job_id,execution_fence=execution_fence,
+                input_manifest=input_manifest,evidence=evidence,details=details))
+
+    def defer_claim_in(self, db, command, unit, job_id, *, execution_fence, input_manifest, evidence, details):
+        job,current = self._job(db,unit,job_id,execution_fence,input_manifest)
+        if not current:
+            self._result(db,command,job,evidence,'stale_deferred')
+            return {'accepted':False,'charged':False}
+        if job['role'] not in {'build','integration','review','audit'}:
+            raise TransitionError('worker claims require a pipeline assignment')
+        key = identity_in(db,job,details)
+        revisions = revisions_in(db,unit,job_id,details['reason'])
+        previous = db.execute('SELECT c.* FROM worker_claim_attempts c WHERE claim_key=? AND revisions_json=? AND EXISTS(SELECT 1 FROM worker_claim_obligations o WHERE o.job_id=c.job_id AND o.released_at IS NOT NULL) ORDER BY created_at DESC LIMIT 1', (key,_json(revisions))).fetchone()
+        now = self.clock()
+        # Retest attempts remain bounded even when the worker varies its claim.
+        count = db.execute('SELECT COUNT(*) FROM worker_claim_attempts c JOIN jobs j ON j.id=c.job_id '
+            'WHERE j.unit_id=? AND j.role=? AND c.revisions_json=? AND EXISTS(SELECT 1 FROM worker_claim_obligations o WHERE o.job_id=c.job_id AND o.released_at IS NOT NULL) '
+            'AND NOT EXISTS(SELECT member_id FROM job_members WHERE job_id=j.id EXCEPT SELECT member_id FROM job_members WHERE job_id=?) '
+            'AND NOT EXISTS(SELECT member_id FROM job_members WHERE job_id=? EXCEPT SELECT member_id FROM job_members WHERE job_id=j.id)', (unit['id'],job['role'],_json(revisions),job_id,job_id)).fetchone()[0]
+        delays = tuple(_settings(db,'runtime.json').get('reliability',{}).get('claim_retest_seconds',RETRY_SECONDS))
+        if not delays or any(type(value) is not int or not 30<=value<=7200 for value in delays) or list(delays)!=sorted(set(delays)) or len(delays)>8:
+            raise TransitionError('claim retest delays require ascending bounded seconds')
+        repeated = previous is not None or count >= len(delays)
+        retry_at = now + delays[min(count,len(delays)-1)]
+        db.execute('INSERT INTO worker_claim_attempts VALUES(?,?,?,?,?,?,?,?)',
+            (job_id,key,details['reason'],_json(details),_json(revisions),'repeated' if repeated else 'deferred',retry_at,now))
+        if repeated:
+            failure = {**evidence,'reason':'repeated_worker_claim','claim_key':key,'claim_revisions':revisions}
+            self._result(db,command,job,failure,'failure')
+            from .recovery import record_failure_facts
+            record_failure_facts(db,unit,job,failure,now,store=self.store)
+            charge_id = _id(command.request_id,'charge')
+            db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','execution_failure',?)", (charge_id,job['attempt_id'],now))
+            self._event(db,command,'budget_charged',{'charge_id':charge_id,'reason':'repeated_worker_claim'},job_id=job_id)
+            if job['member_id']:
+                db.execute("UPDATE unit_issues SET state='failed' WHERE id=?", (job['member_id'],))
+            self._open_gate(db,command,'recovery_pending',{'job_id':job_id,'reason':'repeated_worker_claim'},job_id=job_id)
+            if _charges(db,unit)>=3:
+                self._open_gate(db,command,'budget_exhausted',{'limit':3})
+                self._fence(db,command)
+            return {'accepted':True,'charged':True,'recovery_required':True,'claim_key':key}
+        self._result(db,command,job,evidence,'deferred')
+        gates = []
+        for pin in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (job_id,)).fetchall():
+            prior = db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL", (unit['id'],pin[0])).fetchone()
+            if prior:
+                if eligible_gate_in(db,prior):
                     hydrate_in(db,unit,prior,now)
                     gate_id = prior['id']
                 else:
-                    gate_id = self._open_gate(db,command,'environment',{**details,'source':'worker_claim','job_id':job_id,'retry_at':retry_at},pin[0])
-                db.execute('INSERT INTO worker_claim_obligations(gate_id,job_id,member_id) VALUES(?,?,?)', (gate_id,job_id,pin[0]))
-                gates.append(gate_id)
-            return {'accepted':True,'charged':False,'gate_ids':gates,'gate_id':gates[0] if len(gates)==1 else None}
-        return self._apply(command,'defer_worker_claim',payload,change)
+                    own=db.execute("SELECT id FROM unit_gates WHERE job_id=? AND code='environment' AND resolved_at IS NULL",(job_id,)).fetchone()
+                    gate_id=own['id'] if own else self._open_gate(db,command,'environment',
+                        {**details,'source':'worker_claim','job_id':job_id,'retry_at':retry_at,
+                         'requirements_by_member':dict(db.execute('SELECT member_id,requirements_revision_id FROM job_members WHERE job_id=?',(job_id,)))},job_id=job_id)
+            else:
+                gate_id = self._open_gate(db,command,'environment',{**details,'source':'worker_claim','job_id':job_id,'retry_at':retry_at},pin[0])
+            db.execute('INSERT INTO worker_claim_obligations(gate_id,job_id,member_id) VALUES(?,?,?)', (gate_id,job_id,pin[0]))
+            gates.append(gate_id)
+        return {'accepted':True,'charged':False,'gate_ids':gates,'gate_id':gates[0] if len(gates)==1 else None}
 
     def recheck_in(self, db, command, unit, gate_ids, *, member_id=None, explicit=False, reason=None):
         resolved, released = [], []

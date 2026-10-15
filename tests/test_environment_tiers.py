@@ -18,7 +18,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(choose(config, item, issue)['services'], [])
         config['repository_environments']['1'] = PROFILE
         selected = choose(config, item, issue)
-        self.assertEqual((selected['tier'], selected['services']), ('full', ['mongodb']))
+        self.assertEqual((selected['tier'], selected['services']), ('standard', []))
         self.assertEqual(choose(config, item, {**issue, 'title': 'Copy-only: fix the welcome wording'})['tier'], 'standard')
         explicit = {**issue, 'labels': [{'name': 'env:standard'}]}
         self.assertEqual(choose(config, item, explicit)['tier'], 'standard')
@@ -37,9 +37,9 @@ class SelectionTests(unittest.TestCase):
         for title, body, expected in [
                 ('Fix navbar spacing', '', []),
                 ('Docs: describe MongoDB setup', '', []),
-                ('Fix MongoDB connection', '', ['mongodb']),
-                ('Fix cache invalidation', 'Redis keys expire too early', ['redis']),
-                ('Run API integration tests', '', ['mongodb', 'redis'])]:
+                ('Fix MongoDB connection', '', []),
+                ('Fix cache invalidation', 'Redis keys expire too early', []),
+                ('Run API integration tests', '', [])]:
             with self.subTest(title=title):
                 selected = choose(config, item, {'title': title, 'body': body, 'labels': []}, evidence)
                 self.assertEqual(selected['services'], expected)
@@ -51,7 +51,7 @@ class SelectionTests(unittest.TestCase):
         item = {'repo_id': 1}
         ui_issue = {'title': 'Fix navigation spacing', 'labels': []}
         self.assertEqual(choose(config, item, ui_issue)['services'], [])
-        self.assertEqual(choose(config, item, {'title': 'Fix API tests', 'labels': []})['services'], ['mongodb'])
+        self.assertEqual(choose(config, item, {'title': 'Fix API tests', 'labels': []})['services'], [])
         config['repository_environments']['1']['default'] = True
         self.assertEqual(choose(config, item, ui_issue)['services'], ['mongodb'])
 

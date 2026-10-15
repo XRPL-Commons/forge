@@ -489,10 +489,10 @@ class ResultControllerTests(unittest.TestCase):
                 self.assertFalse(self.controller.step(job)['charged'])
                 self.assertEqual(self.charges(), 0)
 
-    def test_fabricated_dependency_quote_is_charged_failure(self):
+    def test_legacy_dependency_claim_is_grounded_without_matching_prose(self):
         job = self.reserve()
-        self.capture(job, self.report(job, 'waiting_on_issues', issues=[2], evidence='Depends on #2'))
-        self.assertTrue(self.controller.step(job)['charged'])
+        self.capture(job, self.report(job, 'waiting_on_issues', issues=[2], evidence='Needed API work'))
+        self.assertFalse(self.controller.step(job)['charged'])
 
     def test_github_outage_keeps_capture_pending_for_retry(self):
         job = self.reserve()

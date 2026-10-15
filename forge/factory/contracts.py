@@ -7,7 +7,7 @@ import uuid
 ROLES = ('steward', 'recovery', 'audit', 'review', 'build')
 SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?\Z')
 MARKER = re.compile(r'<!-- forge-submission\s+(.*?)\s+-->', re.S)
-BUILD_CANDIDATE_OUTCOMES = frozenset({'pass', 'needs_human_verification'})
+BUILD_CANDIDATE_OUTCOMES = frozenset({'pass', 'needs_human_verification', 'done'})
 ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services', 'github_permission')
 # Plain-language limits, shared with harness.schema(). result() truncates, never rejects.
 HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES = 90, 360, 3
@@ -145,24 +145,19 @@ _DEPENDENCY_REF = (r'(?:https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?
 
 
 def _dependency_tokens(body):
-    """Parse explicit prerequisite clauses once for both public contracts."""
-    found = set()
-    fenced = False
+    """Read only the explicit operator directive, outside fenced code."""
+    found, fenced = set(), False
     for line in (body or '').splitlines():
         if line.lstrip().startswith(('```', '~~~')):
             fenced = not fenced
             continue
-        if fenced:
+        if fenced or not line.startswith('Depends on: '):
             continue
-        matches = list(re.finditer(_DEPENDENCY_REF +
-            r'\s+(?:must|needs to|has to|should)\s+(?:be\s+)?'
-            r'(?:merged|closed|done|finished|completed|landed|shipped|land|ship|merge)\b[^.;]*?\bfirst\b', line, re.I))
-        for start in re.finditer(START + r'|^[\W_]*follows\b', line, re.I):
-            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:',
-                              line[start.end():], maxsplit=1, flags=re.I)[0]
-            matches.extend(re.finditer(_DEPENDENCY_REF, clause))
-        for match in matches:
-            found.add((match[1] or match[2], int(match[3])))
+        values = line[len('Depends on: '):].split(',')
+        matches = [re.fullmatch(_DEPENDENCY_REF, value.strip()) for value in values]
+        if not matches or not all(matches):
+            continue
+        found.update((match[1] or match[2], int(match[3])) for match in matches)
     return found
 
 
@@ -189,13 +184,6 @@ def issue_dependencies(body, item=None, *, content_hash=None):
                 if item.get('dependency_body') == (content_hash or digest(body or '')) else [])
     return sorted(set(dependencies(body)) | set(declared))
 
-
-# Statements that something must finish before this issue starts. Written for
-# how people phrase it ("Do not start until #90 is closed", "depends on #101"),
-# never for mentions or downstream links ("blocks #5", "see #3").
-START = (r'\b(?:blocked (?:by|on)\b|depends on\b|dependency:|dependencies:|prerequisites?:'
-         r'|(?:do not|don\'t|cannot|can\'t) (?:start|begin) (?:until|before)\b|wait(?:s|ing)? (?:for|on|until)\b'
-         r'|(?:start|begin)s? (?:only )?after\b)')
 
 
 def references_issue(body, repo, number):
@@ -272,6 +260,15 @@ def candidate(pr, job, requirements, policy):
 
 
 def result(value, job):
+    if job.get('build_result_version')==2 and (not isinstance(value,dict) or value.get('version')!=2):
+        raise ValueError('This build requires its pinned version 2 result')
+    if job['role']=='build' and isinstance(value,dict) and value.get('version')==2:
+        from .build_results import validate
+        return validate(value,job)
+    return result_v1(value,job)
+
+
+def result_v1(value, job):
     if job['role'] == 'steward':
         from ..steward_contract import decision
         from ..store.models import TransitionError
@@ -375,10 +372,6 @@ def result(value, job):
     value['plain'] = plain_text(written)
     value['operator_summary'] = (plain_text(value['operator_summary'], OPERATOR_SUMMARY_LIMIT, 2)
                                  if 'operator_summary' in value else operator_text(written))
-    # A push GitHub refused by repository rule is not a broken environment,
-    # whichever blocker the worker picked.
-    if value['outcome'] == 'blocked_environment' and value.get('blocker') != 'services' and github_rule(value['summary']):
-        value['blocker'] = 'github_permission'
     if ((value['outcome'] == 'blocked_environment' and value.get('blocker') not in ENVIRONMENT_BLOCKERS)
             or (value['outcome'] != 'blocked_environment' and value.get('blocker') is not None)):
         raise ValueError('Environment blockers require a supported reason code')
@@ -473,7 +466,35 @@ def assignment_note(job):
         'The supervisor alone changes pipeline labels and internal lifecycle state. '
         'Report a question or inability as a structured result; never launch another worker. '
         'Return the result contract as your final structured response. The image-owned harness writes /work/result.json atomically; do not write that file yourself or classify its tool-sandbox inaccessibility as a blocker. Never include credentials.')
+    if job['role']=='build':
+        from .build_results import schema
+        base['result_schema']=schema(job)
+        base['instructions'] += (' Return build result version 2 with outcome done or cannot_complete. '
+            'Use typed claims for prerequisites, operator decisions, environment needs or oversized scope. '
+            'Use repository_id and issue_number for dependencies; prose is evidence only. '
+            'A done planning assignment supplies delegation_plan; a done implementation supplies output_commit. '
+            'For incomplete work, completion artifacts and verification are null. '
+            'A completed implementation may include verification for checks requiring human access. ')
     base['instructions'] += plain_language()
+    if job['role']=='build':
+        base['instructions'] += (
+            ' Use the repository lockfile and declared package manager. Node, npm, Corepack, a compiler, '
+            'Chromium and safe-build are available. Run bounded validation sequentially and stop test servers. '
+            'For selected database services, forge-services safe-build COMMAND starts and stops isolated local servers. '
+            'Do not download browsers or database servers, use Docker, or access production databases. '
+            'Report environment obstacles as typed environment claims with a configured environment_id, '
+            'a reason code and concrete evidence. Dependency-access failures belong in environment claims. '
+            'Issue prerequisites use wait_on_issue identities, without requiring a quote in the issue body. '
+            'Code failures use cannot_complete with findings, not an environment claim. '
+            'When implementation is complete but a check requires human or deployed access, return done '
+            'with verification.what, why and configured checks; commit the implementation first. '
+            'Claims do not grant permissions, reset budgets, or bypass independent Review and Audit. '
+            + publication(job))
+        if job.get('builder_stage') or job.get('task'):
+            from .delegation_contracts import assignment
+            return assignment(base,job)
+        return base
+
     base['instructions'] += (
         ' Forge supplies Node, npm, Corepack/pnpm, a native compiler, Chromium and safe-build. '
         'Use the repository lockfile and declared package manager; install dependencies in the native tool sandbox. '
@@ -518,27 +539,7 @@ def assignment_note(job):
             'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
             'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
             'Never return blocked_environment or reject only because a check needs access outside the worker.')
-    if job['role'] == 'build' and (job.get('builder_stage') or job.get('task')):
-        from .delegation_contracts import assignment
-        return assignment(base, job)
-    if job['role'] == 'build':
-        base['instructions'] += (
-            ' If an open issue in this repository must finish first, return waiting_on_issues with issues '
-            'listing its issue numbers and evidence quoting the assigned issue requirements. Do not include '
-            'this issue itself, pull requests, or issues from another repository. Forge checks their state '
-            'and resumes automatically once they close; this is not a decision or an environment blocker. '
-            'Reserve dependency_access for unavailable package registries, repository access or network access. '
-            'For other outcomes use issues [] and evidence null. '
-            ' If the requirements cannot be met by changing code, or the outcome is an approval, exception '
-            'or policy choice, do not open a PR. Return needs_decision with decision containing the question, '
-            'two to six options, a recommendation and the key evidence in prose. For other outcomes set decision null. '
-            'Never commit raw tool evidence (audit JSON, registry metadata or logs) unless the issue explicitly '
-            'requests that file in the codebase. Summarize evidence in the result, PR description or issue comment. '
-            'Modify only the assigned local checkout. Run relevant validation and describe it in pr_body. '
-            'Preserve the supplied prior work when resume_pr is present. Forge retains the approved publication target '
-            'and handles the branch, pull request and issue references after validating your local output. '
-            'For unsuccessful outcomes return output_commit, pr_title and pr_body null.')
-    elif job['role'] in {'review', 'audit'}:
+    if job['role'] in {'review', 'audit'}:
         base['instructions'] += (
             ' Observed by Forge (observed_by_forge) contains host-verified diff facts bound to this exact candidate, '
             'including protected paths, deleted tests and added test skip markers. Inspect these changes explicitly. '
@@ -586,6 +587,9 @@ def strategist_note(job):
 
 def triage_note(job):
     """Repository planning reads immutable notes and cannot approve its own plan."""
+    if job.get('steward_mode')=='triage':
+        from ..steward_subjects import assignment_note
+        return assignment_note(job)
     return {'id':job['id'],'role':'triage','repo':job['repo'],'repo_id':job['repo_id'],
             'publisher':'forge-triage','candidate':None,'head':job['head'],'deadline':job['deadline'],
             'context':job['context'],'instructions':(

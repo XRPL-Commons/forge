@@ -315,10 +315,10 @@ class DeliveryExecutionTests(unittest.TestCase):
         self.assertEqual(len(manifest['existing_candidates']),2)
         self.assertEqual([row['author'] for row in manifest['existing_candidates']], [row['author'] for row in receipts])
         from forge.factory.ownership import publication_context, approved_source_matches, publication_transfer_matches, ownership
-        context = publication_context(self.store, 'batch', {'number': 2})
+        context = publication_context(self.store, 'batch', {'number': 2, 'repo_id': 1})
         source = manifest['existing_candidates'][1]
         pr = {'number': source['pull_number'], 'state': 'open', 'merged': False, 'body': 'Fixes #2',
-              'user': source['author'], 'head': {'sha': source['head_oid'], 'ref': source['branch'], 'repo': {'id': 1}},
+              'user': source['author'], 'author_association':'COLLABORATOR', 'closing_issues':[{'repository_id':1,'number':2}], 'head': {'sha': source['head_oid'], 'ref': source['branch'], 'repo': {'id': 1}},
               'base': {'ref': 'main', 'repo': {'id': 1}}}
         self.assertTrue(approved_source_matches(pr, context))
         self.assertFalse(publication_transfer_matches(pr, context))
