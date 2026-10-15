@@ -153,6 +153,9 @@ class InstallationSmoke:
         require(self.setup.read()['phase'] == 'active', 'factory_not_started')
         if saved['settings']['phase'] == 'complete':
             return self.status()
+        failure = self.triage_failure(binding)
+        if failure:
+            return failure
         target = binding['repository']
         github = self.github()
         item = {'repo': target['name'], 'repo_id': target['id']}
@@ -218,6 +221,35 @@ class InstallationSmoke:
                     'parked, closed or unanswered work cannot pass installation smoke. Then resume forge install.',
                     'path': '/issues'}}
 
+    def triage_failure(self, binding):
+        """A finished failed proposal needs repair and an explicit new request."""
+        with self.store.read_snapshot() as db:
+            if triage_run_in(db, binding) or db.execute(
+                    "SELECT 1 FROM repository_triage_runs WHERE repository_id=? "
+                    "AND status IN ('queued','running','captured')", (binding['repository']['id'],)).fetchone():
+                return None
+            run = db.execute("SELECT r.id,r.status,r.error FROM repository_triage_runs r "
+                "JOIN triage_proposal_inputs p ON p.proposal_id=r.id JOIN issues i ON i.id=p.issue_id "
+                "WHERE r.repository_id=? AND r.requested_at>=? AND i.github_number=? "
+                "AND NOT EXISTS(SELECT 1 FROM triage_proposal_inputs other "
+                "WHERE other.proposal_id=r.id AND other.issue_id!=p.issue_id) "
+                "ORDER BY r.requested_at DESC,r.rowid DESC LIMIT 1",
+                (binding['repository']['id'], binding['started_at'], binding['number'])).fetchone()
+        if not run or run['status'] != 'failed' or run['error'] == 'maintenance_interrupted':
+            return None
+        reasons = {
+            'steward_cycle_limit: request a new proposal': ('steward_cycle_limit', 'The smoke planner reached its three-attempt limit.'),
+            'triage_result_missing': ('triage_result_missing', 'The smoke planner returned no result.'),
+            'triage_result_invalid': ('triage_result_invalid', 'The smoke planner returned an invalid result.'),
+            'triage_worker_unsuccessful': ('triage_worker_unsuccessful', 'The smoke planner could not complete its task.'),
+            'triage_proposal_invalid': ('triage_proposal_invalid', 'The smoke planner returned an invalid proposal.'),
+            'triage_inputs_changed': ('triage_inputs_changed', 'The smoke planning inputs changed before launch.'),
+        }
+        error, reason = reasons.get(run['error'], ('triage_failed', 'The smoke planner stopped with a failed proposal.'))
+        return {'status': 'smoke_triage_failed', 'proposal_id': run['id'], 'error': error, 'reason': reason,
+                'next_action': {'instruction': 'Inspect the failed proposal in Forge and fix the reported problem. '
+                    'Request new repository triage, then resume forge install.', 'path': '/issues'}}
+
     def accept_keep(self, binding, github, runtime):
         """Installation consent covers exactly one unchanged keep disposition.
 
@@ -265,6 +297,9 @@ class InstallationSmoke:
         require(binding['setup_id'] == self.setup_id, 'smoke_changed')
         if value['phase'] == 'complete':
             return {'status': 'handover_complete', **deepcopy(value['verified'])}
+        failure = self.triage_failure(binding)
+        if failure:
+            return failure
         observed = self.prove(self.root, repository=binding['repository'], number=binding['number'],
                               started_at=binding['started_at'], clock=self.clock)
         with self.store.read_snapshot() as db:

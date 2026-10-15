@@ -244,6 +244,34 @@ class SmokeTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM repository_triage_runs').fetchone()[0], 1)
 
+    def test_terminal_smoke_failure_is_actionable_and_does_not_restart(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        self.call('launch')
+        proposal = plans.runs()[0]['id']
+        plans.settle_run(proposal, error='steward_cycle_limit: request a new proposal')
+        for action in ('status', 'launch', 'launch'):
+            result = self.call(action)
+            self.assertEqual(result['status'], 'smoke_triage_failed')
+            self.assertEqual(result['proposal_id'], proposal)
+            self.assertEqual(result['error'], 'steward_cycle_limit')
+            self.assertIn('Request new repository triage', result['next_action']['instruction'])
+        self.assertEqual(plans.runs(), [])
+        plans.queue(1, request_id='operator-retry', actor_id='operator', base_branch='main')
+        self.assertEqual(self.call('status')['status'], 'smoke_pending')
+        self.assertEqual(self.call('launch')['status'], 'smoke_pending')
+
+    def test_terminal_failure_does_not_expose_raw_error_text(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        self.call('launch')
+        plans.settle_run(plans.runs()[0]['id'], error='unexpected private diagnostic')
+        result = self.call('status')
+        self.assertEqual(result['error'], 'triage_failed')
+        self.assertNotIn('private diagnostic', str(result))
+
     def test_completed_smoke_triage_does_not_schedule_another_run(self):
         self.active_smoke()
         with patch('forge.installation_smoke.triage_run_in', return_value={'id': 'complete'}), \

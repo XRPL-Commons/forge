@@ -55,7 +55,9 @@ class InstallWaitTests(unittest.TestCase):
     def test_manual_or_failed_steps_return_without_polling(self):
         for row in ({'status': 'account_login_required'},
                     {'status': 'account_login_required', 'url': 'https://provider.example'},
-                    {'status': 'account_login_failed'}, {'status': 'write_unconfirmed'}):
+                    {'status': 'account_login_failed'}, {'status': 'write_unconfirmed'},
+                    {'status': 'smoke_triage_failed', 'error': 'steward_cycle_limit',
+                     'next_action': {'instruction': 'Request new repository triage, then resume forge install.'}}):
             with self.subTest(row=row):
                 pending = self.pending(row)
                 result, calls, sleeps, _ = self.run_install([pending])
