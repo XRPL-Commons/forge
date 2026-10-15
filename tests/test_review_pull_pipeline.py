@@ -54,6 +54,11 @@ class HumanPullGitHub(GitHub):
     def publish(self,job):
         raise AssertionError('Human PR must never invoke a builder publication')
 
+    def review_policy_current(self,item,external_ids):
+        policies=[entry for entry in self.published
+                  if entry['kind']=='policy' and entry['head']==item['candidate']['head']]
+        return bool(policies) and policies[-1]['conclusion']=='success' and policies[-1]['external_id'] in external_ids
+
     def merge(self,item):
         self.merge_calls+=1
         raise AssertionError('Human PR review grants no merge authority')
