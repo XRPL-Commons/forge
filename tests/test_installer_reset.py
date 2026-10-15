@@ -21,6 +21,32 @@ INTENT = {'id': 'a' * 32, 'name': 'Anvil', 'revision': 'b' * 40}
 
 
 class ResetImportTests(unittest.TestCase):
+    def test_docker_removal_output_does_not_corrupt_rpc_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = Path(directory) / 'docker'
+            command.write_text('#!/bin/sh\nprintf "%s\\n" "container-removed"\n')
+            command.chmod(0o700)
+            script = """
+import json, sys
+from pathlib import Path
+from forge_client import _reset_host as host, _install_host as install
+install.ENV = {'PATH': sys.argv[1] + ':/usr/bin:/bin'}
+observations = iter([[{'Id': 'd' * 64, 'Name': '/forge-egress-1'}], []])
+host.containers = lambda: next(observations)
+host.egress_identity = lambda container, receipt: {'id': container['Id']}
+def dispatch(request):
+    receipt = {}
+    host.cleanup_egress(Path(sys.argv[1]), receipt)
+    return {'ok': True, 'result': receipt['egress_cleanup']}
+host.dispatch = dispatch
+sys.exit(host.main())
+"""
+            result = subprocess.run([sys.executable, '-c', script, directory], input='{}',
+                cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {'ok': True, 'result': {
+                'status': 'removed', 'identity': {'id': 'd' * 64}}})
+
     def test_installed_reset_module_imports_from_foreign_working_directory(self):
         # --help imports the actual installed entrypoint without initiating reset.
         with tempfile.TemporaryDirectory() as directory:
@@ -111,11 +137,112 @@ class HostResetTests(unittest.TestCase):
         if argv[0] == 'userdel': self.owner = None
         if argv[:2] == ['systemctl', 'show']: return self.manager_state
         if argv[:2] == ['systemctl', 'stop']: self.manager_state = 'inactive'
-        if argv[:3] == ['docker', 'container', 'ls']: return ''
+        if argv[:3] == ['docker', 'container', 'ls']: return '\n'.join(getattr(self, 'containers', {}))
+        if argv[:3] == ['docker', 'container', 'inspect']: return json.dumps([self.containers[key] for key in argv[3:]])
+        if argv[:3] == ['docker', 'container', 'rm']:
+            receipt = host.read_receipt(self.archives / INTENT['id'])
+            self.assertEqual(receipt['egress_cleanup']['status'], 'pending')
+            self.assertEqual(receipt['egress_cleanup']['identity']['id'], argv[-1])
+            del self.containers[argv[-1]]
+            if getattr(self, 'lose_remove_response', False):
+                self.lose_remove_response = False
+                raise host.InstallError('command_failed')
         return ''
 
     def request(self, *, apply=False, revision=None):
         return host.dispatch({'version': 1, 'intent': INTENT, 'apply': apply, 'revision': revision})['result']
+
+    def add_egress(self):
+        self.containers = {}
+        network = self.root / 'deploy/runner'; network.mkdir(parents=True)
+        source = self.source / 'deploy/runner'; source.mkdir(parents=True)
+        for name in ('compose.yaml', 'egress.py'):
+            body = (Path(__file__).resolve().parents[1] / 'deploy/runner' / name).read_text()
+            (network / name).write_text(body); (source / name).write_text(body)
+        identifier = 'd' * 64
+        self.containers[identifier] = {
+            'Id': identifier, 'Name': '/forge-egress-1',
+            'Config': {'Labels': {'com.docker.compose.project': 'forge', 'com.docker.compose.service': 'egress',
+                'com.docker.compose.project.working_dir': str(network),
+                'com.docker.compose.project.config_files': str(network / 'compose.yaml')}},
+            'Mounts': [{'Type': 'bind', 'RW': False, 'Source': str(network / 'egress.py'),
+                        'Destination': '/opt/forge/egress.py'}]}
+        return self.containers[identifier]
+
+    def paused_reset(self):
+        plan = self.request()
+        self.request(apply=True, revision=plan['revision'])
+        self.drained = True
+        return plan
+
+    def test_reset_removes_only_verified_proxy_with_durable_intent(self):
+        proxy = self.add_egress()
+        foreign = 'e' * 64
+        self.containers[foreign] = {'Id': foreign, 'Name': '/other', 'Config': {}, 'Mounts': []}
+        plan = self.paused_reset()
+        self.assertEqual(self.request(apply=True, revision=plan['revision'])['status'], 'reset_complete')
+        self.assertEqual(list(self.containers), [foreign])
+        self.assertEqual([row for row in self.calls if row[:3] == ['docker', 'container', 'rm']],
+                         [['docker', 'container', 'rm', '--force', proxy['Id']]])
+        receipt = host.read_receipt(self.archives / INTENT['id'])
+        self.assertEqual(receipt['egress_cleanup']['status'], 'removed')
+
+    def test_lost_remove_response_resumes_by_observed_absence(self):
+        self.add_egress(); plan = self.paused_reset()
+        self.lose_remove_response = True
+        with self.assertRaises(host.InstallError): self.request(apply=True, revision=plan['revision'])
+        self.assertTrue(self.home.exists())
+        self.assertEqual(host.read_receipt(self.archives / INTENT['id'])['step'], 'stop')
+        self.assertEqual(self.request(apply=True, revision=plan['revision'])['status'], 'reset_complete')
+        self.assertEqual(sum(row[:3] == ['docker', 'container', 'rm'] for row in self.calls), 1)
+
+    def test_replaced_proxy_is_not_removed_after_uncertain_response(self):
+        proxy = self.add_egress(); plan = self.paused_reset()
+        self.lose_remove_response = True
+        with self.assertRaises(host.InstallError): self.request(apply=True, revision=plan['revision'])
+        proxy['Id'] = 'e' * 64
+        self.containers[proxy['Id']] = proxy
+        with self.assertRaisesRegex(host.InstallError, 'egress_changed'):
+            self.request(apply=True, revision=plan['revision'])
+        self.assertTrue(self.home.exists())
+        self.assertEqual(sum(row[:3] == ['docker', 'container', 'rm'] for row in self.calls), 1)
+
+    def test_proxy_reappearing_after_cleanup_blocks_home_archive(self):
+        proxy = self.add_egress(); plan = self.paused_reset()
+        original = self.command
+        def replace_after_account(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[0] == 'userdel':
+                proxy['Id'] = 'e' * 64
+                self.containers[proxy['Id']] = proxy
+            return result
+        with patch.object(host, 'run', side_effect=replace_after_account):
+            with self.assertRaisesRegex(host.InstallError, 'egress_changed'):
+                self.request(apply=True, revision=plan['revision'])
+        self.assertTrue(self.home.exists())
+        self.assertEqual(sum(row[:3] == ['docker', 'container', 'rm'] for row in self.calls), 1)
+
+    def test_foreign_proxy_scope_or_mount_is_never_removed(self):
+        proxy = self.add_egress(); plan = self.paused_reset()
+        for change in ('labels', 'mount', 'script'):
+            with self.subTest(change=change):
+                original = json.loads(json.dumps(proxy))
+                if change == 'labels': proxy['Config']['Labels']['com.docker.compose.project.working_dir'] = '/foreign'
+                if change == 'mount': proxy['Mounts'][0]['RW'] = True
+                if change == 'script': (self.root / 'deploy/runner/egress.py').write_text('foreign script')
+                with self.assertRaisesRegex(host.InstallError, 'foreign_egress'):
+                    self.request(apply=True, revision=plan['revision'])
+                proxy.clear(); proxy.update(original)
+        self.assertFalse(any(row[:3] == ['docker', 'container', 'rm'] for row in self.calls))
+        self.assertTrue(self.home.exists())
+
+    def test_absent_proxy_needs_no_removal_and_preserves_old_reset_identity(self):
+        plan = self.paused_reset()
+        self.assertEqual(self.request(apply=True, revision=plan['revision'])['status'], 'reset_complete')
+        receipt = host.read_receipt(self.archives / INTENT['id'])
+        self.assertEqual(receipt['plan']['revision'], plan['revision'])
+        self.assertEqual(receipt['egress_cleanup'], {'status': 'absent'})
+        self.assertFalse(any(row[:3] == ['docker', 'container', 'rm'] for row in self.calls))
 
     def test_plan_is_read_only_and_lists_archive_and_preserved_resources(self):
         result = self.request()

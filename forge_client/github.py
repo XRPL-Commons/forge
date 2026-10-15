@@ -18,7 +18,7 @@ def run_bounded(argv, *, payload=None, input_bytes=None, input_limit=65536, outp
     env = {k: v for k, v in (os.environ if environ is None else environ).items()
            if k in {'PATH', 'HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'GH_CONFIG_DIR',
                     'GH_TOKEN', 'GITHUB_TOKEN', 'LANG', 'LC_ALL', 'TMPDIR',
-                    'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK'}}
+                    'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'TERM'}}
     env.update(GH_HOST='github.com', GH_PROMPT_DISABLED='1', GH_PAGER='cat', GH_DEBUG='')
     require(payload is None or input_bytes is None)
     require(type(input_limit) is int and 0 < input_limit <= 64 * 1024 * 1024

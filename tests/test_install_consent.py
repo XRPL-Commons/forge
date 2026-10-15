@@ -154,11 +154,25 @@ class FreshConsentTests(unittest.TestCase):
                 try:
                     with urlopen(event['url']) as response:
                         page = response.read().decode()
+                        policy = response.headers['Referrer-Policy']
                     self.assertIn('Continue on GitHub', page)
                     launch = event['url'].replace('/start/', '/launch/')
-                    with urlopen(Request(launch, data=b'')) as response:
+                    origin = 'http://' + urlsplit(event['url']).netloc
+                    # Browsers serialize the Origin as null for a form POST
+                    # whose page uses no-referrer. urllib does not do this.
+                    browser_origin = 'null' if policy == 'no-referrer' else origin
+                    for rejected_origin in ('null', 'https://evil.example'):
+                        with self.assertRaises(HTTPError) as rejected:
+                            urlopen(Request(launch, data=b'', headers={'Origin': rejected_origin}))
+                        self.assertEqual(rejected.exception.code, 400)
+                        rejected.exception.close()
+                        self.assertEqual(self.client.state['phase'], 'waiting')
+                        self.client.convert_app.assert_not_called()
+                    with urlopen(Request(launch, data=b'', headers={'Origin': browser_origin})) as response:
+                        self.assertEqual(response.headers['Referrer-Policy'], 'same-origin')
                         first_form = response.read().decode()
                         self.assertIn('name="manifest"', first_form)
+                    self.assertEqual(policy, 'same-origin')
                     with self.assertRaises(HTTPError) as replay: urlopen(Request(launch, data=b''))
                     self.assertEqual(replay.exception.code, 409)
                     replay.exception.close()
@@ -166,11 +180,12 @@ class FreshConsentTests(unittest.TestCase):
                     # merely reopening or replaying the first form cannot do so.
                     registration_before = deepcopy(self.client.state['registration'])
                     with urlopen(event['url']) as response:
+                        self.assertEqual(response.headers['Referrer-Policy'], 'same-origin')
                         self.assertIn('no App was created', response.read().decode())
                     retry = event['url'].replace('/start/', '/retry/')
                     confirmation = urlencode({'nonce': self.client.state['refusal_nonce'],
                         'missing_manifest_no_app': 'confirmed'}).encode()
-                    with urlopen(Request(retry, data=confirmation)) as response:
+                    with urlopen(Request(retry, data=confirmation, headers={'Origin': origin})) as response:
                         self.assertIn('name="manifest"', response.read().decode())
                     self.assertEqual(self.client.state['registration'], registration_before)
                     with self.assertRaises(HTTPError) as repeated:

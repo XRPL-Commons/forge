@@ -141,7 +141,9 @@ class InstallConsent:
                 self.send_response(status)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.send_header('Cache-Control', 'no-store')
-                self.send_header('Referrer-Policy', 'no-referrer')
+                # Preserve the loopback Origin on local form POSTs while keeping
+                # the private setup URL out of cross-origin GitHub requests.
+                self.send_header('Referrer-Policy', 'same-origin')
                 self.send_header('Content-Security-Policy', "default-src 'none'; form-action 'self' https://github.com; frame-ancestors 'none'"
                                  + ("; script-src 'nonce-" + nonce + "'" if nonce else ''))
                 if location: self.send_header('Location', location)

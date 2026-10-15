@@ -5,10 +5,11 @@ from urllib.request import Request, build_opener, ProxyHandler
 from .contracts import require
 from .connection import NoRedirect
 from .github import run_bounded
+from .tailnet import executable as tailscale_executable, environment as tailscale_environment
 
 
 def operator(github, *, run=run_bounded):
-    status = json.loads(run(['tailscale', 'status', '--json'], timeout=15))
+    status = json.loads(run([tailscale_executable(), 'status', '--json'], timeout=15, environ=tailscale_environment()))
     own = status.get('Self') or {}
     user = (status.get('User') or {}).get(str(own.get('UserID'))) or {}
     name = user.get('LoginName')
