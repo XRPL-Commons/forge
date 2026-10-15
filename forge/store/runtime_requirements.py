@@ -142,17 +142,24 @@ class RuntimeRequirements(Executions):
                 or _dependency_facts(json.loads(previous['facts_json'])) != _dependency_facts(facts))
             db.execute('INSERT INTO dependency_checks VALUES(?,?,?,?,?,?,?,?)',
                        (_id(command.request_id,'dependency-check'),unit['id'],member['id'],requirements_revision_id,generation,int(clear),_json(facts),self.clock()))
-            gates=db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='dependency' AND member_id IS ? AND resolved_at IS NULL",
-                             (unit['id'],member['id'])).fetchall()
+            gates=db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='dependency' AND resolved_at IS NULL "
+                             "AND (member_id IS ? OR EXISTS(SELECT 1 FROM job_members p WHERE p.job_id=unit_gates.job_id AND p.member_id=?))",
+                             (unit['id'],member['id'],member['id'])).fetchall()
             owned=[g for g in gates if json.loads(g['details_json']).get('source')=='runtime_dependencies']
             current_digest=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(requirements_revision_id,)).fetchone()[0])
             for gate in gates:
                 details=json.loads(gate['details_json'])
+                scope=details.get('requirements_by_member')
+                if scope and not any(db.execute('SELECT 1 FROM unit_issues WHERE id=? AND requirements_revision_id=? AND left_at IS NULL',
+                        (identifier,revision)).fetchone() for identifier,revision in scope.items()):
+                    authority_changed=True
+                    self._resolve(db,command,gate['id'],{'superseded_by_requirements':requirements_revision_id})
                 if details.get('requirements') is not None and details['requirements']!=current_digest:
                     authority_changed = True
                     self._resolve(db,command,gate['id'],{'superseded_by_requirements':requirements_revision_id})
-            worker_wait=any(json.loads(gate['details_json']).get('requirements')==current_digest
-                            and json.loads(gate['details_json']).get('issues') for gate in gates)
+            worker_wait=any((json.loads(gate['details_json']).get('requirements')==current_digest
+                            or json.loads(gate['details_json']).get('requirements_by_member',{}).get(member['id'])==requirements_revision_id)
+                            and (json.loads(gate['details_json']).get('issues') or json.loads(gate['details_json']).get('references')) for gate in gates)
             if clear:
                 for gate in owned:
                     authority_changed = True
@@ -162,9 +169,10 @@ class RuntimeRequirements(Executions):
                 digest=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(requirements_revision_id,)).fetchone()[0])
                 for gate in gates:
                     details=json.loads(gate['details_json'])
-                    if details.get('requirements')==digest and {own.rsplit('#',1)[0]+'#'+str(number) for number in details.get('issues',[])}<=set(refs):
+                    if (details.get('requirements')==digest or details.get('requirements_by_member',{}).get(member['id'])==requirements_revision_id) and ({own.rsplit('#',1)[0]+'#'+str(number) for number in details.get('issues',[])} | set(details.get('references',[])))<=set(refs):
                         authority_changed = True
-                        self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation})
+                        self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation,
+                            'verified_requirements':details.get('requirements_by_member',{})})
             elif (not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned)) and (authority_changed or not worker_wait):
                 authority_changed = True
                 for gate in owned:
@@ -185,31 +193,34 @@ class RuntimeRequirements(Executions):
                 or not isinstance(config_hash,str) or not config_hash):
             raise TransitionError('environment selection needs a bounded supported choice')
         payload=dict(requirements_revision_id=requirements_revision_id,choice=choice,labels=labels,config_hash=config_hash)
-        def change(db,unit):
-            self._live(unit)
-            member=self._revision_member(db,unit,requirements_revision_id)
-            if member['requirements_revision_id']!=requirements_revision_id:
-                raise TransitionError('environment selection quotes obsolete requirements')
-            current=db.execute('SELECT revision FROM unit_environment WHERE unit_id=? ORDER BY revision DESC LIMIT 1',(unit['id'],)).fetchone()
-            revision=current[0]+1 if current else 1
-            target='env:'+choice['tier']
-            for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],member['id'])).fetchall():
-                if json.loads(gate['details_json']).get('source')=='runtime_selection':
-                    self._resolve(db,command,gate['id'],{'environment_ready':choice,'requirements_revision_id':requirements_revision_id})
-            db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at,member_id) VALUES(?,?,?,?,?,?,?)',
-                       (unit['id'],revision,_json(choice),requirements_revision_id,config_hash,self.clock(),member['id']))
-            db.execute('INSERT INTO issue_environment_observations(issue_id,choice_json,label) VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET choice_json=excluded.choice_json,label=excluded.label',
-                       (member['issue_id'],_json(choice),target))
-            effect_id=None
-            if set(labels)!={target}:
-                effect_id=_id(command.request_id,'environment-label')
-                db.execute("INSERT INTO external_effects(id,request_id,unit_id,kind,status,expected_version,payload_json,created_at,updated_at) VALUES(?,?,?,'environment_label','pending',?,?,?,?)",
-                    (effect_id,command.request_id,unit['id'],unit['version']+1,_json(payload),self.clock(),self.clock()))
-                db.execute('INSERT INTO environment_label_effects VALUES(?,?,?,?,?,?,?)',
-                    (effect_id,unit['id'],revision,member['id'],requirements_revision_id,target,_json(sorted(set(labels)))))
-            self._event(db,command,'lifecycle_changed',{'environment_revision':revision,'choice':choice,'effect_id':effect_id})
-            return {'revision':revision,'effect_id':effect_id}
-        return self._apply(command,'select_environment',payload,change)
+        return self._apply(command,'select_environment',payload,
+            lambda db,unit:self.select_environment_in(db,command,unit,**payload))
+
+    def select_environment_in(self,db,command,unit,*,requirements_revision_id,choice,labels,config_hash):
+        payload=dict(requirements_revision_id=requirements_revision_id,choice=choice,labels=labels,config_hash=config_hash)
+        self._live(unit)
+        member=self._revision_member(db,unit,requirements_revision_id)
+        if member['requirements_revision_id']!=requirements_revision_id:
+            raise TransitionError('environment selection quotes obsolete requirements')
+        current=db.execute('SELECT revision FROM unit_environment WHERE unit_id=? ORDER BY revision DESC LIMIT 1',(unit['id'],)).fetchone()
+        revision=current[0]+1 if current else 1
+        target='env:'+choice['tier']
+        for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],member['id'])).fetchall():
+            if json.loads(gate['details_json']).get('source')=='runtime_selection':
+                self._resolve(db,command,gate['id'],{'environment_ready':choice,'requirements_revision_id':requirements_revision_id})
+        db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at,member_id) VALUES(?,?,?,?,?,?,?)',
+                   (unit['id'],revision,_json(choice),requirements_revision_id,config_hash,self.clock(),member['id']))
+        db.execute('INSERT INTO issue_environment_observations(issue_id,choice_json,label) VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET choice_json=excluded.choice_json,label=excluded.label',
+                   (member['issue_id'],_json(choice),target))
+        effect_id=None
+        if set(labels)!={target}:
+            effect_id=_id(command.request_id,'environment-label')
+            db.execute("INSERT INTO external_effects(id,request_id,unit_id,kind,status,expected_version,payload_json,created_at,updated_at) VALUES(?,?,?,'environment_label','pending',?,?,?,?)",
+                (effect_id,command.request_id,unit['id'],unit['version']+1,_json(payload),self.clock(),self.clock()))
+            db.execute('INSERT INTO environment_label_effects VALUES(?,?,?,?,?,?,?)',
+                (effect_id,unit['id'],revision,member['id'],requirements_revision_id,target,_json(sorted(set(labels)))))
+        self._event(db,command,'lifecycle_changed',{'environment_revision':revision,'choice':choice,'effect_id':effect_id})
+        return {'revision':revision,'effect_id':effect_id}
 
     def environment_receipt(self,effect_id,*,status,observed_labels):
         if status not in {'confirmed','superseded'} or not isinstance(observed_labels,list):
@@ -367,3 +378,41 @@ class RuntimeRequirements(Executions):
             self._event(db,command,'lifecycle_changed',{'environment_retry':kind,'job_id':job_id,'selection':selection})
             return {'accepted':True,'retry':kind,'selection':selection}
         return self._apply(command,'retry_environment',payload,change)
+
+
+def steward_environment_in(lifecycle,db,command,unit,environment,config,*,member_ids=None):
+    """Apply an accepted typed brief through the existing environment authority."""
+    from ..factory.environments import services
+    from .models import Command
+    if not isinstance(environment,dict) or set(environment)!={'environment_id','services'}:
+        raise TransitionError('Steward environment needs a configured tier and services')
+    tier=environment['environment_id'];selected=services(environment['services'])
+    if tier not in config['environment_tiers'] or tier not in {'standard','full'} or tier=='standard' and selected:
+        raise TransitionError('Steward environment is not configured')
+    rows=list(db.execute('SELECT m.id,m.issue_id,m.requirements_revision_id,i.labels_json FROM unit_issues m '
+        'JOIN issues i ON i.id=m.issue_id WHERE m.unit_id=? AND m.left_at IS NULL ORDER BY m.id',(unit['id'],)))
+    wanted={row['id'] for row in rows} if member_ids is None else set(member_ids)
+    if not wanted or not wanted <= {row['id'] for row in rows}:
+        raise TransitionError('Steward environment requires exact live member scope')
+    policy=manifest_hash({key:config[key] for key in ('environment_tiers','repository_environments','memory_tiers')})
+    results=[]
+    commands=RuntimeRequirements(lifecycle.store,clock=lifecycle.clock)
+    for member in rows:
+        if member['id'] not in wanted:continue
+        existing=db.execute('SELECT choice_json,override_json FROM issue_environment_observations WHERE issue_id=?',(member['issue_id'],)).fetchone()
+        previous=json.loads(existing['choice_json'] or '{}') if existing else {}
+        manual=json.loads(existing['override_json']) if existing and existing['override_json'] else None
+        labels=[label for label in json.loads(member['labels_json']) if label.startswith('env:')]
+        explicit=labels and not (previous.get('automatic') and labels==['env:'+str(previous.get('tier'))])
+        if manual or previous.get('automatic') is False or explicit:
+            chosen=manual['mode'] if manual else labels[0][4:] if explicit else previous.get('tier')
+            chosen_services=manual['services'] if manual else previous.get('services',[])
+            if chosen!=tier or sorted(chosen_services)!=selected:
+                raise TransitionError('An independent operator environment choice conflicts with the brief')
+            continue
+        child=Command(_id(command.request_id,'steward-environment:'+member['id']),command.actor_id,unit['id'],unit['version'])
+        choice={'tier':tier,'services':selected,'reason':'Environment selected by the accepted steward brief',
+                'automatic':True,'source':'steward','evidence_head':None,'evidence':[]}
+        results.append(commands.select_environment_in(db,child,unit,requirements_revision_id=member['requirements_revision_id'],
+            choice=choice,labels=labels,config_hash=policy))
+    return results
