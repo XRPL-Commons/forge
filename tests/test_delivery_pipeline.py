@@ -69,6 +69,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.publication.return_value = None
         self.github.pulls.return_value = []
         self.github.publisher.side_effect = lambda role: role + '[bot]'
+        self.github.publishers.side_effect = lambda role: [role + '[bot]']
         self.verdicts = Mock(); self.verdicts.ensure.return_value = {'check_id': 7}
         self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config, job['repo_id'], repository_name=job['repo']), verdicts=self.verdicts, clock=lambda: self.now)
         self.dispatch = self.dispatcher()
