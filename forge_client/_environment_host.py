@@ -16,7 +16,7 @@ def dispatch(request):
     need(installed and installed['intent'] == request['intent'], 'installation_conflict')
     need(installed['step'] == 'complete', 'installation_required')
     require_setup_entrypoint(SOURCE, 'forge.install_environment')
-    command = ['/usr/bin/python3', '-m', 'forge.launch', 'forge.install_environment',
+    command = ['/usr/bin/env', '-C', str(SOURCE), '/usr/bin/python3', '-m', 'forge.launch', 'forge.install_environment',
                '--root', str(ROOT), '--setup-id', request['intent']['id']]
     if request['apply']:
         command.append('--apply')

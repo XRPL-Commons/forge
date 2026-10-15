@@ -1,6 +1,9 @@
 from contextlib import ExitStack
+import os
 from pathlib import Path
 from types import SimpleNamespace
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -177,6 +180,33 @@ class EnvironmentTests(unittest.TestCase):
 
 
 class HostTests(unittest.TestCase):
+    def test_installed_environment_module_imports_from_foreign_working_directory(self):
+        # Exercise the real launch/import boundary, without running Docker or systemd.
+        # A shadow package in the SSH login directory must never be imported.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'runtime'; selected_store(root)
+            foreign = Path(directory) / 'login'; (foreign / 'forge').mkdir(parents=True)
+            (foreign / 'forge/__init__.py').write_text("raise RuntimeError('wrong working directory')")
+            source = Path(__file__).resolve().parents[1]
+            def service(argv, capture=False):
+                command = [sys.executable if arg == '/usr/bin/python3' else arg for arg in argv]
+                # Keep CI's qualified SQLite library, without relying on a
+                # PYTHONPATH that could hide a wrong service working directory.
+                environment = {'HOME': directory, 'PATH': '/usr/bin:/bin'}
+                if 'LD_LIBRARY_PATH' in os.environ:
+                    environment['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH']
+                result = subprocess.run([*command, '--help'], cwd=foreign,
+                    env=environment, text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('--setup-id', result.stdout)
+                return '{"imported": true}'
+            intent = {'id': ID, 'name': 'Anvil', 'revision': 'd' * 40}
+            with patch.object(_environment_host, 'SOURCE', source), patch.object(_environment_host, 'ROOT', root), \
+                    patch.object(_environment_host, 'read', return_value={'intent': intent, 'step': 'complete'}), \
+                    patch.object(_environment_host, 'service', side_effect=service):
+                self.assertEqual(_environment_host.dispatch({'version': 1, 'intent': intent, 'apply': False}),
+                                 {'ok': True, 'result': {'imported': True}})
+
     def test_foreign_installation_is_rejected_before_service_dispatch(self):
         intent = {'id': ID, 'name': 'Anvil', 'revision': 'd' * 40}
         with patch.object(_environment_host, 'read', return_value={'intent': {**intent, 'id': 'e' * 32}}), \
@@ -192,7 +222,7 @@ class HostTests(unittest.TestCase):
                 patch.object(_environment_host, 'service', return_value='{"status":"environment_installing"}') as service:
             result = _environment_host.dispatch({'version': 1, 'intent': intent, 'apply': True})
             self.assertTrue(result['ok'])
-            self.assertEqual(service.call_args.args[0], ['/usr/bin/python3', '-m', 'forge.launch',
+            self.assertEqual(service.call_args.args[0], ['/usr/bin/env', '-C', str(_environment_host.SOURCE), '/usr/bin/python3', '-m', 'forge.launch',
                 'forge.install_environment', '--root', '/home/forge/.local/share/forge', '--setup-id', ID, '--apply'])
 
 

@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -16,6 +18,31 @@ from forge_client.workflow import Journal
 from tests.sqlite_fixture import selected_store
 
 INTENT = {'id': 'a' * 32, 'name': 'Anvil', 'revision': 'b' * 40}
+
+
+class ResetImportTests(unittest.TestCase):
+    def test_installed_reset_module_imports_from_foreign_working_directory(self):
+        # --help imports the actual installed entrypoint without initiating reset.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'runtime'; selected_store(root)
+            foreign = Path(directory) / 'login'; (foreign / 'forge').mkdir(parents=True)
+            (foreign / 'forge/__init__.py').write_text("raise RuntimeError('wrong working directory')")
+            source = Path(__file__).resolve().parents[1]
+            def service(argv, capture=False):
+                command = [sys.executable if arg == '/usr/bin/python3' else arg for arg in argv]
+                # CI qualifies SQLite through its library path; preserve that
+                # runtime while still excluding PYTHONPATH and the login cwd.
+                environment = {'HOME': directory, 'PATH': '/usr/bin:/bin'}
+                if 'LD_LIBRARY_PATH' in os.environ:
+                    environment['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH']
+                result = subprocess.run([*command, '--help'], cwd=foreign,
+                    env=environment, text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('--generation', result.stdout)
+                return '{"imported": true}'
+            with patch.object(host, 'SOURCE', source), patch.object(host, 'ROOT', root), \
+                    patch.object(host, 'service', side_effect=service):
+                self.assertEqual(host.snapshot(), {'imported': True})
 
 
 class HostResetTests(unittest.TestCase):
@@ -281,6 +308,67 @@ class HostResetTests(unittest.TestCase):
              patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=1001, st_mode=0o100644)):
             with self.assertRaises(host.InstallError):
                 host.user_units_clear(INTENT, 1001)
+
+
+    def test_default_ubuntu_inventory_ignores_reflected_units_and_inactive_package_services(self):
+        rows = ['init.scope loaded active running Manager',
+                'sys-devices-virtual-net-eth0.device loaded active plugged Network',
+                'proc-sys-fs-binfmt_misc.mount loaded active mounted Kernel',
+                '-.slice loaded active active Root',
+                'blockdev@dev-loop0.target loaded inactive dead Block device',
+                'network-online.target loaded active active Network']
+        rows += [name + ' loaded active running Forge' for name in host.SERVICES]
+        rows += [name + '.service loaded inactive dead Package service' for name in
+                 ('dbus', 'dirmngr', 'gpg-agent', 'keyboxd', 'launchpadlib-cache-clean',
+                  'pk-debconf-helper', 'snapd.session-agent')]
+        rows += [name + '.socket loaded active listening Package socket' for name in
+                 ('dbus', 'dirmngr', 'gpg-agent', 'gpg-agent-browser', 'gpg-agent-extra',
+                  'gpg-agent-ssh', 'keyboxd', 'pk-debconf-helper', 'snapd.session-agent')]
+        rows.append('launchpadlib-cache-clean.timer loaded active waiting Package timer')
+        inspected = []
+        def units(argv, capture=False):
+            if 'list-units' in argv:
+                self.assertIn('--type=service,scope,socket,timer,path', argv)
+                return '\n'.join(rows)
+            name = argv[3]; inspected.append(name)
+            path = self.units / name if name in host.SERVICES else Path('/usr/lib/systemd/user') / name
+            result = 'FragmentPath=' + str(path) + '\nDropInPaths=\nTransient=no'
+            if 'ControlGroup' in argv[-1]: result += '\nControlGroup='
+            return result
+        with patch.object(host, 'service', side_effect=units), patch.object(Path, 'is_file', return_value=True), \
+             patch.object(Path, 'resolve', lambda path: path), \
+             patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=0, st_mode=0o100644)):
+            host.user_units_clear(INTENT, 1001)
+        self.assertTrue(all(name.endswith(('.service', '.socket', '.timer')) for name in inspected))
+
+    def test_inactive_service_requires_empty_cgroup_and_unmodified_package_fragment(self):
+        base = {'FragmentPath': '/usr/lib/systemd/user/gpg-agent.service', 'DropInPaths': '',
+                'Transient': 'no', 'ControlGroup': ''}
+        cases = [dict(base, ControlGroup='/user.slice/leftover'), dict(base, Transient='yes'),
+                 dict(base, FragmentPath='/run/user/1001/systemd/transient/gpg-agent.service'),
+                 dict(base, FragmentPath=str(self.units / 'gpg-agent.service')),
+                 dict(base, DropInPaths=str(self.units / 'gpg-agent.service.d/custom.conf'))]
+        for value in cases:
+            with self.subTest(value=value):
+                def units(argv, capture=False):
+                    if 'list-units' in argv: return 'gpg-agent.service loaded inactive dead Agent'
+                    return '\n'.join(key + '=' + item for key, item in value.items())
+                with patch.object(host, 'service', side_effect=units), patch.object(Path, 'is_file', return_value=True), \
+                     patch.object(Path, 'resolve', lambda path: path), \
+                     patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=0, st_mode=0o100644)):
+                    with self.assertRaisesRegex(host.InstallError, 'unsafe_user_units'):
+                        host.user_units_clear(INTENT, 1001)
+
+    def test_unrelated_active_package_workload_and_activation_units_remain_blocked(self):
+        for unit, active, substate in [('gpg-agent.service', 'active', 'running'),
+                                     ('gpg-agent.service', 'failed', 'failed'),
+                                     ('custom-backup.timer', 'active', 'waiting'),
+                                     ('custom-backup.path', 'active', 'waiting'),
+                                     ('custom-agent.socket', 'active', 'listening')]:
+            with self.subTest(unit=unit, active=active), patch.object(host, 'service',
+                    return_value=f'{unit} loaded {active} {substate} Unrelated workload'):
+                with self.assertRaisesRegex(host.InstallError, 'unrelated_user_unit'):
+                    host.user_units_clear(INTENT, 1001)
 
 
 
