@@ -10,7 +10,8 @@ from .store.configuration import Configuration
 from .store.runtime import instance_root, required
 
 RUNTIME_DOMAINS = ('host-runtime.json', 'setup/runtime.json', 'runtime.json')
-CONFIGURATION_DOMAINS = frozenset((*RUNTIME_DOMAINS, 'factory.json', 'setup/factory.json', 'host.json'))
+CONFIGURATION_DOMAINS = frozenset((*RUNTIME_DOMAINS, 'factory.json', 'setup/factory.json', 'host.json',
+                                   'operator-identity.json'))
 
 
 class ConfigurationAuthority:
