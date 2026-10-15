@@ -1,5 +1,6 @@
 """Saved installation intent gates mutation and keeps independent repository receipts."""
 from copy import deepcopy
+from contextlib import ExitStack
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,6 +36,39 @@ class CoordinatorTests(unittest.TestCase):
         self.install = Install('anvil', github=self.github, installation=self.host, journal=self.journal, preflight=self.observe)
         self.install.plan(interview())
 
+    def stages(self, factory):
+        stack = ExitStack(); self.addCleanup(stack.close)
+        network = Mock(); network.execute.return_value = {'status': 'network_ready'}
+        self.targets = {'status': 'targets_ready', 'smoke': {'id': 12, 'name': 'owner/smoke'},
+                        'publication': {'id': 13, 'name': 'owner/probe'},
+                        'repositories': [{'id': n, 'name': 'owner/' + name}
+                                         for n, name in ((10, 'one'), (11, 'two'), (12, 'smoke'), (13, 'probe'))]}
+        consent = Mock(); consent.observe.return_value = {'status': 'consent_ready'}
+        self.smoke = Mock()
+        self.smoke.prepare.return_value = {'status': 'smoke_repository_ready'}
+        self.smoke.run.return_value = {'status': 'smoke_pending'}
+        self.smoke.handover.return_value = {'status': 'smoke_pending'}
+        patches = {
+            'forge_client.installation.Network': network,
+            'forge_client.installation.FactorySetup': factory,
+            'forge_client.install_targets.prepare_targets': self.targets,
+            'forge_client.install_consent.InstallConsent': consent,
+            'forge_client.install_identity.configure': {'status': 'identity_ready', 'origin': 'https://anvil.example.ts.net'},
+            'forge_client.install_publication.qualify': {'status': 'qualified'},
+            'forge_client.install_smoke.InstallSmoke': self.smoke,
+        }
+        for name, result in patches.items(): stack.enter_context(patch(name, return_value=result))
+
+    def factory(self):
+        factory = Mock()
+        view = {'instance': 'instance', 'phase': 'setup',
+                                     'roles': {'controller': {'registered': True}},
+                                     'harnesses': [{'id': 'codex', 'connected': True}]}
+        factory.call.side_effect = lambda action, **kw: {'status': 'connected'} if action == 'device_account' else view
+        factory.prepare_repository.return_value = {'status': 'repository_ready'}
+        self.stages(factory)
+        return factory
+
     def test_changed_input_and_injected_secret_are_rejected_before_host_work(self):
         changed = interview(); changed['repositories'][0]['merge_policy'] = 'auto'
         with self.assertRaises(SetupError): self.install.plan(changed)
@@ -51,6 +85,16 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.install.apply()['status'], 'preflight_blocked')
         self.host.execute.assert_not_called()
         with self.assertRaises(SetupError): self.install.apply(waivers=['host.identity'])
+        self.host.execute.assert_not_called()
+
+    def test_other_repository_owner_is_rejected_before_saving_or_host_work(self):
+        self.github.repository.side_effect = lambda name: {'id': 20, 'name': name, 'branch': 'main', 'admin': True, 'owner_id': 99, 'owner_type': 'User'}
+        supplied = interview(); supplied['repositories'] = supplied['repositories'][:1]
+        journal = Journal('other-owner', 'anvil', root=self.journal.root)
+        workflow = Install('anvil', github=self.github, installation=self.host, journal=journal)
+        with self.assertRaisesRegex(SetupError, 'selected GitHub owner'):
+            workflow.plan(supplied)
+        self.assertIsNone(journal.read())
         self.host.execute.assert_not_called()
 
     def test_resume_reobserves_preflight_and_does_not_trust_old_pass(self):
@@ -71,24 +115,72 @@ class CoordinatorTests(unittest.TestCase):
         self.assertFalse(resumed.state['stages']['host']['uncertain_write'])
 
     def test_independent_repositories_continue_and_neither_is_started(self):
-        network = Mock(); network.execute.return_value = {'status': 'network_ready'}
-        factory = Mock()
-        factory.call.return_value = {'instance': 'instance', 'roles': {'controller': {'registered': True}},
-                                     'harnesses': [{'id': 'codex', 'connected': True}]}
+        factory = self.factory()
         def prepare(name, **options):
-            if not options.get('apply'): return {'status': 'planned'}
+            if not options.get('apply'): return {'status': 'planned', 'plan': {'steps': ['prepare'], 'blockers': []}}
             if name.endswith('one'): return {'status': 'write_unconfirmed'}
             return {'status': 'repository_ready'}
         factory.prepare_repository.side_effect = prepare
-        with patch('forge_client.installation.Network', return_value=network), patch('forge_client.installation.FactorySetup', return_value=factory):
-            result = self.install.apply()
+        result = self.install.apply()
         self.assertTrue(result['stages']['repository.10']['uncertain_write'])
         self.assertEqual(result['stages']['repository.11']['status'], 'complete')
         self.assertFalse(result['handover_complete'])
-        self.assertEqual(result['stages']['handover']['receipt']['status'], 'smoke_required')
+        self.assertNotIn('handover', result['stages'])
+        self.smoke.run.assert_not_called()
         self.assertTrue(all(not call.kwargs.get('initial', True) for call in factory.prepare_repository.call_args_list))
         factory.check.assert_not_called()
         self.assertEqual(result['intent']['repositories'][0]['merge_policy'], 'human')
+
+    def test_no_handover_until_real_smoke_verification(self):
+        self.factory()
+        result = self.install.apply()
+        self.assertEqual(result['status'], 'installation_pending')
+        self.assertFalse(result['handover_complete'])
+        self.smoke.handover.assert_not_called()
+
+    def test_verified_smoke_handover_completes_and_resume_does_not_reenable(self):
+        self.factory()
+        self.smoke.run.return_value = {'status': 'smoke_verified'}
+        self.smoke.handover.side_effect = lambda **kw: {'status': 'handover_complete' if kw.get('apply') else 'smoke_verified'}
+        result = self.install.apply()
+        self.assertEqual(result['status'], 'installation_complete')
+        self.assertTrue(result['handover_complete'])
+        self.smoke.handover.reset_mock()
+        self.observe.reset_mock()
+        self.install.apply()
+        self.smoke.handover.assert_not_called()
+        self.observe.assert_not_called()
+
+    def test_remote_handover_survives_lost_local_completion(self):
+        self.factory()
+        self.smoke.run.return_value = {'status': 'handover_complete'}
+        self.smoke.handover.return_value = {'status': 'handover_complete'}
+        self.assertTrue(self.install.apply()['handover_complete'])
+        self.assertTrue(all(not call.kwargs.get('apply') for call in self.smoke.handover.call_args_list))
+
+    def test_publication_scratch_never_receives_a_pr_baseline(self):
+        factory = self.factory()
+        self.install.apply()
+        self.assertNotIn('owner/probe', [call.args[0] for call in factory.prepare_repository.call_args_list])
+
+    def test_active_smoke_resume_refreshes_expired_repository_observations(self):
+        factory = Mock()
+        stale = {'revision': 'r', 'readiness': {'access_ready': True, 'protection_ready': False}}
+        fresh = {**stale, 'readiness': {'access_ready': True, 'protection_ready': True}}
+        factory.call.side_effect = lambda action, **kw: {'phase': 'active'} if action == 'status' else fresh if action == 'verify_repository' else stale
+        target = {'id': 10, 'name': 'owner/one'}
+        self.assertEqual(self.install.repository(factory, target)['status'], 'repository_changed')
+        self.assertEqual(self.install.repository(factory, target, apply=True)['status'], 'repository_ready')
+        self.assertIn(('verify_repository',), [call.args for call in factory.call.call_args_list])
+
+    def test_connected_codex_still_finishes_owned_login_cleanup(self):
+        factory = Mock()
+        factory.call.side_effect = lambda action, **kw: (
+            {'status': 'connected' if kw['apply'] else 'account_login_saved'} if action == 'device_account'
+            else {'harnesses': [{'id': 'codex', 'connected': True}]})
+        provider = {'id': 'codex', 'kind': 'browser'}
+        self.assertEqual(self.install.account(factory, provider)['status'], 'account_login_saved')
+        self.assertEqual(self.install.account(factory, provider, apply=True)['status'], 'connected')
 
     def test_mutated_saved_intent_cannot_change_stage_authority(self):
         self.install.state['intent']['repositories'][0]['target']['id'] = 123

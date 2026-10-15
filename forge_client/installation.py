@@ -1,8 +1,4 @@
-"""Saved installation interview and resumable coordination of existing CLI stages.
-
-The consent and smoke stages remain explicit boundaries until the single-App
-workflow ships. This coordinator never starts or enables a repository.
-"""
+"""One saved installation, from read-only preflight through a verified first merge."""
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -11,7 +7,7 @@ import shutil
 import time
 
 from .connection import connection_lock
-from .contracts import NAME, SetupError, digest, fields, require
+from .contracts import SetupError, digest, fields, require
 from .factory_setup import FactorySetup
 from .github import GitHub
 from .install import Installation, revision
@@ -21,6 +17,8 @@ from .workflow import Journal
 
 
 def intent(value, github):
+    value = deepcopy(value)
+    smoke_issue = value.pop('smoke_issue', None)
     fields(value, ('version', 'ssh', 'name', 'revision', 'host_key', 'hostname', 'owner', 'operators',
                    'repositories', 'providers', 'rules_repair', 'smoke_target', 'codex_parallel_auth'))
     require(value['version'] == 1 and isinstance(value['ssh'], str), 'invalid_intent')
@@ -31,6 +29,7 @@ def intent(value, github):
     require(isinstance(value['operators'], list) and 1 <= len(value['operators']) <= 20, 'invalid_intent')
     require(isinstance(value['repositories'], list) and 1 <= len(value['repositories']) <= 20, 'invalid_intent')
     require(isinstance(value['providers'], list) and 1 <= len(value['providers']) <= 3, 'invalid_intent')
+    owner = github.registration_owner(value['owner'])
     operators = []
     for login in value['operators']:
         resolved = github.registration_owner(login)
@@ -43,18 +42,23 @@ def intent(value, github):
         repositories.append({'target': github.repository(row['name']), 'merge_policy': row['merge_policy'],
                              'allow_workflow_edits': row['allow_workflow_edits']})
     require(len({row['target']['id'] for row in repositories}) == len(repositories), 'duplicate_repository')
+    require(all(row['target']['owner_id'] == owner['id'] for row in repositories),
+            'repository_owner_mismatch', 'Choose repositories under the selected GitHub owner for this installation.')
     for provider in value['providers']:
         fields(provider, ('id', 'kind'))
         require(provider['id'] in ('codex', 'claude', 'grok') and provider['kind'] in ('browser', 'api_key', 'token')
                 and (provider['kind'] != 'token' or provider['id'] == 'claude'), 'invalid_provider')
     require(len({row['id'] for row in value['providers']}) == len(value['providers']), 'duplicate_provider')
     require(value['smoke_target'] == 'scratch' or value['smoke_target'] in [row['target']['name'] for row in repositories], 'invalid_smoke_target')
+    require(smoke_issue is None or type(smoke_issue) is int and smoke_issue > 0
+            and value['smoke_target'] != 'scratch', 'invalid_smoke_issue')
     return {**deepcopy(value), 'revision': revision(value['revision']), 'operators': operators,
-            'owner': github.registration_owner(value['owner']), 'repositories': repositories}
+            'owner': owner, 'repositories': repositories, 'smoke_issue': smoke_issue}
 
 
 class Install:
-    def __init__(self, ssh, *, github=None, installation=None, journal=None, preflight=observe, clock=time.time):
+    def __init__(self, ssh, *, github=None, installation=None, journal=None, preflight=observe, clock=time.time,
+                 interactive=False, notify=None):
         self.ssh = ssh
         self.github = github or GitHub()
         self.installation = installation or Installation(ssh)
@@ -62,6 +66,8 @@ class Install:
         self.preflight_observer, self.clock = preflight, clock
         self.state = self.journal.read()
         self.key = 'install-' + digest({'ssh': ssh})
+        self.interactive = interactive
+        self.notify = notify or (lambda event: None)
 
     def save(self):
         self.journal.save(self.state)
@@ -93,12 +99,15 @@ class Install:
         binding = digest({'intent': self.state['inputs_digest'], 'stage': name})
         saved = self.state['stages'].get(name)
         require(saved is None or saved['inputs_digest'] == binding, 'stage_changed')
-        row = saved or {'inputs_digest': binding, 'status': 'pending', 'receipt': None, 'uncertain_write': False}
+        row = saved or {'inputs_digest': binding, 'status': 'pending', 'receipt': None, 'uncertain_write': False,
+                        'started_at': self.clock()}
         self.state['stages'][name] = row
         try:
             observed = observe_stage()
             if complete(observed):
-                row.update(status='complete', receipt=observed, uncertain_write=False); self.save(); return observed
+                row.update(status='complete', receipt=observed, uncertain_write=False)
+                row.setdefault('completed_at', self.clock())
+                self.save(); return observed
             if apply_stage is None or observed.get('status') == 'write_unconfirmed':
                 row.update(status='needs_user_action', receipt=observed); self.save(); return observed
             # Existing installer and network actions reconcile their pinned remote
@@ -108,6 +117,7 @@ class Install:
             result = apply_stage(observed)
             row.update(status='complete' if complete(result) else 'pending', receipt=result,
                        uncertain_write=result.get('status') == 'write_unconfirmed')
+            if row['status'] == 'complete': row.setdefault('completed_at', self.clock())
             self.save(); return result
         except SetupError as error:
             row.update(status='needs_user_action', receipt={'error': error.code, 'reason': str(error)})
@@ -116,6 +126,8 @@ class Install:
 
     def apply(self, *, waivers=()):
         selected = self.load()
+        if self.state['stages'].get('handover', {}).get('status') == 'complete':
+            return self.status()
         report = self.preflight()  # Never trust a previously passing snapshot.
         known = {row['id']: row for row in report['items']}
         require(all(name in known and known[name]['waivable'] for name in waivers), 'invalid_waiver', 'Only explicitly waivable findings can be waived.')
@@ -132,48 +144,128 @@ class Install:
                          lambda row: network.execute(hostname=selected['hostname'], apply=True),
                          complete=lambda row: row.get('status') == 'network_ready')
         if net.get('status') != 'network_ready': return self.status()
-        # The single-App consent receiver and smoke handover belong to Run 5.
-        # Existing installations may already have their identity and Apps.
-        try:
-            factory = FactorySetup(self.installation, github=self.github)
-            view = factory.call('status')
-            apps_ready = all(row['registered'] for row in view['roles'].values())
-        except SetupError as error:
-            view = {'status': 'needs_user_action', 'error': error.code}
-            apps_ready = False
-        if not apps_ready:
-            self.stage('consent', lambda: {'status': 'consent_required', 'reason': 'Single-App consent is a later installation stage. Existing forge setup commands remain available.'},
-                       complete=lambda row: False)
-            return self.status()
-        self.stage('consent', lambda: {'status': 'existing_identity_and_apps', 'instance': view['instance']}, complete=lambda row: True)
-        for row in selected['repositories']:
-            target = row['target']
-            name = 'repository.' + str(target['id'])
-            self.stage(name, lambda target=target: factory.prepare_repository(target['name'], initial=False),
-                       lambda observed, target=target: factory.prepare_repository(target['name'], apply=True, initial=False,
-                           repair=selected['rules_repair']),
-                       complete=lambda result: result.get('status') == 'repository_ready')
+        from .install_targets import prepare_targets
+        from .install_consent import InstallConsent
+        from .install_environment import Environment
+        from .install_identity import configure as configure_identity
+        from .install_publication import qualify
+        from .install_smoke import InstallSmoke
+
+        targets = self.stage('targets', lambda: prepare_targets(self.state, self.save, self.github),
+                             lambda _: prepare_targets(self.state, self.save, self.github, apply=True),
+                             complete=lambda row: row.get('status') == 'targets_ready')
+        if targets.get('status') != 'targets_ready': return self.status()
+        consent = InstallConsent(self.installation, selected, github=self.github,
+                                 repositories=targets['repositories'], tell=self.notify,
+                                 open_browser=__import__('webbrowser').open if self.interactive else None)
+        apps = self.stage('consent', consent.observe, consent.apply,
+                          complete=lambda row: row.get('status') == 'consent_ready')
+        if apps.get('status') != 'consent_ready': return self.status()
+        factory = FactorySetup(self.installation, github=self.github)
+        identity = self.stage('identity', lambda: configure_identity(factory),
+                              lambda _: configure_identity(factory, apply=True),
+                              complete=lambda row: row.get('status') == 'identity_ready')
+        if identity.get('status') != 'identity_ready': return self.status()
+        # Independent repository findings do not prevent preparing other repos.
+        for target in targets['repositories']:
+            if target['id'] == targets['publication']['id']: continue
+            self.stage('repository.' + str(target['id']),
+                       lambda target=target: self.repository(factory, target),
+                       lambda _, target=target: self.repository(factory, target, apply=True),
+                       complete=lambda row: row.get('status') == 'repository_ready')
         for provider in selected['providers']:
-            connected = next((row for row in factory.call('status')['harnesses'] if row['id'] == provider['id']), {})
-            self.stage('account.' + provider['id'], lambda connected=connected, provider=provider:
-                       {'status': 'connected' if connected.get('connected') else 'account_login_required',
-                        'command': ['forge', 'account', 'login', provider['id'], '--ssh', self.ssh, '--kind', provider['kind']]},
-                       complete=lambda row: row['status'] == 'connected')
+            self.stage('account.' + provider['id'], lambda provider=provider: self.account(factory, provider),
+                       lambda _, provider=provider: self.account(factory, provider, apply=True),
+                       complete=lambda row: row.get('status') == 'connected')
         if any(row['env_tier'] == 'full' for row in report['repositories']):
-            self.stage('environment', lambda: {'status': 'environment_required', 'tier': 'full',
-                'reason': 'Full database environment installation is not yet available through forge install. This stage remains pending; no repositories are enabled.',
-                'command': ['forge', 'install', '--ssh', self.ssh, '--status']}, complete=lambda row: False)
-        self.stage('handover', lambda: {'status': 'smoke_required', 'reason': 'Single-App smoke verification and policy application are deferred. Real repositories remain disabled.',
-                                       'repositories': [{'repository': row['target']['name'], 'merge_policy': row['merge_policy']} for row in selected['repositories']]},
-                   complete=lambda row: False)
+            environment = Environment(self.installation)
+            self.stage('environment', environment.execute,
+                       lambda _: environment.execute(apply=True),
+                       complete=lambda row: row.get('status') == 'environment_ready')
+        else:
+            self.stage('environment', lambda: {'status': 'environment_ready', 'tier': 'standard'},
+                       complete=lambda row: True)
+        preparation = [name for name in self.state['stages']
+                       if name.startswith(('repository.', 'account.')) or name == 'environment']
+        if any(self.state['stages'][name]['status'] != 'complete' for name in preparation):
+            return self.status()
+        # The probe repo is disposable and is never scheduled for work.
+        for target in targets['repositories']:
+            if target['id'] == targets['publication']['id']: continue
+            self.stage('publication.' + str(target['id']),
+                       lambda target=target: qualify(factory, self.state, target),
+                       lambda _, target=target: qualify(factory, self.state, target, apply=True),
+                       complete=lambda row: row.get('status') == 'qualified')
+        if any(row['status'] != 'complete' for name, row in self.state['stages'].items()
+               if name.startswith('publication.')): return self.status()
+        smoke = InstallSmoke(factory, self.state, self.save)
+        prepared = self.stage('smoke.prepare', smoke.prepare, lambda _: smoke.prepare(apply=True),
+                              complete=lambda row: row.get('status') == 'smoke_repository_ready')
+        if prepared.get('status') != 'smoke_repository_ready': return self.status()
+        verified = self.stage('smoke', smoke.run, lambda _: smoke.run(apply=True),
+                              complete=lambda row: row.get('status') in ('smoke_verified', 'handover_complete'))
+        if verified.get('status') not in ('smoke_verified', 'handover_complete'): return self.status()
+        self.stage('handover', smoke.handover, lambda _: smoke.handover(apply=True),
+                   complete=lambda row: row.get('status') == 'handover_complete')
+        if self.state['stages']['handover']['status'] == 'complete':
+            self.state.setdefault('completed_at', self.clock())
+            self.save()
         return self.status()
+
+    def repository(self, factory, target, *, apply=False):
+        if factory.call('status')['phase'] != 'active':
+            result = factory.prepare_repository(target['name'], initial=False, apply=apply,
+                                                 repair=self.load()['rules_repair'])
+            if result.get('status') == 'planned' and not result['plan']['steps'] and not result['plan']['blockers']:
+                return {'status': 'repository_ready', 'repository': target}
+            return result
+        result = factory.call('requirements', repository={key: target[key] for key in ('id', 'name')})
+        if apply:
+            result = factory.call('verify_repository', repository={key: target[key] for key in ('id', 'name')},
+                                  revision=result['revision'])
+        ready = result['readiness']['access_ready'] and result['readiness']['protection_ready']
+        return {'status': 'repository_ready' if ready else 'repository_changed', 'repository': target,
+                'readiness': result['readiness']}
+
+    def account(self, factory, provider, *, apply=False):
+        if provider == {'id': 'codex', 'kind': 'browser'}:
+            result = factory.call('device_account', provider='codex', apply=apply, retry=False)
+            if result.get('url'):
+                self.notify({'event': 'provider_login', **result})
+            if result.get('status') == 'account_login_failed':
+                result['next_action'] = {'command': ['forge', 'account', 'login', 'codex', '--ssh', self.ssh, '--retry', '--json'],
+                                         'instruction': 'The device login expired or failed. Start a new login explicitly, then resume installation.'}
+            return result
+        connected = next((row for row in factory.call('status')['harnesses'] if row['id'] == provider['id']), {})
+        if connected.get('connected'): return {'status': 'connected', 'provider': provider['id']}
+        if apply and self.interactive:
+            secret = None
+            if provider['kind'] != 'browser':
+                import getpass
+                secret = getpass.getpass(provider['id'] + ' credential (hidden): ')
+            factory.account(provider['id'], apply=True, kind=provider['kind'],
+                            interactive=True, secret=secret)
+            return self.account(factory, provider)
+        return {'status': 'account_login_required', 'provider': provider['id'],
+                'next_action': {'command': ['forge', 'account', 'login', provider['id'], '--ssh', self.ssh,
+                                            '--kind', provider['kind']],
+                                'instruction': 'Complete the provider login, then resume this installation.'}}
 
     def status(self):
         self.load()
-        return {'status': 'installation_pending', 'inputs_digest': self.state['inputs_digest'],
-                'ssh': self.ssh, 'intent': self.state['intent'], 'stages': deepcopy(self.state['stages']),
-                'next_action': ['forge', 'install', '--ssh', self.ssh, '--resume'],
-                'handover_complete': False}
+        stages = deepcopy(self.state['stages'])
+        complete = stages.get('handover', {}).get('status') == 'complete'
+        pending = [{'stage': name, **(row.get('receipt') or {})}
+                   for name, row in stages.items() if row['status'] != 'complete']
+        return {'status': 'installation_complete' if complete else 'installation_pending',
+                'inputs_digest': self.state['inputs_digest'], 'ssh': self.ssh, 'intent': self.state['intent'],
+                'stages': stages, 'pending': pending,
+                'started_at': self.state['started_at'], 'completed_at': self.state.get('completed_at'),
+                'elapsed_seconds': max(0, self.state.get('completed_at', self.clock()) - self.state['started_at']),
+                'next_action': None if complete else ['forge', 'install', '--ssh', self.ssh, '--resume'],
+                'handover_complete': complete,
+                'origin': (stages.get('identity', {}).get('receipt') or {}).get('origin'),
+                'report_path': str(self.journal.path) if complete else None}
 
 
 def interview(ssh, github, *, ask=input, tell=print):
@@ -198,7 +290,7 @@ def interview(ssh, github, *, ask=input, tell=print):
     hostname = re.sub('[^a-z0-9-]+', '-', name.lower()).strip('-')[:63]
     hostname = ask('Tailnet hostname [' + hostname + ']: ').strip() or hostname
     repair = ask('Rules repair [apply-if-admin/print-commands/skip; apply-if-admin]: ').strip() or 'apply-if-admin'
-    smoke = ask('Later smoke target [scratch or chosen OWNER/REPO; scratch]: ').strip() or 'scratch'
+    smoke = ask('Smoke target [scratch or chosen OWNER/REPO; scratch]: ').strip() or 'scratch'
     tell('Known SSH host keys are required. For a new VM, use forge setup host-key and verify its fingerprint with the provider.')
     fingerprint = ask('Verified ED25519 fingerprint (leave empty to use known_hosts): ').strip() or None
     return {'version': 1, 'ssh': ssh, 'name': name, 'revision': None, 'host_key': fingerprint, 'hostname': hostname,
@@ -208,6 +300,7 @@ def interview(ssh, github, *, ask=input, tell=print):
 
 def execute(args):
     import sys
+    require(type(args.wait) is int and 0 <= args.wait <= 3600, 'invalid_wait', 'Use --wait between 0 and 3600 seconds.')
     github = GitHub()
     supplied = None
     if args.intent_file:
@@ -219,12 +312,81 @@ def execute(args):
         supplied = interview(args.ssh, github)
     ssh = args.ssh or (supplied or {}).get('ssh')
     require(ssh, 'ssh_required', 'Select --ssh HOST.')
-    workflow = Install(ssh, github=github)
+    interactive = not args.json and sys.stdin.isatty()
+    def event(value):
+        if args.json:
+            print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
+        else:
+            print(value if isinstance(value, str) else value.get('instruction') or value.get('url') or json.dumps(value),
+                  file=sys.stderr, flush=True)
+    workflow = Install(ssh, github=github, interactive=interactive, notify=event)
     with connection_lock(workflow.key, workflow.journal.root):
         if supplied is not None: workflow.plan(supplied)
         if args.status: return workflow.status()
-        if args.resume or args.apply: return workflow.apply(waivers=args.waive)
+        if interactive and supplied is not None and not (args.resume or args.apply or args.preflight):
+            report = workflow.preflight()
+            display(report, tell=lambda line: print(line, file=sys.stderr))
+            blocked = [row for row in report['items'] if row['status'] == 'needs_you' and row['id'] not in args.waive]
+            if blocked or input('Apply this installation, including its smoke issue and configured handover? [y/N] ').strip().lower() not in ('y', 'yes'):
+                return report
+            args.apply = True
+            args.wait = args.wait or 3600
+        if args.resume or args.apply:
+            deadline = time.monotonic() + args.wait
+            previous = None
+            while True:
+                result = workflow.apply(waivers=args.waive)
+                progress = {key: row['status'] for key, row in result.get('stages', {}).items()}
+                if progress != previous:
+                    event({'event': 'installation_progress', 'stages': progress})
+                    previous = progress
+                pending = result.get('pending', [])
+                waiting = {'installing', 'network_installing', 'environment_installing', 'checking',
+                           'smoke_pending', 'first_merge_pending', 'account_login_pending', 'account_login_saved'}
+                if (result.get('handover_complete') or result['status'] == 'preflight_blocked'
+                        or time.monotonic() >= deadline
+                        or not pending or any(row.get('status') not in waiting for row in pending)):
+                    return result
+                time.sleep(min(5, max(0, deadline - time.monotonic())))
         return workflow.preflight()
+
+
+def display(result, *, tell=print):
+    """Human presentation of the same structured results used by agents."""
+    import shlex
+    if result['status'] == 'preflight':
+        for row in result['items']:
+            tell(row['status'].replace('_', ' ').ljust(23) + row['id'] + ': ' + row['detail'])
+            if row.get('command'): tell('  ' + shlex.join(row['command']))
+        tell('Plan saved. Apply with: forge install --ssh ' + result['host']['ssh'] + ' --apply --wait 3600')
+        return
+    if result['status'] == 'preflight_blocked':
+        tell('Installation is waiting for these prerequisites:')
+        for row in result['findings']:
+            tell('  ' + row['id'] + ': ' + row['detail'])
+            if row.get('command'): tell('  ' + shlex.join(row['command']))
+    else:
+        if result['status'].startswith('reset_'):
+            tell('Forge reset complete.' if result['status'] == 'reset_complete' else 'Forge reset ' + result['status'].removeprefix('reset_') + '.')
+            for effect in result.get('effects', []): tell('  ' + effect)
+            if result.get('archive'): tell('Private archives: ' + json.dumps(result['archive'], sort_keys=True))
+            if result.get('waiting'): tell(result['waiting'])
+        else:
+            tell('Installation complete.' if result.get('handover_complete') else 'Installation progress saved.')
+        for name, row in result.get('stages', {}).items():
+            tell('  ' + name + ': ' + row['status'].replace('_', ' '))
+        for row in result.get('pending', []):
+            action = row.get('next_action') or {}
+            if row.get('reason'): tell(row['reason'])
+            if isinstance(action, dict):
+                if action.get('instruction'): tell(action['instruction'])
+                if action.get('url'): tell(action['url'])
+                if action.get('command'): tell(shlex.join(action['command']))
+            if row.get('url'): tell(row['url'])
+            if row.get('code'): tell('One-time code: ' + row['code'])
+        if result.get('origin'): tell('Forge: ' + result['origin'])
+        if result.get('report_path'): tell('Report: ' + result['report_path'])
+    if result.get('next_action'): tell(shlex.join(result['next_action']))
 
 
 def schemas():
@@ -234,7 +396,13 @@ def schemas():
         'status': 'forge install --ssh HOST --status --json',
         'preflight': 'forge install --ssh HOST --preflight --json',
         'apply': 'forge install --ssh HOST --apply --json',
-        'authority': 'explicit saved host identity and local GitHub administrator; no repository activation',
+        'reset': {'plan': 'forge install --ssh HOST --reset --json',
+                  'apply': 'forge install --ssh HOST --reset --apply --reset-revision DIGEST --json',
+                  'effect': 'Archives the pinned Forge installation on the existing VM; retains SSH, Tailscale and GitHub objects.'},
+        'device_login': {'start_or_observe': 'forge account login codex --ssh HOST --json',
+                         'retry': 'forge account login codex --ssh HOST --retry --json',
+                         'effect': 'Returns a browser URL and one-time code; retry starts a new attempt only after failure, expiry or disconnection.'},
+        'authority': 'explicit saved host identity and local GitHub administrator; smoke-only activation, then configured handover',
         'intent_schema': {
             'type': 'object', 'additionalProperties': False,
             'required': ['version', 'ssh', 'name', 'revision', 'host_key', 'hostname', 'owner', 'operators',
@@ -255,8 +423,9 @@ def schemas():
                     'properties': {'id': {'enum': ['codex', 'claude', 'grok']},
                                    'kind': {'enum': ['browser', 'api_key', 'token']}}}},
                 'rules_repair': {'enum': ['apply-if-admin', 'print-commands', 'skip']},
-                'smoke_target': {'type': 'string', 'description': 'scratch or a selected OWNER/REPO; executed at the later smoke stage'},
-                'codex_parallel_auth': {'type': 'boolean', 'description': 'Saved preference for the later account consent stage'}
+                'smoke_target': {'type': 'string', 'description': 'scratch or a selected OWNER/REPO'},
+                'smoke_issue': {'type': ['integer', 'null'], 'minimum': 1, 'description': 'Optional existing issue in the selected smoke repo; omitted creates a smoke issue'},
+                'codex_parallel_auth': {'type': 'boolean', 'description': 'Allow parallel jobs with the host-managed Codex login'}
             }},
-        'deferred': ['single_app_consent', 'full_environment_remote_install', 'smoke', 'merge_policy_handover', 'enable'],
+        'wait': 'Use --wait SECONDS to follow automated stages; resume retains the original installation and first-merge timer.',
         'secrets': 'Never accepted in the intent. Use forge account login with hidden input or private stdin.'}

@@ -1,7 +1,38 @@
-# Install a new Forge VM
+# Installation and host operations
 
-For repositories whose tests need databases, add the optional
-[full job environment](job-environments.md) after the standard installation.
+## New installations: start from your computer
+
+Use the complete CLI flow on a dedicated Ubuntu 24.04 VM:
+
+```sh
+uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
+forge install --ssh anvil
+```
+
+The [installation guide](cli-fresh-host.md) lists prerequisites and walks through
+preflight, private HTTPS, one Forge GitHub App, operator identity, coding-account
+login and repository qualification. The CLI performs remote commands and file
+transfers. The same App supports GitHub sign-in fallback. Database requirements
+trigger qualification of the [full job environment](job-environments.md).
+
+The first smoke issue must complete Triage, Build, Review, Audit and a verified
+merge before the CLI enables the selected repositories. A successful host build
+alone is not installation completion. Resume with:
+
+```sh
+forge install --ssh anvil --resume --wait 3600
+```
+
+For a clean Forge reinstall, use the CLI's explicit
+[reset plan and apply operation](cli-fresh-host.md#clean-reinstall-on-a-test-vm).
+It archives the owned installation and preserves SSH, Tailscale, the OS and
+GitHub registrations. This does not rebuild the VM's operating system.
+
+## Existing or manually managed hosts
+
+The remaining commands are the low-level host operations used for maintenance
+or manually managed installations. They run on the host as indicated; they are
+not extra steps required after `forge install`.
 
 Use an AppArmor-enabled Linux VM (Ubuntu 24.04 is the tested host) with Python
 3.10+, Git, Docker Engine with the Compose plugin, and systemd. Run Forge as a dedicated non-root service account with Docker
@@ -74,7 +105,7 @@ Projects
 needing another runtime or more memory stop with an environment blocker; Forge
 does not bypass isolation or treat missing infrastructure as a code defect.
 
-## Update Forge
+## Update an existing host
 
 ```sh
 bin/forge update
@@ -129,7 +160,7 @@ for the exact candidate head and base. Worker credentials remain narrowly scoped
 they do not gain Actions-log or check-publication permissions. Missing CI evidence
 is explicit, and snapshots never replace GitHub's current merge requirements.
 
-The wizard offers each coding account in turn. Each login runs the installed
+The legacy host setup wizard offers each coding account in turn. Each login runs the installed
 harness's official login command in a temporary container, without any repository
 or GitHub credentials. Follow the link/code instructions in your terminal using
 your browser. Skip any account if desired. Forge privately stores the resulting
@@ -141,7 +172,7 @@ native tool isolation, and checks termination and runner reuse. Provider charges
 may apply. An unavailable account is excluded while other verified accounts remain usable.
 If none pass, the factory stays stopped. Cleanup intent is always retained.
 
-Open `http://127.0.0.1:8787/onboarding` to configure GitHub Apps, choose repositories,
+For a manually managed installation, open `http://127.0.0.1:8787/onboarding` to configure GitHub access, choose repositories,
 verify repository protection, and explicitly start Forge. From your computer,
 forward the port with `ssh -L 8787:127.0.0.1:8787 <you>@<vm>` (any account you can SSH into; the service account needs no SSH login).
 Before [operator sign-in](operator-sign-in.md) is configured, bind the UI only to
@@ -160,7 +191,8 @@ address you chose at setup; pass `--bind` to `bin/forge update` to change it. Se
 The default private runtime is `~/.local/share/forge`. Use `--root` consistently
 if choosing a different directory. It must be owned by the service account and
 have mode 0700. Existing host settings and credentials are preserved when setup
-is repeated. Reset is an explicit separate operation in the UI.
+is repeated. The UI reset returns the existing installation to setup and retains
+its history. The clean CLI reinstall procedure above is a separate operation.
 
 ```sh
 bin/forge setup initialize              # Create the SQLite store (first install only)

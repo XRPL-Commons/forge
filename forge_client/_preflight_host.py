@@ -33,6 +33,7 @@ def main(payload):
         if result.returncode == 0 and len(result.stdout) <= 1048576:
             value = json.loads(result.stdout)
             tailnet = {'state': value.get('BackendState'), 'cert_domains': value.get('CertDomains', []),
-                       'dns_name': (value.get('Self') or {}).get('DNSName')}
+                       'dns_name': (value.get('Self') or {}).get('DNSName'),
+                       'node_id': (value.get('Self') or {}).get('ID')}
     print(json.dumps({'ok': True, 'userns_restricted': restriction, 'egress': endpoints, 'tailnet': tailnet}))
     return 0

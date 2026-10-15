@@ -165,7 +165,9 @@ class RepositoryPlanning(Lifecycle):
                     (proposal_id,repository_id,self.clock(),actor_id))
             count=0
             # A snapshot owns every open issue. Rows stay normalized; no backlog blob.
-            for row in db.execute("SELECT id FROM issues WHERE repository_id=? AND github_state='open' ORDER BY id",(repository_id,)):
+            for row in db.execute("SELECT id,repository_id,github_number FROM issues WHERE repository_id=? AND github_state='open' ORDER BY id",(repository_id,)):
+                from ..install_scope import issue_allowed_in
+                if not issue_allowed_in(db, row['repository_id'], row['github_number']):continue
                 pin=pin_in(db,row['id'])
                 db.execute('INSERT INTO triage_proposal_inputs VALUES(?,?,?,?,?,?,?,?)',(proposal_id,*pin.values()))
                 count+=1
@@ -590,7 +592,9 @@ class RepositoryPlanning(Lifecycle):
             rules=self._repository(db,proposal['repository_id'])
             if rules['rules_revision']!=proposal['rules_revision']:raise VersionConflict('Triage rules changed before the planning run')
             db.execute('DELETE FROM triage_proposal_inputs WHERE proposal_id=?',(proposal_id,))
-            for row in db.execute("SELECT id FROM issues WHERE repository_id=? AND github_state='open' ORDER BY id",(proposal['repository_id'],)):
+            for row in db.execute("SELECT id,repository_id,github_number FROM issues WHERE repository_id=? AND github_state='open' ORDER BY id",(proposal['repository_id'],)):
+                from ..install_scope import issue_allowed_in
+                if not issue_allowed_in(db, row['repository_id'], row['github_number']):continue
                 pin=pin_in(db,row[0])
                 db.execute('INSERT INTO triage_proposal_inputs VALUES(?,?,?,?,?,?,?,?)',(proposal_id,*pin.values()))
             self._capture_cursor_in(db,proposal_id)

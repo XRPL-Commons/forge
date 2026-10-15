@@ -3,6 +3,9 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import os
+import re
+import shutil
 
 
 def owner(root):
@@ -25,6 +28,15 @@ def reset_logins(root):
         docker('rm', '--force', record['Id'])
     if inventory():
         raise ValueError('Login container cleanup remains pending')
+    # Detached device login homes are installation-owned, like their containers.
+    # Remove them only after the owned-container inventory is empty.
+    directory = Path(root) / 'credentials'
+    for path in directory.glob('device-login-*'):
+        if not re.fullmatch('device-login-[a-f0-9]{32}', path.name):
+            continue
+        if path.is_symlink() or not path.is_dir() or path.stat().st_uid != os.getuid():
+            raise ValueError('Device login home ownership changed during reset')
+        shutil.rmtree(path)
 
 
 def mark_login(root):

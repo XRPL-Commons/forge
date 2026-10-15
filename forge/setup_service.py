@@ -365,7 +365,7 @@ class Service:
                 # Keep the reset fence until the new generation is durably saved.
                 audit_in(db, self.setup.clock, 'setup_reset_retired', request_id=op['id'])
             jobs = []
-            self.update(op, generation=str(uuid.uuid4()), phase='setup', operation=None, apps={}, checks={}, repository_check=None,
+            self.update(op, generation=str(uuid.uuid4()), phase='setup', operation=None, apps={}, checks={}, repository_check=None, device_logins={},
                         probe_jobs=jobs, selected=None, provider_revision=None, provider_checks={}, provider_errors={},
                         probe_plan=[], probe_ids=[], readiness=None, qualification=None, error=None, owner='', account_type=None,
                         challenge=None, activation_request=None, activation_revision=None,

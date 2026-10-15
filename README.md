@@ -12,7 +12,7 @@ GitHub before the issue advances.
 
 This repository contains the Forge server, workers, web UI and local CLI. Install
 the CLI on your computer or your external agent's computer, then use
-`forge setup new` to install and configure the server on its Linux host.
+`forge install` to install and configure the server on its Linux host.
 
 ### Local CLI
 
@@ -25,7 +25,7 @@ On macOS or Linux with Python 3.10+, Git and
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
 forge --help
-forge setup new --help
+forge install --help
 forge server setup --help
 ```
 
@@ -39,18 +39,18 @@ is currently published.
 
 | Command | Run it on | Purpose |
 | --- | --- | --- |
-| `forge setup new` | Your computer or the external agent's computer | Wizard or JSON plan for a fresh Ubuntu 24.04 host; apply/status/resume use the same installation workflow |
+| `forge install` | Your computer or the external agent's computer | Interview or JSON intent for Ubuntu 24.04, single-App consent, coding login, smoke merge and repository handover |
 | `forge migrate` | Your computer or the external agent’s computer | Rehearse a private SQLite import, or activate it through a resumable one-way migration |
 | `forge server setup` | Your computer or the external agent's computer | Configure operator sign-in and private HTTPS on an existing Tailscale host over SSH |
 | `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
 | `bin/forge update` | The Forge server, from its source checkout | Update the source and reconcile the installed services |
 
 For a fresh VM, follow [fresh-host installation](docs/cli-fresh-host.md). Run
-`forge setup new` for the guided path through installation, sign-in, role Apps,
-a coding account and repository checks to a first verified merge.
-`forge setup continue --ssh USER@HOST` resumes factory setup after sign-in.
-Each stage has JSON operations for agents. The CLI handles SSH and transfers,
-keeps GitHub administration local, and asks explicitly before Start.
+`forge install` for the guided path through single-App setup and a first verified
+smoke merge. `forge install --ssh USER@HOST --resume --wait 3600` resumes it.
+Agents use the same stages with `--intent-file` and `--json`. The CLI handles SSH
+and transfers and keeps GitHub administration local. Only the smoke issue runs
+before verified handover enables the selected repositories.
 
 For an existing Forge host that needs operator sign-in and private HTTPS, use
 [CLI server setup](docs/cli-server-setup.md). Then follow

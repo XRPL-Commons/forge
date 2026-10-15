@@ -1,9 +1,13 @@
 # GitHub setup and repository access
 
-> Guided onboarding (`/onboarding`) creates the four Apps through GitHub's manifest
-> flow, stores their keys privately and writes this configuration for you. This page
-> is the reference for what it produces, for the `/settings` pages, and for CLI-only
-> installations that configure GitHub by hand.
+New factories use `forge install` from the operator's computer. It registers
+**one Forge GitHub App**, installs it on the named repositories and configures
+operator identity using the same App for GitHub sign-in fallback. Follow the
+[installation guide](cli-fresh-host.md) for the complete flow.
+
+This page explains the resulting access configuration and existing factories.
+Older installations may still have four role Apps and a separate sign-in App;
+those connections remain distinct until migrated.
 
 Forge separates three decisions: GitHub grants repository access, the settings
 sync discovers it, and `factory.json` records which repositories the operator
@@ -11,14 +15,15 @@ wants to automate. Discovery never enables a repository automatically.
 
 The `/settings` page provides App connection forms, a repository access matrix,
 activation controls, sync timing, and a JSON editor. UI edits and agent edits use
-the same configuration file. Saves validate the complete configuration and reject
-stale revisions rather than overwriting another editor's changes.
+the same SQLite-backed configuration documents. Saves validate the complete
+configuration and reject stale revisions rather than overwriting another editor's changes.
 
 ## Start disabled
 
 The settings component requires Python 3.10+, OpenSSL, and outbound HTTPS to
-`api.github.com`. It uses the Python standard library. No administrator token,
-OAuth client secret, webhook endpoint, or additional Python package is needed.
+`api.github.com`. It uses the Python standard library. Repository discovery
+requires no personal administrator token or additional Python package. The complete installation also stores the App's own client
+secret for GitHub sign-in fallback; personal administration credentials stay local.
 
 A new installation has no connections or enabled repositories. The default sync interval
 is five minutes; access observations expire after fifteen minutes. A settings GET
@@ -26,29 +31,71 @@ reads local data only. Refresh requests run in a background thread. Each install
 has a 90-second deadline, with up to 15 seconds for its final in-flight HTTP call;
 large or inconsistent paginated responses fail rather than becoming empty lists.
 
-The settings UI is the operator UI's `/settings` page. `bin/forge setup` installs the
-UI and the loopback status API it reads, with `FORGE_ROOT` set to the runtime root
-that holds `factory.json` and `state/`; see [UI deployment](ui-deployment.md). Keep
+The settings UI is the operator UI's `/settings` page. Host setup installs the
+UI and the loopback status API it reads, with `FORGE_ROOT` set to the private
+runtime root and its selected SQLite store; see [UI deployment](ui-deployment.md). Keep
 the UI on a trusted private network. Mutating requests require configured
 [operator sign-in](operator-sign-in.md), a signed-in operator, same-origin JSON and
 that session's CSRF token; without sign-in the API offers no control.
 
-## Create and install role Apps
+## Create and install the Forge App
 
-In the owning account or organization's GitHub settings, open **Developer settings
-→ GitHub Apps → New GitHub App**. Create four distinct Apps with names unique to
-your installation. Each role has its own identity; multiple installation tokens
-for the same App would not create distinct role identities.
+Use the manifest handoff printed by `forge install`. It supplies the App's name,
+permissions, private visibility and callback URLs. Approve it in GitHub and install
+it on the repositories listed by the CLI, including the smoke and publication
+qualification repositories. GitHub may ask for a passkey. The CLI converts the
+manifest locally and sends only the App's credentials to Forge through SSH stdin.
 
-- Use the owning account URL as the homepage.
-- Leave user authorization, device flow, callback and setup URLs unset.
-- Disable webhook Active; the first version uses polling.
-- For one account, choose Only on this account. To manage repositories across
-  accounts, allow installation on those accounts and configure each installation ID.
-  Open-source adopters create their own Apps; they do not need maintainer credentials.
-- Leave organization and account permissions unset.
+The one App has these repository grants; Metadata read is implicit:
 
-Grant these repository permissions (Metadata read access is implicit):
+| Permission | Forge App |
+| --- | --- |
+| Contents | Read & write |
+| Issues | Read & write |
+| Pull requests | Read & write |
+| Checks | Read & write |
+| Administration | Read |
+| Workflows | Write only when selected repository policy requires it |
+
+Administration write is not requested. The CLI uses the operator's local GitHub
+credentials for approved repository-rule changes. An App installation grants
+access; it does not enable repository automation.
+
+Build, Review, Audit and Controller remain separate roles using this shared
+connection. Independent workers produce Review and Audit verdicts. The controller
+publishes their checks and performs publication and merge under the verified
+policy. Keep App keys and personal credentials outside worker sandboxes.
+
+Workflow edits also require explicit per-repository permission. New installation
+intents default `allow_workflow_edits` to false. Granting the App Workflows write
+for one selected repository does not authorize edits in another repository whose
+policy denies them.
+
+## Repository rules and first merge
+
+The default merge-check scope is **all pull requests**. Human-authored PRs receive
+Forge's independent Review and Audit too. The baseline requires `forge/merge-policy`
+from the exact Forge App. A repository can instead select Forge-created PRs only.
+The Forge review baseline also requires pull requests, two native approvals and
+dismissal of stale approvals, with an App pull-request bypass: Forge checks its
+independent Review and Audit evidence before its own merges.
+
+Keep the baseline separate from unrelated CI and signing protections. A bypass
+applies to an entire ruleset. The installation checks effective protections,
+preserves stronger rules and refuses a repair that would bypass required signing.
+Private repositories need a GitHub plan that supports the required rules; preflight
+reports unavailable protections before setup proceeds.
+
+The CLI verifies signed publication with a separate private probe repository.
+Installation work stays limited to the smoke issue until accepted triage, Build,
+Review, Audit, cleanup and the exact GitHub-confirmed merge are recorded. Handover
+then applies selected policies and enables the selected repositories. Creating an
+App or passing a host check alone does not establish this live acceptance.
+
+## Existing four-App installations
+
+Existing factories can retain Builder, Reviewer, Auditor and Controller Apps.
+Their role grants are:
 
 | Permission | Builder | Reviewer | Auditor | Controller |
 | --- | --- | --- | --- | --- |
@@ -58,31 +105,26 @@ Grant these repository permissions (Metadata read access is implicit):
 | Checks | None | Read & write | Read & write | Read & write |
 | Administration | None | None | None | Read |
 
-These are minimum role capabilities for the factory. Extra permissions
-are not required by discovery. Editing GitHub Actions workflow files additionally
-requires Builder Workflows write permission and an explicit repository policy
-allowing that work. Administration write permission is not requested; repository
-protections remain a human setup responsibility. The controller reads them before dispatch. Settings access readiness does not certify branch
-protections or authorize a merge.
-
-Install every App on the same pilot repository using **Only select repositories**.
-Access must be granted separately for each App. Record the numeric App ID from
-its settings and the installation ID from its installation settings URL. Generate
-one private key per App. Do not put private keys, installation tokens, or customer
-repository configuration in version control or issue comments.
+For such a factory, grant each configured App access to the same repositories,
+then refresh access in Forge. The separate sign-in App identifies operators.
+Do not remove old App registrations merely because a newer CLI is installed;
+follow the migration procedure for the existing factory. Fresh installations use
+the single App above.
 
 ## Private key references
 
-Onboarding stores each App's private key in the installation's credential store
+The setup flow stores the App's private key in the installation's credential store
 (`<root>/credentials/`, mode 0700, each key 0600) under the reference
-`FORGE_SETUP_<ROLE>_KEY`. Configuration holds only that reference name. Forge reads
+`FORGE_SETUP_APP_KEY` for a fresh single-App installation. Legacy role Apps use
+`FORGE_SETUP_<ROLE>_KEY`. Configuration holds only the reference name. Forge reads
 App keys from the credential store only, never from the process environment.
 Runners do not inherit App private keys or the controller's environment. Reconnecting
 an App in Settings replaces its stored key; the next sync uses it.
 
-In Settings, enter App ID, installation ID, and the corresponding credential
-reference for each role. Save connections, then click **Refresh access**. The
-sync authenticates each App, verifies its installation identity and grants, and
+The fresh installer writes the shared connection for every role. For an existing
+installation, Settings accepts App ID, installation ID and the corresponding
+credential reference for each configured connection. Save connections, then click
+**Refresh access**. The sync authenticates each App, verifies its installation identity and grants, and
 creates a metadata-only installation token to list accessible repositories. Tokens
 and JWTs exist only in memory; error responses omit GitHub response bodies and
 private key paths. No repository, App installation, label, or protection is changed.
@@ -93,7 +135,7 @@ An example connection entry, using placeholder identifiers:
 "build": {
   "app_id": 123456,
   "installation_id": 234567,
-  "private_key_env": "FORGE_SETUP_BUILD_KEY"
+  "private_key_env": "FORGE_SETUP_APP_KEY"
 }
 ```
 
@@ -114,11 +156,13 @@ The supervisor's snapshot and capacity/assignment gates consult this access stat
 An enabled repository with missing, expired, suspended, or unverified access cannot
 start new work. Failed syncs preserve intent and the last known inventory but do
 not authorize dispatch from stale facts. Existing issue history is retained.
-`factory.json` is authoritative for repository activation. Do not grant runners
-access to the App keys; they receive repository-scoped role tokens only. See
-[implementation status](implementation.md).
+The `factory.json` configuration document is authoritative for repository
+activation. App keys remain on the host; publication and access mediation stay
+outside worker sandboxes. See [implementation status](implementation.md).
 
 ## Sync without the dashboard
+
+These maintenance commands run on an existing host:
 
 ```sh
 bin/forge settings sync --root ./local
@@ -142,14 +186,15 @@ connections immediately. Failed refreshes never remove configured repositories.
 
 ## Durable factory integration
 
-The new controller and resettable runners are implemented in `forge/factory`; see
+The controller and resettable runners are implemented in `forge/factory`; see
 [factory runtime](factory-runtime.md) for image/native-sandbox provisioning, the
 three-failure budget and approval enforcement. Controller
 App permissions now also include **Administration: read** for branch-protection
 verification. This does not grant administration writes.
 
-For repositories across accounts, register Apps for installation on the relevant
-accounts and install each role App on both accounts. Enter comma-separated
+For repositories across accounts, configure the Forge App for installation on the
+relevant accounts and install it on each account. A legacy factory must install
+each of its configured role Apps. Enter comma-separated
 installation IDs in Settings, or use `installation_ids: [101, 202]` instead of
 `installation_id` in a connection. Forge maps repository IDs to their installation
 before minting a scoped token. Changing that mapping requires a fresh sync. A failed

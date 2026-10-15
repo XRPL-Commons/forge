@@ -36,7 +36,11 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     if isinstance(runner, ContainerRunner):
         runner.source_preparation = sources
 
+    from ..install_scope import execution_allowed
+
     def admission(item):
+        if not execution_allowed(store, item):
+            return False
         repo = item.get('repo') or (item.get('issue') or {}).get('repository')
         return bool(repo and settings.admission(repo)['allowed'])
 
@@ -44,6 +48,8 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     readiness = RepositoryReadiness(store, settings, clock=clock)
 
     def execution_admission(item):
+        if not execution_allowed(store, item):
+            return False
         if item.get('review_only'):
             from .config import merge_check_scope
             return merge_check_scope(current_config(), item['repo_id']) == 'all' and admission(item)
@@ -82,7 +88,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         recovery=StewardController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
-                                      admission=lambda item: admission(item) if item.get('review_only') else readiness.allowed(item),
+                                      admission=lambda item: execution_allowed(store, item) and (admission(item) if item.get('review_only') else readiness.allowed(item)),
                                       readiness=readiness, clock=clock))
 
     from .repository_planner import RepositoryPlanner

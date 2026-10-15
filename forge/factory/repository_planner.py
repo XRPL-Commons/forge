@@ -36,6 +36,8 @@ class RepositoryPlanner:
             numbers.update(row[0] for row in db.execute("SELECT github_number FROM issues WHERE repository_id=? AND github_state='open'",(repo['id'],)))
         observed=set()
         for number in sorted(numbers):
+            from ..install_scope import issue_allowed
+            if not issue_allowed(self.store, repo['id'], number):continue
             key=f"{repo['id']}:{number}"
             with self.store.read_snapshot() as db:
                 member=db.execute('SELECT m.unit_id FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.issue_id=? AND m.left_at IS NULL '
@@ -59,6 +61,15 @@ class RepositoryPlanner:
             self.plans.settle_run(run['id'],error='steward_cycle_limit: request a new proposal')
             return {'phase':'failed','error':'steward_cycle_limit'}
         repo=self._repo(run['repository_id'])
+        from ..install_scope import pending
+        smoke=pending(self.store)
+        if smoke:
+            if smoke['binding']['repository']['id']!=repo['id']:return {'waiting':'repository'}
+            with self.store.read_snapshot() as db:
+                admitted=db.execute("SELECT 1 FROM issues i JOIN unit_issues m ON m.issue_id=i.id JOIN units u ON u.id=m.unit_id "
+                    "WHERE i.repository_id=? AND i.github_number=? AND m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved')",
+                    (repo['id'],smoke['binding']['number'])).fetchone()
+            if not admitted:return {'waiting':'smoke_admission'}
         if not self.settings.admission(repo['name'])['allowed']:return {'waiting':'repository'}
         pool=self.config.get('provider_pool') or [dict(id=None,**{k:self.config.get(k) for k in ('provider','model','provider_environment','provider_auth_file_env')})]
         now=self.clock();ready=self.config.get('provider_ready')

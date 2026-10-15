@@ -223,3 +223,12 @@ class PublisherTests(unittest.TestCase):
         self.capability['workflows_granted']=False
         self.assertEqual(self.finish()['status'],'confirmed')
         self.assertEqual(self.github.extras,[])
+
+    def test_repository_denial_blocks_workflows_even_when_app_grants_them(self):
+        from dataclasses import replace
+        self.fixture.output=replace(self.fixture.output,facts={'protected_paths':['.github/workflows/ci.yml']})
+        self.capability.update(workflows_granted=True,workflow_edits_allowed=False)
+        result=self.visit()
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertEqual(self.count('/git/commits'),0)
+        self.assertEqual(self.github.extras,[])
