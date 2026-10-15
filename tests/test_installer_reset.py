@@ -21,6 +21,32 @@ INTENT = {'id': 'a' * 32, 'name': 'Anvil', 'revision': 'b' * 40}
 
 
 class ResetImportTests(unittest.TestCase):
+    def test_docker_removal_output_does_not_corrupt_rpc_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = Path(directory) / 'docker'
+            command.write_text('#!/bin/sh\nprintf "%s\\n" "container-removed"\n')
+            command.chmod(0o700)
+            script = """
+import json, sys
+from pathlib import Path
+from forge_client import _reset_host as host, _install_host as install
+install.ENV = {'PATH': sys.argv[1] + ':/usr/bin:/bin'}
+observations = iter([[{'Id': 'd' * 64, 'Name': '/forge-egress-1'}], []])
+host.containers = lambda: next(observations)
+host.egress_identity = lambda container, receipt: {'id': container['Id']}
+def dispatch(request):
+    receipt = {}
+    host.cleanup_egress(Path(sys.argv[1]), receipt)
+    return {'ok': True, 'result': receipt['egress_cleanup']}
+host.dispatch = dispatch
+sys.exit(host.main())
+"""
+            result = subprocess.run([sys.executable, '-c', script, directory], input='{}',
+                cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {'ok': True, 'result': {
+                'status': 'removed', 'identity': {'id': 'd' * 64}}})
+
     def test_installed_reset_module_imports_from_foreign_working_directory(self):
         # --help imports the actual installed entrypoint without initiating reset.
         with tempfile.TemporaryDirectory() as directory:

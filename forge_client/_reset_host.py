@@ -215,7 +215,7 @@ def cleanup_egress(directory, receipt):
         need(saved['status'] == 'pending' and saved.get('identity') == identity, 'egress_changed')
         # Persisted identity survives a lost Docker response. Retry observes absence
         # before deciding whether this exact container still needs removal.
-        run(['docker', 'container', 'rm', '--force', identity['id']])
+        run(['docker', 'container', 'rm', '--force', identity['id']], capture=True)
         need(not egress_candidates(containers()), 'egress_changed')
     receipt['egress_cleanup'] = {**(saved or {}), 'status': 'removed' if saved and saved.get('identity') else 'absent'}
     write_receipt(directory, receipt)
