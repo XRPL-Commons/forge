@@ -1,4 +1,9 @@
 import runpy
+import json
+import os
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 import unittest
 from pathlib import Path
 
@@ -18,6 +23,49 @@ class StandaloneHarnessTests(unittest.TestCase):
 
     def test_planning_outcomes_match_the_contract(self):
         self.assertEqual(runpy.run_path(str(HARNESS))['PLANNING_OUTCOMES'], PLANNING_OUTCOMES)
+
+    def test_steward_subject_notes_reach_adapter_through_standalone_harness(self):
+        from forge.factory.config import DEFAULT
+        from forge.factory.contracts import triage_note
+        from forge.factory.discussions import note as discussion_note
+        from forge.factory.source_inputs import create, assignment
+        from forge.mirror.policy import Repository
+        from forge.role_qualification_fixtures import Fixtures
+        with tempfile.TemporaryDirectory() as temporary:
+            for role in ('triage','discussion'):
+                with self.subTest(role=role):
+                    root=Path(temporary)/role
+                    fixtures=Fixtures(root,Repository(1,'acme/project',2,'User',None,'main',True),
+                        {'number':10,'title':'Issue context','body':'Read the repository'},
+                        'requirements','a'*40,dict(DEFAULT),180)
+                    reserved=fixtures.reserve(role)
+                    job=dict(reserved)
+                    # Production auxiliary jobs have no publisher field; the
+                    # note owns their fixed local checkout identity.
+                    job.pop('publisher')
+                    note=triage_note(job) if role=='triage' else discussion_note(job)
+                    manifest={'base_oid':'a'*40}
+                    source=create(repository_id=1,canonical_repository='acme/project',base_oid='a'*40,
+                        input_oids=[],manifest=manifest,dependency_policy_digest='b'*64,notes=note)
+                    frozen=assignment(source,note,manifest=manifest)
+                    path=root/'assignment.json';path.write_text(json.dumps(frozen))
+                    harness=runpy.run_path(str(HARNESS))
+                    run=Mock(return_value=0)
+                    git=Mock(return_value=SimpleNamespace(returncode=0,stdout='',stderr=''))
+                    with patch.dict(harness['main'].__globals__,{'prepare_environment':lambda *args:{},'begin_agent':Mock()}), \
+                         patch.dict(os.environ,{'FORGE_ASSIGNMENT':str(path)}), \
+                         patch('subprocess.run',git), \
+                         patch('runpy.run_path',return_value={'adapter':lambda provider:{'run':run}}):
+                        self.assertEqual(harness['main'](),0)
+                    run.assert_called_once()
+                    received,_,_,schema=run.call_args.args
+                    self.assertEqual(received,frozen)
+                    self.assertEqual(schema,job['context']['steward_schema'])
+                    commands=[call.args[0] for call in git.call_args_list]
+                    self.assertIn(['git','-C','/work/repository','config','user.name','forge-steward'],commands)
+                    self.assertIn(['git','-C','/work/repository','config','user.email',
+                                   'forge-steward@users.noreply.github.com'],commands)
+                    fixtures.fence(reserved)
 
 
 if __name__ == '__main__':

@@ -156,7 +156,7 @@ def triage_output(value,dossiers):
 def assignment_note(job):
     """The physical lease domain is historical; its logical executor is the steward."""
     mode=job['steward_mode']
-    return dict(id=job['id'],role='steward',mode=mode,repo=job['repo'],repo_id=job['repo_id'],
+    return dict(id=job['id'],role='steward',mode=mode,repo=job['repo'],repo_id=job['repo_id'],publisher='forge-steward',
         deadline=job['deadline'],candidate=job.get('candidate'),context=job['context'],
         instructions=(
             'You are the steward. Read the immutable dossier and propose typed next moves. '
