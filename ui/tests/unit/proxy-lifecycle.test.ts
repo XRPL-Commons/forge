@@ -53,19 +53,19 @@ describe('proxy request lifetime', () => {
 describe('proxy server-rendered identity', () => {
   it('captures the page before its internal session fetch reaches the API proxy', async () => {
     vi.stubEnv('NITRO_FORGE_TAILSCALE_IDENTITY', 'serve')
-    vi.stubEnv('NITRO_FORGE_PUBLIC_ORIGIN', 'https://anvil.tailnet.ts.net')
-    vi.stubEnv('NITRO_ALLOWED_HOSTS', 'anvil.tailnet.ts.net')
+    vi.stubEnv('NITRO_FORGE_PUBLIC_ORIGIN', 'https://anvil.example.ts.net')
+    vi.stubEnv('NITRO_ALLOWED_HOSTS', 'anvil.example.ts.net')
     const handler = await middleware()
     const page = request()
     page.path = '/'
-    Object.assign(page.node.req.headers, { host: 'anvil.tailnet.ts.net', 'tailscale-user-login': 'operator@example.com' })
+    Object.assign(page.node.req.headers, { host: 'anvil.example.ts.net', 'tailscale-user-login': 'operator@example.com' })
     Object.assign(page.node.req.socket, { remoteAddress: '127.0.0.1' })
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
     await handler(page as any)
     expect(fetch).not.toHaveBeenCalled()
     const internal = request()
     internal.path = '/api/auth/session'
-    internal.node.req.headers.host = 'anvil.tailnet.ts.net'
+    internal.node.req.headers.host = 'anvil.example.ts.net'
     Object.assign(internal.node.req, { __unenv__: page.context })
     await handler(internal as any)
     expect(fetch).toHaveBeenCalledWith('http://localhost:8788/api/auth/session',

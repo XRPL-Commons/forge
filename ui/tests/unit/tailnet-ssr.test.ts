@@ -5,7 +5,7 @@ import { IncomingMessage, ServerResponse, fetchNodeRequestHandler } from 'node-m
 import { createFetch } from 'ofetch'
 import { requestTailscaleIdentity, upstreamHeaders } from '../../server/utils/proxy'
 
-const origin = 'anvil.tailnet.ts.net'
+const origin = 'anvil.example.ts.net'
 const env = { NITRO_FORGE_TAILSCALE_IDENTITY: 'serve', NITRO_FORGE_PUBLIC_ORIGIN: 'https://' + origin }
 function outer(remoteAddress = '127.0.0.1', login = 'operator@example.com') {
   const req = new IncomingMessage()
