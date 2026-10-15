@@ -67,13 +67,51 @@ class TailnetSessionTests(IdentityBase):
         self.now += SESSION_SECONDS
         self.assertNotEqual(self.auth.tailnet_session(LOGIN)[0], token)
 
-    def test_a_tailnet_session_can_never_be_presented_as_a_cookie_or_logged_out(self):
+    def test_a_tailnet_session_can_never_be_presented_as_a_cookie(self):
         self.auth.set_identity_mode('tailscale')
         self.auth.link_tailnet(LOGIN, 123)
         token, _ = self.auth.tailnet_session(LOGIN)
         self.assertIsNone(self.auth.session(token))
-        with self.assertRaisesRegex(AuthError, 'Tailscale'):
-            self.auth.logout(token)
+        self.auth.logout(token)
+        self.assertIsNone(self.auth.tailnet_session(LOGIN))
+
+    def test_rotation_keeps_tailnet_available_in_the_same_window(self):
+        self.auth.set_identity_mode('tailscale')
+        self.auth.link_tailnet(LOGIN, 123)
+        old, _ = self.auth.tailnet_session(LOGIN)
+        self.auth.rotate_client('Iv23liForgeApp', 'a' * 40)
+        fresh, session = self.auth.tailnet_session(LOGIN)
+        self.assertNotEqual(old, fresh)
+        self.assertEqual(session['operator']['id'], 123)
+        self.assertEqual(self.auth.tailnet_session(LOGIN)[0], fresh)
+
+    def test_reenable_starts_a_new_session_in_the_same_window(self):
+        self.auth.set_identity_mode('tailscale')
+        self.auth.link_tailnet(LOGIN, 123)
+        old, _ = self.auth.tailnet_session(LOGIN)
+        self.auth.set_identity_mode('github')
+        self.auth.set_identity_mode('tailscale')
+        fresh, _ = self.auth.tailnet_session(LOGIN)
+        self.assertNotEqual(old, fresh)
+        with self.database.read_snapshot() as db:
+            self.assertIsNotNone(db.execute('SELECT revoked_at FROM operator_sessions WHERE token_hash=?',
+                                           (digest(old),)).fetchone()[0])
+
+    def test_logout_requires_explicit_sign_in_even_after_a_new_window(self):
+        self.auth.set_identity_mode('tailscale')
+        self.github_login(tailnet_login=LOGIN)
+        token, _ = self.auth.tailnet_session(LOGIN)
+        self.auth.logout(token)
+        self.assertIsNone(self.auth.tailnet_session(LOGIN))
+        self.now += SESSION_SECONDS
+        self.assertIsNone(self.auth.tailnet_session(LOGIN))
+        # Mode toggles cannot restore a link removed by sign-out.
+        self.auth.set_identity_mode('github')
+        self.auth.set_identity_mode('tailscale')
+        self.assertIsNone(self.auth.tailnet_session(LOGIN))
+        github = self.github_login(tailnet_login=LOGIN)
+        self.assertIsNotNone(self.auth.session(github))
+        self.assertNotEqual(self.auth.tailnet_session(LOGIN)[0], token)
 
     def test_unlinking_revokes_immediately_and_relinking_starts_fresh(self):
         self.auth.set_identity_mode('tailscale')
@@ -149,6 +187,12 @@ class SameAppSignInTests(IdentityBase):
 
 class AgentRevocationTests(IdentityBase):
     def test_an_agent_approved_through_tailscale_is_revocable_and_loses_access(self):
+        self.assert_agent_revoked('revoke')
+
+    def test_sign_out_revokes_approved_agent_access_and_refresh(self):
+        self.assert_agent_revoked('logout')
+
+    def assert_agent_revoked(self, action):
         self.auth.set_identity_mode('tailscale')
         self.auth.link_tailnet(LOGIN, 123)
         token, _ = self.auth.tailnet_session(LOGIN)
@@ -163,7 +207,10 @@ class AgentRevocationTests(IdentityBase):
         grant = clients.poll({'client_id': 'forge-cli', 'device_code': device['device_code']})
         instance = grant['connection']['instance']
         clients.authorize(grant['access_token'], target, 'repositories:read', instance, 'g1')
-        clients.revoke(token, approved['id'])
+        if action == 'logout':
+            self.auth.logout(token)
+        else:
+            clients.revoke(token, approved['id'])
         with self.assertRaises(ConnectionError) as raised:
             clients.authorize(grant['access_token'], target, 'repositories:read', instance, 'g1')
         self.assertEqual(raised.exception.code, 'invalid_token')
@@ -171,9 +218,11 @@ class AgentRevocationTests(IdentityBase):
             clients.refresh(grant['refresh_token'])
         with self.database.read_snapshot() as db:
             row = db.execute('SELECT operator_id,revocation_reason FROM client_connections WHERE id=?', (approved['id'],)).fetchone()
-            audit = db.execute("SELECT operator_id FROM operator_audit WHERE action='/api/connections/revoke'").fetchone()
+            audit_action = 'operator_signed_out' if action == 'logout' else '/api/connections/revoke'
+            audit = db.execute('SELECT operator_id FROM operator_audit WHERE action=?', (audit_action,)).fetchone()
         # One identity across sign-in methods: the grant and the audit name the GitHub operator.
-        self.assertEqual((row[0], row[1], audit[0]), ('123', 'operator_revoked', '123'))
+        reason = 'operator_signed_out' if action == 'logout' else 'operator_revoked'
+        self.assertEqual((row[0], row[1], audit[0]), ('123', reason, '123'))
 
     def test_unlinked_tailnet_login_cannot_manage_agents(self):
         self.auth.set_identity_mode('tailscale')
@@ -246,14 +295,14 @@ class TailnetHTTPTests(unittest.TestCase):
         self.assertTrue(json.loads(handler._send.call_args.args[0])['unlinked'])
         self.assertIsNone(self.session(**header)['operator'])
 
-    def test_logout_of_a_tailscale_session_is_refused(self):
+    def test_logout_of_a_tailscale_session_clears_identity(self):
         header = {tailnet_identity.UPSTREAM_HEADER: LOGIN}
         self.auth.set_identity_mode('tailscale')
         self.auth.link_tailnet(LOGIN, 123)
         token = self.session(**header)['controls_token']
         handler = self.request('/api/auth/logout', {}, **header, **{'X-Forge-Action': token})
-        self.assertFalse(json.loads(handler._send.call_args.args[0])['ok'])
-        self.assertEqual(self.session(**header)['operator']['id'], 123)
+        self.assertTrue(json.loads(handler._send.call_args.args[0])['ok'])
+        self.assertIsNone(self.session(**header)['operator'])
 
 
 if __name__ == '__main__':

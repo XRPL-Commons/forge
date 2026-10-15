@@ -45,7 +45,6 @@ def failure_reason(error):
         'Sign-in expired or belongs to another browser': 'expired_or_mismatched_flow',
         'GitHub identity verification failed': 'github_exchange_failed',
         'GitHub sign-in must not grant scopes': 'github_token_rejected',
-        'Signed in through Tailscale; sign out of Tailscale to end this session': 'tailnet_session',
         'This GitHub account is not an authorized Forge operator': 'operator_not_authorized',
         'Operator authorization changed; sign in again': 'configuration_changed',
     }.get(str(error), 'internal_error')
@@ -271,6 +270,11 @@ class OperatorAuth:
             if value['mode'] == mode:
                 return {'mode': mode, 'changed': False}
             value['mode'] = mode
+            if mode == 'tailscale':
+                # A deliberate re-enable starts fresh sessions, including within
+                # the window whose rows were revoked when leaving this mode.
+                for link in value['tailnet_operators']:
+                    link['nonce'] = secrets.token_urlsafe(32)
             self._save_identity_in(db, value)
             if mode == 'github':
                 # Leaving Tailscale identity ends every session it created.
@@ -365,7 +369,7 @@ class OperatorAuth:
                     raise AuthError('Too many active sessions')
                 operator = db.execute('SELECT * FROM operator_identities WHERE github_id=?', (row['github_id'],)).fetchone()
                 db.execute('INSERT INTO operator_sessions(id,operator_id,token_hash,authorization_epoch,created_at,expires_at,csrf,operator_login) '
-                           'VALUES(?,?,?,?,?,?,?,?)', (self._tailnet_prefix(row) + f"{found['epoch']}:{found['window']}", operator['id'], digest(token),
+                           'VALUES(?,?,?,?,?,?,?,?)', (self._tailnet_prefix(row) + digest(token), operator['id'], digest(token),
                                found['epoch'], self.clock(), (found['window'] + 1) * SESSION_SECONDS,
                                secrets.token_urlsafe(32), operator['login'] or normalized))
                 audit_in(db, self.clock, 'operator_signed_in', operator={'id': row['github_id']}, details={'via': 'tailscale'})
@@ -456,7 +460,17 @@ class OperatorAuth:
             row = db.execute('SELECT s.*,i.github_id FROM operator_sessions s JOIN operator_identities i ON i.id=s.operator_id '
                              'WHERE token_hash=? AND revoked_at IS NULL', (digest(token),)).fetchone()
             if row and row['id'].startswith('tailnet:'):
-                raise AuthError('Signed in through Tailscale; sign out of Tailscale to end this session')
+                # Forget the proved link until explicit GitHub sign-in proves it
+                # again. Revoking only this window would silently sign back in
+                # on the next window while the browser still sends Serve identity.
+                value = self._identity_in(db)
+                links = [link for link in value['tailnet_operators']
+                         if row['id'].startswith(self._tailnet_prefix(link))]
+                for link in links:
+                    db.execute('UPDATE operator_sessions SET revoked_at=? WHERE id LIKE ? AND revoked_at IS NULL',
+                               (self.clock(), self._tailnet_prefix(link) + '%'))
+                value['tailnet_operators'] = [link for link in value['tailnet_operators'] if link not in links]
+                self._save_identity_in(db, value)
             if row:
                 db.execute('UPDATE operator_sessions SET revoked_at=? WHERE id=?', (self.clock(), row['id']))
                 db.execute("UPDATE client_connections SET revoked_at=?,revocation_reason='operator_signed_out' "
