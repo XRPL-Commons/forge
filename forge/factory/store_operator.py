@@ -27,6 +27,10 @@ IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_a
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
+class OperatorEffectPending(Exception):
+    """A durable outbox wait retains the operator's original intent."""
+
+
 def reviewer_logins(reason):
     """The decision for assign_reviewer is the chosen logins, nothing else."""
     logins = []
@@ -316,10 +320,14 @@ class OperatorActions(Lifecycle):
                 "AND status='pending' AND attempts=0",(self.clock(),self.clock(),row['id']))
             if claimed.rowcount!=1:
                 raise GitHubUnavailable('The earlier closing comment requires remote confirmation')
+            effect=db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step='close-comment'",(row['id'],)).fetchone()
+            from ..store.effects import defer_effect_in
+            defer_effect_in(db,effect,self.clock(),reliability=self._config().get('reliability'))
 
     def _send(self,row,step,method,path,payload=None):
         """State-setting effects may retry only after their caller's fresh readback."""
-        from ..store.effects import admit_send_in
+        from ..store.effects import admit_send_in, defer_effect_in, effect_due
+        waiting=False
         with self.store.write() as db:
             writable(db)
             if baseline(self._baseline(db,row['unit_id']))!=baseline(row['plan']['baseline']):
@@ -328,11 +336,58 @@ class OperatorActions(Lifecycle):
                               (row['id'],step)).fetchone()
             if effect is None or effect['status'] not in {'pending','uncertain'}:
                 raise TransitionError('The recorded operator effect cannot be sent again')
-            admit_send_in(effect,self.clock(),reliability=self._config().get('reliability'))
-            db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+1,"
-                "uncertain_since=COALESCE(uncertain_since,?),updated_at=? WHERE id=?",
-                (self.clock(),self.clock(),effect['id']))
+            try:
+                admit_send_in(effect,self.clock(),reliability=self._config().get('reliability'))
+            except TransitionError:
+                # The shared retry policy controls timing and uncertainty;
+                # these are owned waits, not rejection of operator authority.
+                self._bound_effect_in(db,row,effect)
+                if effect_due(effect,self.clock()):
+                    refreshed=db.execute('SELECT * FROM external_effects WHERE id=?',(effect['id'],)).fetchone()
+                    defer_effect_in(db,refreshed,self.clock(),reliability=self._config().get('reliability'))
+                waiting=True
+            else:
+                db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+1,"
+                    "uncertain_since=COALESCE(uncertain_since,?),updated_at=? WHERE id=?",
+                    (self.clock(),self.clock(),effect['id']))
+                refreshed=db.execute('SELECT * FROM external_effects WHERE id=?',(effect['id'],)).fetchone()
+                defer_effect_in(db,refreshed,self.clock(),reliability=self._config().get('reliability'))
+        if waiting:raise OperatorEffectPending()
         return self.github.call('controller',row['item'],method,path,payload)
+
+    def _bound_effect_in(self,db,row,effect):
+        from ..store.effects import retry_policy
+        policy=retry_policy(self._config().get('reliability'))
+        bounded=(effect['escalation_at'] is not None or effect['attempts']>=policy['max_attempts']
+            or effect['uncertain_since'] is not None and self.clock()-effect['uncertain_since']>=policy['uncertainty_seconds'])
+        if bounded:
+            db.execute('UPDATE external_effects SET escalation_at=COALESCE(escalation_at,?) WHERE id=?',(self.clock(),effect['id']))
+            db.execute("UPDATE issue_action_requests SET message=? WHERE id=? AND status='pending'",
+                ('Forge is reconciling this decision on GitHub. The retry limit was reached; further writes are stopped until the remote result is confirmed.',row['id']))
+        return bounded
+
+    def _defer_effects(self,row):
+        from ..store.effects import defer_effect_in, effect_due
+        with self.store.write() as db:
+            writable(db)
+            for effect in db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND status IN ('pending','running','uncertain')",(row['id'],)).fetchall():
+                # A send already saved its deadline before the network call.
+                # Do not extend it on each supervisor sweep or controller restart.
+                self._bound_effect_in(db,row,effect)
+                if effect_due(effect,self.clock()):
+                    refreshed=db.execute('SELECT * FROM external_effects WHERE id=?',(effect['id'],)).fetchone()
+                    defer_effect_in(db,refreshed,self.clock(),reliability=self._config().get('reliability'))
+
+    def _effect_wait(self,row,*,only_future=False):
+        with self.store.read_snapshot() as db:
+            effects=db.execute("SELECT retry_at,escalation_at FROM external_effects WHERE operator_request_id=? "
+                "AND status IN ('pending','running','uncertain')",(row['id'],)).fetchall()
+        if not effects or only_future and not any(e['retry_at'] is not None and e['retry_at']>self.clock() for e in effects):
+            return None
+        deadlines=[e['retry_at'] for e in effects if e['retry_at'] is not None]
+        return {'request_id':row['id'],'status':row['status'],'pending':'effect_reconciliation',
+            'owner':'supervisor:operator','reason':'effect_uncertain' if any(e['escalation_at'] is not None for e in effects) else 'effect_retry',
+            'retry_at':max(deadlines) if deadlines else None}
 
     def _comment_receipt(self,row,payload):
         comments=self.github.pages('controller',row['item'],f"/issues/{row['item']['number']}/comments")
@@ -787,6 +842,8 @@ class OperatorActions(Lifecycle):
         row=self._request(identifier)
         try:
             if row['status']!='pending':return self._reconcile_retired(row)
+            waiting=self._effect_wait(row,only_future=True)
+            if waiting:return waiting
             if row['action']=='reopen':return self._reopen_step(row)
             if row['action']=='close':
                 completed=self._completed_close(row)
@@ -816,16 +873,16 @@ class OperatorActions(Lifecycle):
                 try:self.requirements.observe(row['unit_id'])
                 except (GitHubUnavailable,TransitionError):pass  # The independent requirements stage retries; intent is applied.
             return result
+        except OperatorEffectPending:
+            return self._effect_wait(row)
         except GitHubUnavailable:
+            self._defer_effects(row)
             return {'request_id':identifier,'pending':'github_observation'}
         except VersionConflict:
             return {'request_id':identifier,'pending':'concurrent_observation'}
         except TransitionError as error:
             if row['status']!='pending':
-                from ..store.effects import defer_effect_in
-                with self.store.write() as db:
-                    for effect in db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND status IN ('pending','running','uncertain')",(identifier,)).fetchall():
-                        defer_effect_in(db,dict(effect),self.clock(),reliability=self._config().get('reliability'))
+                self._defer_effects(row)
                 return {'request_id':identifier,'status':row['status'],'pending':'effect_reconciliation','reason':str(error)}
             return self._reject(row,str(error))
 
@@ -833,9 +890,10 @@ class OperatorActions(Lifecycle):
         if not 1<=limit<=100:raise ValueError('Invalid action page size')
         with self.store.read_snapshot() as db:
             ids=[r[0] for r in db.execute("SELECT q.id FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id "
-                "WHERE (q.status='pending' OR EXISTS(SELECT 1 FROM external_effects e WHERE e.operator_request_id=q.id "
-                "AND e.status IN ('pending','running','uncertain') AND (e.retry_at IS NULL OR e.retry_at<=?))) "
-                "AND q.id>? ORDER BY q.id LIMIT ?",(self.clock(),after,limit+1))]
+                "WHERE ((q.status='pending' AND NOT EXISTS(SELECT 1 FROM external_effects e WHERE e.operator_request_id=q.id "
+                "AND e.status IN ('pending','running','uncertain') AND e.retry_at>?)) OR (q.status!='pending' AND EXISTS(SELECT 1 FROM external_effects e WHERE e.operator_request_id=q.id "
+                "AND e.status IN ('pending','running','uncertain') AND (e.retry_at IS NULL OR e.retry_at<=?)))) "
+                "AND q.id>? ORDER BY q.id LIMIT ?",(self.clock(),self.clock(),after,limit+1))]
         items=[]
         for identifier in ids[:limit]:
             try:items.append(self.step(identifier))

@@ -29,13 +29,16 @@ class OperatorOutboxTests(unittest.TestCase):
     def test_unknown_comment_send_is_not_repeated_or_confirmed_by_another_actor(self):
         request=self.lose_comment()
         original=self.github.comments.pop()
+        self.now+=30
         self.github.calls.clear()
         self.assertEqual(self.actions.step(request)['pending'],'github_observation')
         self.assertEqual(self.github.calls,[])
         self.github.comments.append({**original,'user':{'login':'human','type':'User'}})
+        self.now+=30
         self.assertEqual(self.actions.step(request)['pending'],'github_observation')
         self.assertEqual(self.github.calls,[])
         self.github.comments[:]=[original]
+        self.now+=30
         self.assertTrue(self.actions.step(request)['applied'])
         self.assertFalse(any(method=='POST' and path.endswith('/comments') for method,path,_ in self.github.calls))
 
@@ -43,6 +46,7 @@ class OperatorOutboxTests(unittest.TestCase):
         request=self.lose_comment()
         original=self.github.comments.pop()
         self.actions._reject(self.actions._request(request),'Authority changed')
+        self.now+=30
         self.github.calls.clear()
         result=self.actions.cycle()['items'][0]
         self.assertEqual(result['pending'],'effect_reconciliation')
@@ -81,6 +85,83 @@ class OperatorOutboxTests(unittest.TestCase):
         self.assertEqual(self.status(request),before)
         self.assertEqual(self.github.calls,[])
         self.assertEqual(self.actions.cycle()['items'],[])
+
+    def effect(self,request):
+        with self.store.read_snapshot() as db:
+            return dict(db.execute('SELECT * FROM external_effects WHERE operator_request_id=?',(request,)).fetchone())
+
+    def test_send_claim_saves_backoff_before_network_and_restart_cannot_read_or_send_early(self):
+        from forge.factory.store_operator import OperatorActions
+        request=self.request('pause')
+        original=self.github.call
+        def lost(*args,**kwargs):
+            saved=self.effect(request)
+            self.assertEqual((saved['attempts'],saved['retry_at']),(1,130))
+            original(*args,**kwargs)
+            raise GitHubUnavailable('lost response')
+        self.github.call=lost
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        restart=OperatorActions(self.store,self.github,config=self.actions.config,clock=lambda:self.now)
+        with patch.object(self.github,'issue',side_effect=AssertionError('Read before retry deadline')):
+            self.assertEqual(restart.step(request)['retry_at'],130)
+            self.assertEqual(restart.cycle()['items'],[])
+        self.assertEqual(self.effect(request)['retry_at'],130)
+        self.now=130
+        self.assertTrue(restart.step(request)['applied'])
+        self.assertEqual(len(self.github.calls),1)
+        self.assertEqual(self.effect(request)['attempts'],1)
+
+    def test_transient_send_failures_back_off_and_cap_keeps_owned_pending_intent(self):
+        request=self.request('pause');sends=[]
+        self.actions.config['reliability']['effect_max_attempts']=3
+        def failed(*args,**kwargs):
+            sends.append(self.now)
+            raise GitHubUnavailable('transport unavailable')
+        self.github.call=failed
+        for now,deadline in [(100,130),(130,190),(190,310)]:
+            self.now=now
+            self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+            self.assertEqual(self.effect(request)['retry_at'],deadline)
+            self.assertEqual(self.actions.step(request)['retry_at'],deadline)
+            self.assertEqual(self.actions.cycle()['items'],[])
+        self.assertEqual(sends,[100,130,190])
+        self.assertEqual(self.status(request)['status'],'pending')
+        self.assertIn('further writes are stopped',self.status(request)['message'])
+        self.now=310
+        self.assertEqual(self.actions.step(request)['reason'],'effect_uncertain')
+        self.assertEqual(sends,[100,130,190])
+        self.assertEqual(self.effect(request)['retry_at'],1210)
+        with self.store.read_snapshot() as db:
+            self.assertIsNotNone(db.execute("SELECT 1 FROM unit_gates WHERE code='operator_sync' AND resolved_at IS NULL").fetchone())
+        # A later authoritative read can settle the original action, with no
+        # permission to create an additional send or a replacement request.
+        self.github.issue_value['labels']=['hold'];self.now=1210
+        self.assertTrue(self.actions.step(request)['applied'])
+        self.assertEqual(len(sends),3)
+
+    def test_uncertainty_age_stops_sends_without_rejecting_the_intent(self):
+        request=self.request('pause');sends=[]
+        def failed(*args,**kwargs):
+            sends.append(self.now);raise GitHubUnavailable('lost reply')
+        self.github.call=failed
+        self.actions.step(request)
+        self.now=1000
+        result=self.actions.step(request)
+        self.assertEqual(result['reason'],'effect_uncertain')
+        self.assertEqual(sends,[100])
+        self.assertEqual(self.effect(request)['escalation_at'],1000)
+        self.assertEqual(self.status(request)['status'],'pending')
+
+    def test_retired_remote_read_failure_obeys_the_existing_deadline(self):
+        request=self.lose_comment()
+        self.actions._reject(self.actions._request(request),'Authority changed')
+        self.now=130
+        with patch.object(self.github,'pages',side_effect=GitHubUnavailable('read failed')) as pages:
+            self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+            self.assertEqual(self.effect(request)['retry_at'],160)
+            self.assertEqual(self.actions.cycle()['items'],[])
+            self.assertEqual(pages.call_count,1)
+        self.assertEqual(self.status(request)['status'],'rejected')
 
 
 class OperatorOutboxMigrationTests(unittest.TestCase):
