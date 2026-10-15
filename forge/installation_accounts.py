@@ -86,8 +86,12 @@ class DeviceAccount:
                 and isinstance(setup_id, str) and re.fullmatch('[a-f0-9]{32}', setup_id))
         with login_lock(self.root, provider), identity_effect_lock(self.root):
             data = self.setup.read()
-            require(data['generation'] == generation and data['phase'] in ('setup', 'active') and not data.get('operation'),
-                    'setup_changed', 'Finish the current setup operation before signing in.')
+            require(data['generation'] == generation and data['phase'] in ('setup', 'active'),
+                    'setup_changed', 'Setup identity or phase changed during account login.')
+            # Qualification observes and refreshes the connected account. Polling
+            # that connection must remain possible while its check is running.
+            require(not apply or not data.get('operation'), 'setup_busy',
+                    'Finish the current setup operation before changing account login.')
             record = data.get('device_logins', {}).get(provider)
             if record:
                 require(record['generation'] == generation and record['setup_id'] == setup_id,

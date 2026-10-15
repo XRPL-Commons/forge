@@ -110,6 +110,42 @@ class DeviceLoginTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'account_login_running')
         self.assertFalse(any(call[1] in ('rm', 'create', 'start') for call in self.calls[before:]))
 
+    def completed_login_with_check(self):
+        self.call(apply=True); self.finish(); completed = self.call(apply=True)
+        with self.setup.store.transaction() as data:
+            data['selected'] = {'id': 1, 'name': 'owner/repository'}
+        self.setup.queue('check', self.setup.revision(self.setup.read()))
+        return completed
+
+    def test_connected_account_observation_coexists_with_running_check(self):
+        completed = self.completed_login_with_check()
+        before = self.setup.read(); calls = len(self.calls)
+        self.assertEqual(self.call(), completed)
+        self.assertEqual(self.setup.read(), before)
+        self.assertEqual(len(self.calls), calls)
+        with self.assertRaises(SetupError) as caught: self.call(apply=True)
+        self.assertEqual(caught.exception.code, 'setup_busy')
+        self.assertEqual(self.setup.read(), before)
+        self.assertEqual(len(self.calls), calls)
+
+    def test_disconnected_account_during_check_does_not_pass_from_saved_receipt(self):
+        self.completed_login_with_check()
+        config = self.setup.runtime(); config['provider_pool'] = []
+        self.setup.save_runtime(config, active=False)
+        with self.setup.store.transaction() as data: data['provider_revision'] = None
+        before = self.setup.read()
+        self.assertEqual(self.call()['status'], 'account_login_failed')
+        self.assertEqual(self.setup.read(), before)
+
+    def test_check_observation_still_requires_matching_session_and_generation(self):
+        self.completed_login_with_check()
+        with self.assertRaises(SetupError) as caught:
+            self.client.call('codex', generation=self.generation, setup_id='b' * 32)
+        self.assertEqual(caught.exception.code, 'account_session_changed')
+        with self.assertRaises(SetupError) as caught:
+            self.client.call('codex', generation='other-generation', setup_id='a' * 32)
+        self.assertEqual(caught.exception.code, 'setup_changed')
+
     def test_single_file_logs_start_with_compression_disabled(self):
         self.assertEqual(self.call(apply=True)['status'], 'account_login_pending')
         self.assertTrue(self.record['State']['Running'])
