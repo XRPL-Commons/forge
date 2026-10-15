@@ -13,7 +13,7 @@ from forge.store.configuration import Configuration
 from forge.store.migration.auxiliary_cleanup import cleanup_unstarted_auxiliary
 from forge.store.repository_planning import RepositoryPlanning
 from forge.store.transitions import Lifecycle, manifest_hash
-from tests.test_deployments import selected_store
+from tests.test_deployments import result, selected_store
 
 
 class UpgradeAuxiliaryCleanupTests(unittest.TestCase):
@@ -23,6 +23,7 @@ class UpgradeAuxiliaryCleanupTests(unittest.TestCase):
         Configuration(self.store).replace('runtime.json', {'enabled': False}, expected_revision=0)
         self.deployments = Deployments(self.root, runner=None, github=None, settings=None, clock=lambda: 100)
         self.job = self.deployments.new_job({'provider': 'codex'}, {'id': 1, 'name': 'owner/repo'}, 'a'*40, 1000)
+        self.job['workflows_digest'] = 'workflow-digest'
         self.deployments.save(1, 'owner/repo', job=self.job, status='running')
         self.runner = Mock()
         self.runner.inspect.return_value = {'id': 'exact', 'status': 'created', 'running': False, 'started_at': None}
@@ -70,6 +71,53 @@ class UpgradeAuxiliaryCleanupTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT manifest_json FROM auxiliary_runtime').fetchone()[0], before)
         self.runner.start.assert_not_called(); self.runner.prepare.assert_not_called(); self.runner.create.assert_not_called()
         self.assertEqual(cleanup_unstarted_auxiliary(self.root, self.store), 0)
+
+    def captured_deployment(self):
+        self.job.update(fenced=True, capture={
+            'result': result(self.job['id']), 'logs': 'saved worker evidence', 'missing': [],
+            'execution': {'id': 'exact', 'status': 'exited', 'running': False, 'exit_code': 0}})
+        self.deployments.save(1, job=self.job)
+        return deepcopy(self.job['capture'])
+
+    def test_fenced_collected_deployment_finishes_ordinary_result_without_launch(self):
+        capture = self.captured_deployment()
+        self.runner.inspect.return_value = None  # Previous reset removed it before save failed.
+        def reset(job):
+            self.assertTrue(job['fenced'])
+            job['source_input'] = {'observed': 'must not replace launch manifest'}
+        self.runner.reset.side_effect = reset
+        self.assertEqual(cleanup_unstarted_auxiliary(self.root, self.store), 1)
+        entry = self.deployments.read()['repositories']['1']
+        self.assertEqual(entry['status'], 'proposed')
+        self.assertEqual(entry['proposal']['strategy'], 'header')
+        self.assertEqual(self.leases(), 0)
+        with self.store.read_snapshot() as db:
+            from forge.store.auxiliary import job_in
+            saved = job_in(db, self.job['id'])
+        self.assertEqual(saved['capture'], capture)
+        self.assertTrue(saved['cleanup'])
+        self.assertNotIn('source_input', saved)
+        self.runner.capture.assert_not_called()
+        self.runner.create.assert_not_called(); self.runner.prepare.assert_not_called(); self.runner.start.assert_not_called()
+        self.assertEqual(cleanup_unstarted_auxiliary(self.root, self.store), 0)
+
+    def test_fenced_capture_keeps_lease_until_ordinary_teardown_is_verified(self):
+        capture = self.captured_deployment()
+        self.runner.reset.side_effect = RunnerError('Teardown remains unverified')
+        with self.assertRaisesRegex(RunnerError, 'Teardown'):
+            cleanup_unstarted_auxiliary(self.root, self.store)
+        self.assertEqual((self.row()['fenced'], self.row()['cleanup'], self.leases()), (1, 0, 1))
+        self.assertEqual(self.deployments.read()['repositories']['1']['job']['capture'], capture)
+        self.runner.reset.side_effect = None
+        self.assertEqual(cleanup_unstarted_auxiliary(self.root, self.store), 1)
+        self.assertEqual(self.leases(), 0)
+
+    def test_fenced_without_capture_is_not_treated_as_collected(self):
+        self.job['fenced'] = True
+        self.deployments.save(1, job=self.job)
+        self.assertEqual(cleanup_unstarted_auxiliary(self.root, self.store), 0)
+        self.runner.reset.assert_not_called()
+        self.assertEqual(self.leases(), 1)
 
     def test_absent_never_created_worker_is_released_but_recorded_missing_worker_is_not(self):
         self.runner.inspect.return_value = None

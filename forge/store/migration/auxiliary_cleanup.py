@@ -1,8 +1,8 @@
-"""Relinquish never-started auxiliary workers during an authorized upgrade.
+"""Finish fenced deployments and relinquish never-started auxiliary workers.
 
 The bundled source is qualified before entry. Admission is disabled and the
 controller lease prevents a start between physical inspection and durable fence.
-Running/completed workers keep their ordinary collection and drain path.
+Unfenced running/completed workers keep their ordinary collection and drain path.
 """
 from copy import deepcopy
 
@@ -45,7 +45,11 @@ def cleanup_unstarted_auxiliary(root, store):
             rows = [dict(row) for row in db.execute("SELECT id,domain,owner_id FROM auxiliary_executions "
                 "WHERE cleanup=0 AND domain IN ('deployment','triage') ORDER BY created_at,id LIMIT 50")]
         plans = RepositoryPlanning(database)
-        deployments = Deployments(root, runner=None, github=None, settings=None)
+        # Teardown needs source authority and engine access, never provider
+        # secrets or a renewal/model invocation.
+        def runner_for(config):
+            return ContainerRunner(config, environ=Credentials(root).environment(only=[]))
+        deployments = Deployments(root, runner=runner_for, github=None, settings=None)
         for row in rows:
             with database.read_snapshot() as db:
                 job = job_in(db, row['id'])
@@ -56,11 +60,15 @@ def cleanup_unstarted_auxiliary(root, store):
                 if not entry or not entry.get('job') or entry['job']['id'] != job['id']:
                     continue
                 interrupted = entry.get('reason') == REASON
+                if job['fenced'] and job.get('capture') is not None:
+                    # Collection already finished; the ordinary fenced path can
+                    # verify teardown and settle the saved result without launch.
+                    deployments.drive(row['owner_id'])
+                    cleaned += 1
+                    continue
             if job['fenced'] and not interrupted:
                 continue
-            # Teardown needs source authority and engine access, never provider
-            # secrets or a renewal/model invocation.
-            runner = ContainerRunner(job['runner_config'], environ=Credentials(root).environment(only=[]))
+            runner = runner_for(job['runner_config'])
             current = runner.inspect(job)
             if not unstarted(job, current, interrupted=interrupted):
                 continue
