@@ -14,6 +14,8 @@ export function useForgeApi() {
   const recordTiming = createHttpTimingRecorder(samples.value, import.meta.server ? 'server_render' : 'browser')
   const serverTimings = import.meta.server && useRequestURL().searchParams.get('timings') === '1'
   const current = token()
+  // Carry the verified outer request context through Nitro's local SSR fetch.
+  const event = useRequestEvent()
   const resources = useResources()
   const redirecting = useState<boolean>('forge-sign-in-redirecting', () => false)
   const forwarded = useRequestHeaders(['cookie', 'host'])
@@ -34,7 +36,7 @@ export function useForgeApi() {
     let response
     try {
       response = await $fetch.raw<T & { ok?: boolean; reason?: string; controls_token?: string }>(path, {
-        method: 'GET', credentials: 'same-origin',
+        method: 'GET', credentials: 'same-origin', ...(event ? { context: event.context } : {}),
         headers: { ...forwarded, ...(cached ? { 'If-None-Match': cached.etag } : {}) }, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeout ?? 15000)]) : AbortSignal.timeout(options.timeout ?? 15000) })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason
@@ -58,7 +60,7 @@ export function useForgeApi() {
     resources.invalidate(() => true, clear)
     let response
     try {
-      response = await $fetch.raw<T & { ok?: boolean; reason?: string }>(path, { method: 'POST', body, credentials: 'same-origin',
+      response = await $fetch.raw<T & { ok?: boolean; reason?: string }>(path, { method: 'POST', body, credentials: 'same-origin', ...(event ? { context: event.context } : {}),
         headers: { 'Content-Type': 'application/json', 'X-Forge-Action': current.value } })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason

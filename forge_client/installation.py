@@ -68,6 +68,12 @@ class Install:
         self.key = 'install-' + digest({'ssh': ssh})
         self.interactive = interactive
         self.notify = notify or (lambda event: None)
+        self.opened_browser_urls = set()
+
+    def open_browser(self, url):
+        if url not in self.opened_browser_urls:
+            self.opened_browser_urls.add(url)
+            __import__('webbrowser').open(url)
 
     def save(self):
         self.journal.save(self.state)
@@ -157,7 +163,7 @@ class Install:
         if targets.get('status') != 'targets_ready': return self.status()
         consent = InstallConsent(self.installation, selected, github=self.github,
                                  repositories=targets['repositories'], tell=self.notify,
-                                 open_browser=__import__('webbrowser').open if self.interactive else None)
+                                 open_browser=self.open_browser if self.interactive else None)
         apps = self.stage('consent', consent.observe, consent.apply,
                           complete=lambda row: row.get('status') == 'consent_ready')
         if apps.get('status') != 'consent_ready': return self.status()
@@ -313,12 +319,19 @@ def execute(args):
     ssh = args.ssh or (supplied or {}).get('ssh')
     require(ssh, 'ssh_required', 'Select --ssh HOST.')
     interactive = not args.json and sys.stdin.isatty()
+    notified = set()
     def event(value):
+        encoded = json.dumps(value, sort_keys=True)
+        if encoded in notified: return
+        notified.add(encoded)
         if args.json:
-            print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
+            print(encoded, file=sys.stderr, flush=True)
         else:
-            print(value if isinstance(value, str) else value.get('instruction') or value.get('url') or json.dumps(value),
-                  file=sys.stderr, flush=True)
+            lines = [value] if isinstance(value, str) else [
+                value[key] for key in ('instruction', 'url') if value.get(key)]
+            if isinstance(value, dict) and value.get('code'):
+                lines.append('One-time code: ' + value['code'])
+            print('\n'.join(lines) if lines else encoded, file=sys.stderr, flush=True)
     workflow = Install(ssh, github=github, interactive=interactive, notify=event)
     with connection_lock(workflow.key, workflow.journal.root):
         if supplied is not None: workflow.plan(supplied)
@@ -342,10 +355,14 @@ def execute(args):
                     previous = progress
                 pending = result.get('pending', [])
                 waiting = {'installing', 'network_installing', 'environment_installing', 'checking',
-                           'smoke_pending', 'first_merge_pending', 'account_login_pending', 'account_login_saved'}
+                           'smoke_pending', 'first_merge_pending', 'account_login_pending', 'account_login_saved',
+                           'app_installation_required'}
+                def can_wait(row):
+                    return (row.get('status') in waiting or
+                            row.get('status') == 'account_login_required' and bool(row.get('url') and row.get('code')))
                 if (result.get('handover_complete') or result['status'] == 'preflight_blocked'
                         or time.monotonic() >= deadline
-                        or not pending or any(row.get('status') not in waiting for row in pending)):
+                        or not pending or any(not can_wait(row) for row in pending)):
                     return result
                 time.sleep(min(5, max(0, deadline - time.monotonic())))
         return workflow.preflight()

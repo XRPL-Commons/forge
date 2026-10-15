@@ -29,6 +29,13 @@ def device_prompt(output):
     return {'url': 'https://auth.openai.com/codex/device', 'code': code.group(1)}
 
 
+def failed_start(row):
+    state = (row or {}).get('State', {})
+    return (state.get('Status') == 'created' and state.get('Running') is False
+            and state.get('StartedAt') == '0001-01-01T00:00:00Z'
+            and isinstance(state.get('Error'), str) and bool(state['Error'].strip()))
+
+
 class DeviceAccount:
     def __init__(self, root, *, setup=None, run=subprocess.run, clock=time.time):
         self.root = Path(root)
@@ -106,7 +113,7 @@ class DeviceAccount:
                 return {'status': 'connected' if apply else 'account_login_saved', 'provider': provider, 'session_id': record['id']}
             if retry and record:
                 require(record['phase'] == 'failed' or record['phase'] == 'complete' and not connected
-                        or self.clock() >= record['expires_at'], 'account_login_running',
+                        or self.clock() >= record['expires_at'] or failed_start(self.inspect(record)), 'account_login_running',
                         'Finish the current device login before starting another one.')
                 self.cleanup(record)
                 self.save(generation, None)
@@ -128,6 +135,10 @@ class DeviceAccount:
                     self.save(generation, {**record, 'phase': 'failed'})
                 return {'status': 'account_login_failed', 'provider': provider, 'session_id': record['id'],
                         'reason': 'Device login expired or failed. Restart the account login explicitly.'}
+            if failed_start(row):
+                if apply: self.save(generation, {**record, 'phase': 'failed'})
+                return {'status': 'account_login_failed', 'provider': provider, 'session_id': record['id'],
+                        'reason': 'The provider login container failed before starting. Restart account login explicitly.'}
             if row is None and record['phase'] != 'prepared':
                 return {'status': 'write_unconfirmed', 'provider': provider, 'session_id': record['id'],
                         'reason': 'The recorded login container is missing. Inspect the host login session before restarting.'}
@@ -144,7 +155,7 @@ class DeviceAccount:
                 self.docker('create', '--name', record['name'], '--label', 'forge.login=' + record['name'],
                     '--label', 'forge.login-root=' + owner(self.root), '--label', 'forge.login-generation=' + generation,
                     '--label', 'forge.login-session=' + record['id'], '--log-driver', 'local', '--log-opt', 'max-size=64k',
-                    '--log-opt', 'max-file=1', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                    '--log-opt', 'max-file=1', '--log-opt', 'compress=false', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                     '--user', str(os.getuid()) + ':' + str(os.getgid()), '--pids-limit', '128', '--memory', '1g',
                     '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m', '--mount', 'type=bind,source=' + str(home) + ',target=/work/home',
                     '--env', 'HOME=/work/home', '--env', 'DISABLE_AUTOUPDATER=1', '--entrypoint', item['command'],

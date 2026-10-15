@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http'
+import type { H3Event } from 'h3'
 export const MAX_ACTION_BODY = 262144
 export const MAX_RESPONSE_BODY = 1024 * 1024
 export const UPSTREAM_TIMEOUT_MS = 30000
@@ -102,6 +103,21 @@ export function tailscaleIdentity(headers: Headers, remoteAddress: string | unde
   const value = (headers['tailscale-user-login'] ?? '').trim().toLowerCase()
   if (!value || value.includes(',') || value.startsWith('tagged-devices') || value.length > 320 || !TAILSCALE_LOGIN.test(value)) return undefined
   return value
+}
+
+// Nitro's SSR fetch passes event.context through node-mock-http's request
+// context, but its synthetic socket has no remote address. Keep the validated
+// outer request identity in memory; headers cannot manufacture this reference.
+const requestIdentities = new WeakMap<object, string>()
+export function requestTailscaleIdentity(event: H3Event, env = process.env): string | undefined {
+  const req = event.node.req
+  const headers = Object.fromEntries(Object.entries(req.headers).map(([key, value]) =>
+    [key, Array.isArray(value) ? value.join(',') : value]))
+  const inherited = (req as IncomingMessage & { __unenv__?: object }).__unenv__
+  const login = tailscaleIdentity(headers, req.socket?.remoteAddress, env)
+    ?? (inherited && requestIdentities.get(inherited))
+  if (login) requestIdentities.set(event.context, login)
+  return login
 }
 
 // `x-forwarded-host` is the name the browser used, already checked by

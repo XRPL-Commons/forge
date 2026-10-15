@@ -187,6 +187,16 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'server_maintenance_required')
         self.assertIn('bin/forge update', str(caught.exception))
 
+    def test_account_failures_preserve_sanitized_runtime_codes(self):
+        for code in ('account_runtime_failed', 'runner_image_required', 'account_owner_changed', 'account_login_running'):
+            with self.subTest(code=code):
+                host = InstallerHost('root@anvil.example', run=lambda *a, **k:
+                    json.dumps({'ok': False, 'error': code, 'reason': 'private-provider-output'}).encode())
+                with self.assertRaises(SetupError) as caught:
+                    host.rpc('payload', {})
+                self.assertEqual(caught.exception.code, code)
+                self.assertNotIn('private-provider-output', str(caught.exception))
+
     def test_destination_cannot_inject_shell_options(self):
         for value in ('-oProxyCommand=bad', 'root@host;touch /tmp/x', 'root@host\nother'):
             with self.assertRaises(SetupError): InstallerHost(value)

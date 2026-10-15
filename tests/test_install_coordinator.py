@@ -138,6 +138,23 @@ class CoordinatorTests(unittest.TestCase):
         self.assertFalse(result['handover_complete'])
         self.smoke.handover.assert_not_called()
 
+    def test_consent_polling_does_not_reopen_installation_tab(self):
+        self.factory()
+        self.install.interactive = True
+        consent = Mock()
+        consent.observe.return_value = {'status': 'app_installation_required'}
+        def construct(*args, **kwargs):
+            def apply(observed):
+                kwargs['open_browser']('https://github.example/install/1')
+                return {'status': 'app_installation_required'}
+            consent.apply.side_effect = apply
+            return consent
+        with patch('forge_client.install_consent.InstallConsent', side_effect=construct), \
+             patch('webbrowser.open') as browser:
+            self.install.apply()
+            self.install.apply()
+        browser.assert_called_once_with('https://github.example/install/1')
+
     def test_verified_smoke_handover_completes_and_resume_does_not_reenable(self):
         self.factory()
         self.smoke.run.return_value = {'status': 'smoke_verified'}
