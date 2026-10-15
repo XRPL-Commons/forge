@@ -12,35 +12,56 @@ export default async function (page, { base, scenario, requests }) {
     'signed-out SSR must not read private API data')
   assert.equal(await page.getByRole('navigation').count(), 0)
 
-  // The friendly page: a heading and the one-line explanation.
+  // The friendly page: a heading, the one-line explanation, the decorative
+  // scene hidden from assistive technology, Ember waving hello.
   await page.getByRole('heading', { level: 1, name: 'Welcome back to the factory floor' }).waitFor()
   await page.getByText('Sign in with the GitHub account your Forge administrator authorized.').waitFor()
+  const scene = page.locator('canvas.sign-in-scene')
+  assert.equal(await scene.getAttribute('aria-hidden'), 'true')
+  assert.equal(await scene.getAttribute('data-mood'), 'waving')
   assert.equal(await page.getByRole('alert').count(), 0)
 
-  // Every failed callback lands on ?error=sign_in: no account named.
+  // Every failed callback lands on ?error=sign_in: a worried cube, no account named.
   await page.goto(base + '/login?error=sign_in')
   await page.getByRole('alert').filter({ hasText: 'That sign-in didn’t go through' }).waitFor()
   await page.getByRole('alert').filter({ hasText: 'ask your Forge administrator to add your account' }).waitFor()
+  assert.equal(await page.locator('canvas.sign-in-scene').getAttribute('data-mood'), 'worried')
   assert.equal(await page.getByRole('link', { name: 'Continue with GitHub' }).getAttribute('href'), '/auth/github/start')
 
   // Coming back from an agent connection keeps return_to on the same start URL.
   await page.goto(base + '/login?return_to=' + encodeURIComponent('/settings/agents?code=ABCD-EFGH'))
   await page.getByRole('status').filter({ hasText: 'Sign in to finish connecting your agent' }).waitFor()
+  assert.equal(await page.locator('canvas.sign-in-scene').getAttribute('data-mood'), 'hopeful')
   assert.equal(await page.getByRole('link', { name: 'Continue with GitHub' }).getAttribute('href'),
     '/auth/github/start?return_to=' + encodeURIComponent('/settings/agents?code=ABCD-EFGH'))
 
-  // Before sign-in the page reads nothing but the session.
+  // Before sign-in the page reads nothing but the session, even while animating.
   await page.goto(base + '/login')
-  await page.getByRole('link', { name: 'Continue with GitHub' }).waitFor()
+  await page.locator('canvas.sign-in-scene[data-motion="moving"]').waitFor()
   await page.waitForTimeout(600)
   reads = await requests()
   assert.deepEqual([...new Set(reads.filter(r => r.path.startsWith('/api/')).map(r => r.path))], ['/api/auth/session'],
     'the sign-in page must not call private APIs')
 
-  // A phone: nothing wider than the screen.
+  // The scene animates, but reduced motion gives one still frame.
+  const shot = () => page.locator('canvas.sign-in-scene').evaluate(c => c.toDataURL())
+  const a = await shot(); await page.waitForTimeout(350)
+  assert.notEqual(await shot(), a, 'the scene moves by default')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.reload()
+  await page.locator('canvas.sign-in-scene[data-motion="still"]').waitFor()
+  await page.waitForTimeout(200)
+  const still = await shot(); await page.waitForTimeout(350)
+  assert.equal(await shot(), still, 'reduced motion draws one static frame')
+  await page.emulateMedia({ reducedMotion: null })
+
+  // A phone: the scene above the card, nothing wider than the screen.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole('link', { name: 'Continue with GitHub' }).waitFor()
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal scroll at 390px')
+  const sceneBox = await page.locator('canvas.sign-in-scene').boundingBox()
+  const cardBox = await page.locator('section[aria-labelledby="sign-in-title"]').boundingBox()
+  assert.ok(sceneBox && cardBox && sceneBox.y < cardBox.y, 'the scene sits above the card')
   await page.setViewportSize({ width: 1280, height: 800 })
 
   // While the browser leaves for GitHub the button says so. (The test keeps
@@ -59,14 +80,13 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(started, base + '/auth/github/start')
   await page.unroute('**/auth/github/start**')
 
-  // The sign-in service is down: a way to retry.
+  // The sign-in service is down: a sleepy cube and a way to retry.
   await scenario('down')
   await page.goto(base + '/login')
-  // The unavailable alert is server rendered. Keep the service down until the
-  // client middleware has also checked the session and installed the handler;
-  // otherwise hydration can recover before this test clicks the retry button.
+  // Keep the service down until hydration installs the retry handler.
   await page.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
   await page.getByRole('alert').filter({ hasText: 'The sign-in desk is napping' }).waitFor()
+  assert.equal(await page.locator('canvas.sign-in-scene').getAttribute('data-mood'), 'sleepy')
   await page.getByRole('button', { name: 'Try again' }).waitFor()
   assert.equal(await page.getByRole('link', { name: 'Continue with GitHub' }).count(), 0)
   await scenario('auth-required')
@@ -74,6 +94,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.getByRole('button', { name: 'Try again' }).click()
   assert.equal((await (await retried).json()).operator, null)
   await page.getByRole('link', { name: 'Continue with GitHub' }).waitFor()
+  assert.equal(await page.locator('canvas.sign-in-scene').getAttribute('data-mood'), 'waving')
 
   await page.context().addCookies([{ name: 'synthetic_operator', value: 'yes', url: base }])
   await page.goto(base + '/')
