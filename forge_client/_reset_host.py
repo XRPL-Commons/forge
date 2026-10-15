@@ -151,6 +151,7 @@ def plan(intent):
             'archive': {'home': str(home_archive / 'home'), 'installer': str(target / 'installer')},
             'effects': ['Drain and fence Forge workers; reconcile pending GitHub effects.',
                         'Stop the four owned user services and remove the Forge service account.',
+                        'Remove the verified Forge Compose egress container by its recorded ID.',
                         'Archive its source, runtime, history and remaining credentials in root-only directories.',
                         'Archive the host installer state and matching local setup journals.'],
             'preserved': ['SSH access and host keys', 'Ubuntu and installed packages', 'Tailscale identity and Serve',
@@ -158,13 +159,70 @@ def plan(intent):
             'pending_effects': view['pending_effects'], 'leases': view['leases']}
 
 
-def docker_mounts_clear():
+def containers():
     ids = run(['docker', 'container', 'ls', '-aq', '--no-trunc'], capture=True).splitlines()
     need(all(re.fullmatch('[a-f0-9]{64}', value) for value in ids), 'unsafe_install_state')
     if not ids:
-        return
-    containers = json.loads(run(['docker', 'container', 'inspect', *ids], capture=True))
-    for container in containers:
+        return []
+    observed = json.loads(run(['docker', 'container', 'inspect', *ids], capture=True))
+    need(isinstance(observed, list) and {row.get('Id') for row in observed} == set(ids), 'unsafe_install_state')
+    return observed
+
+
+def egress_candidates(observed):
+    result = []
+    for container in observed:
+        labels = container.get('Config', {}).get('Labels') or {}
+        if (container.get('Name') == '/forge-egress-1'
+                or labels.get('com.docker.compose.project') == 'forge' and labels.get('com.docker.compose.service') == 'egress'
+                or any(mount.get('Source') == str(ROOT / 'deploy/runner/egress.py') for mount in container.get('Mounts', []))):
+            result.append(container)
+    return result
+
+
+def egress_identity(container, receipt):
+    network = ROOT / 'deploy/runner'
+    labels = container.get('Config', {}).get('Labels') or {}
+    expected = {'project': 'forge', 'service': 'egress', 'project.working_dir': str(network),
+                'project.config_files': str(network / 'compose.yaml')}
+    need(container.get('Name') == '/forge-egress-1'
+         and all(labels.get('com.docker.compose.' + key) == value for key, value in expected.items()), 'foreign_egress')
+    mounts = container.get('Mounts', [])
+    need(len(mounts) == 1 and mounts[0].get('Type') == 'bind' and mounts[0].get('RW') is False
+         and mounts[0].get('Source') == str(network / 'egress.py')
+         and mounts[0].get('Destination') == '/opt/forge/egress.py', 'foreign_egress')
+    files = {}
+    for name in ('compose.yaml', 'egress.py'):
+        path = network / name
+        need(path.resolve() == path and path.stat().st_uid == receipt['plan']['identity']['uid'], 'foreign_egress')
+        files[name] = file_digest(path)
+        need(files[name] == file_digest(SOURCE / 'deploy/runner' / name), 'foreign_egress')
+    return {'id': container['Id'], 'name': container['Name'], 'compose': expected,
+            'mount': {key: mounts[0][key] for key in ('Type', 'Source', 'Destination', 'RW')}, 'files': files}
+
+
+def cleanup_egress(directory, receipt):
+    """Reconcile only the observed, installer-owned proxy; never a Compose project."""
+    found = egress_candidates(containers())
+    need(len(found) <= 1, 'foreign_egress')
+    saved = receipt.get('egress_cleanup')
+    if found:
+        identity = egress_identity(found[0], receipt)
+        if saved is None:
+            saved = {'status': 'pending', 'identity': identity}
+            receipt['egress_cleanup'] = saved
+            write_receipt(directory, receipt)
+        need(saved['status'] == 'pending' and saved.get('identity') == identity, 'egress_changed')
+        # Persisted identity survives a lost Docker response. Retry observes absence
+        # before deciding whether this exact container still needs removal.
+        run(['docker', 'container', 'rm', '--force', identity['id']])
+        need(not egress_candidates(containers()), 'egress_changed')
+    receipt['egress_cleanup'] = {**(saved or {}), 'status': 'removed' if saved and saved.get('identity') else 'absent'}
+    write_receipt(directory, receipt)
+
+
+def docker_mounts_clear():
+    for container in containers():
         for mount in container.get('Mounts', []):
             source = mount.get('Source', '')
             need(not source or not Path(source).is_relative_to(HOME), 'unsafe_install_state')
@@ -257,6 +315,7 @@ def retire(directory, receipt):
         active = service(['systemctl', '--user', 'list-units', '--all', '--plain', '--no-legend', environment_unit + '.service'], capture=True)
         if active:
             service(['systemctl', '--user', 'stop', environment_unit])
+        cleanup_egress(directory, receipt)
         docker_mounts_clear()
         # Re-read after all owned services stop: a concurrent operator may have
         # changed setup between the earlier observation and the stop request.
@@ -291,6 +350,8 @@ def retire(directory, receipt):
         receipt['step'] = 'archive_home'
         write_receipt(directory, receipt)
     if receipt['step'] == 'archive_home':
+        need(not egress_candidates(containers()), 'egress_changed')
+        docker_mounts_clear()
         private_directory(home_archive, create=True)
         destination = home_archive / 'home'
         if HOME.exists():
