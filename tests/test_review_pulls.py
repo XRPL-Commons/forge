@@ -225,6 +225,22 @@ class ReviewPullTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE unit_id=? AND code='review_source' "
                 'AND resolved_at IS NULL', (old['unit_id'],)).fetchone()[0], 0)
 
+    def test_pause_after_rejection_repairs_only_fenced_failure_intent(self):
+        admitted = self.observe(); job, manifest = self.reserve(admitted)
+        snap = self.snapshot(admitted['unit_id'])
+        self.life.reject_job(Command('reject','results',admitted['unit_id'],snap['unit']['version']),job['job_id'],
+            execution_fence='fence',input_manifest=manifest,evidence={'verdict':'fail','candidate_id':admitted['candidate_id']})
+        snap = self.snapshot(admitted['unit_id'])
+        self.life.pause(Command('pause','operator',admitted['unit_id'],snap['unit']['version']))
+        self.observe()
+        self.assertEqual(self.snapshot(admitted['unit_id'])['reason'], 'operator_pause')
+        with self.store.read_snapshot() as db:
+            count = db.execute("SELECT count(*) FROM external_effects WHERE json_extract(payload_json,'$.conclusion')='failure'").fetchone()[0]
+            self.assertEqual(count, 2)
+        self.observe()
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM external_effects WHERE json_extract(payload_json,'$.conclusion')='failure'").fetchone()[0],count)
+
     def test_controller_excludes_grouped_forge_pr(self):
         listing={**self.remote,'forge_owned':True}
         self.assertEqual(self.controller.reconcile(self.item,[listing]),[])

@@ -197,7 +197,16 @@ class ReviewPullRequests(Lifecycle):
             repair_policy = bool(unchanged and policy_wait and (policy_wait['status'] == 'superseded'
                 or policy_wait['fencing_generation'] != unit['fencing_generation']
                 or policy_wait['membership_generation'] != unit['membership_generation']))
-            if unchanged and not release and not repair_policy:
+            failure_effects = []
+            if unchanged and any(json.loads(g['details_json']).get('reason') in {'technical_rejection', 'verdict_failed'} for g in own_gates):
+                failure_effects = db.execute("SELECT e.status,c.fencing_generation,c.membership_generation "
+                    "FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id WHERE c.candidate_id=? "
+                    "AND e.kind='github_check' AND json_extract(e.payload_json,'$.role')='controller' "
+                    "AND json_extract(e.payload_json,'$.conclusion')='failure'", (current['id'],)).fetchall()
+            repair_failure = bool(failure_effects and not any(row['status'] == 'confirmed' or
+                row['status'] != 'superseded' and row['fencing_generation'] == unit['fencing_generation']
+                and row['membership_generation'] == unit['membership_generation'] for row in failure_effects))
+            if unchanged and not release and not repair_policy and not repair_failure:
                 return {'unit_id': unit_id, 'candidate_id': current['id'], 'admitted': True, 'changed': False}
             for gate in release:
                 self._resolve(db, command, gate['id'], {'source_hash': payload['source_hash']}, resolution='superseded')
@@ -218,7 +227,12 @@ class ReviewPullRequests(Lifecycle):
                 self._event(db, command, 'candidate_selected', {'candidate_id': candidate_id, 'source': 'review_pull'})
             else:
                 candidate_id = current['id']
-            if not unchanged or repair_policy:
+            if repair_failure:
+                from .effects import Effects
+                Effects(self.store, clock=self.clock)._insert(db, command, _unit(db, unit_id), dict(current), 'github_check',
+                    dict(candidate_id=candidate_id, role='controller', conclusion='failure',
+                         summary='Forge Review or Audit requested changes on this pull request revision.'))
+            elif not unchanged or repair_policy:
                 # Replace any prior green check on a reused head before Review.
                 # Fencing also needs a fresh intent after an operator pause.
                 from .effects import Effects
