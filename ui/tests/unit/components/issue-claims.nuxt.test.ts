@@ -12,13 +12,13 @@ mockComponent('IssueWorkbench', { template: '<section><slot /></section>' })
 describe('current worker claims', () => {
   it('shows both claims and their answer action beside a Steward choice', async () => {
     context.mockReturnValue({
-      detail: ref({ key: '1:2', dependencies: [], status: 'attention',
+      detail: ref({ key: '1:2', dependencies: [], status: 'attention', actions: ['retry'],
         steward_decision: { decision_id: 'decision', digest: 'a'.repeat(64), status: 'proposed' },
         decision_request: { question: 'Which interface?', options: ['Stable', 'Experimental'],
           recommendation: 'Stable', evidence: 'The client supports both.\n\nScope needs adjustment: Split the service rewrite.',
           acknowledgment_scope: 'Your answer acknowledges these claims for this issue only.' },
       }), look: ref({}), bubble: ref(null), approvals: ref([]), holds: ref([]), facts: ref(null), live: ref({ state: 'idle' }),
-      moreItems: ref([]), actions: ref(['retry']), primary: ref('retry'), secondary: ref(null),
+      moreItems: ref([]), actions: ref([]), primary: ref('retry'), secondary: ref(null),
       checked: ref(null), checkRequest: { pending: ref(false) }, technical: ref(null),
       verificationRequest: { pending: ref(false) }, ask: vi.fn(), poll: { refresh: vi.fn() },
       ACTION_LABELS: { retry: 'Retry attempt' },

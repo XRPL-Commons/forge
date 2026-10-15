@@ -192,7 +192,7 @@ const nextActionTime = computed(() => {
                   >Reopen it on GitHub to bring it back ↗</a>
                 </span>
               </div>
-              <div v-else-if="!detail.steward_decision || detail.decision_request || actions.includes('start_anyway')" id="issue-actions" class="flex flex-wrap items-center gap-2">
+              <div v-else-if="!detail.steward_decision || detail.decision_request || detail.actions.includes('start_anyway')" id="issue-actions" class="flex flex-wrap items-center gap-2">
                 <span v-if="detail.status === 'attention' && (primary === 'discuss' || !primary)" id="issue-needs-person" class="inline-flex min-h-8 basis-full items-center gap-2 text-sm text-amber-200">
                   <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
                   {{ attentionNote(detail) }}

@@ -50,7 +50,7 @@ exists; it is not a stored delivery phase.
 
 The lifecycle also exposes `execution_condition`: `running` while an unfenced
 worker is starting, running or collecting; `owned` while a gate, retained job or
-candidate effect owns the next step; or `scheduled` when a current next action
+external effect owns the next step; or `scheduled` when a current next action
 exists. An active unit with no owner has a null
 condition until the stall detector assigns investigation. A condition does not
 clear a gate or authorize a worker.
