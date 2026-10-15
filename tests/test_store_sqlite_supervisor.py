@@ -139,6 +139,10 @@ class Runner:
     def capture(self, job):
         report = dict(version=1, attempt=job['id'], role=job['role'], outcome='pass', summary='Completed validation')
         if job['role'] == 'build':
+            if job.get('build_result_version') == 2:
+                report.update(version=2,outcome='done',headline='Build complete',plain='Implementation completed.',
+                    operator_summary='Implementation completed.',claims=[],verification=None,delegation_plan=None,
+                    output_commit=None,pr_title=None,pr_body=None)
             self.github.publish(job)
         else:
             report['candidate'] = job['candidate']['key']

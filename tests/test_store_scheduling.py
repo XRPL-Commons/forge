@@ -96,6 +96,32 @@ class SchedulingTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
             self.assertEqual(db.execute('SELECT count(*) FROM unit_gates WHERE resolved_at IS NULL').fetchone()[0],1)
 
+    def test_retired_operator_effect_owns_only_its_current_member_until_readback(self):
+        from tests import test_delivery_execution as delivery_fixture
+        fixture=delivery_fixture.DeliveryExecutionTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        fixture.compose()
+        store=fixture.store;now=100.
+        schedules=Scheduling(store,clock=lambda:now)
+        first=fixture.members['issue-0'];second=fixture.members['issue-1']
+        with store.write() as db:
+            db.execute("DELETE FROM next_actions WHERE unit_id='batch'")
+        schedules.audit();now+=300
+        self.assertEqual({row['member_id'] for row in schedules.audit()['items']},{first,second})
+        with store.write() as db:
+            db.execute("INSERT INTO issue_action_requests(id,issue_id,action,expected_revision,status,reason,created_at) "
+                "VALUES('request','issue-0','close','revision','rejected','changed',100)")
+            db.execute("INSERT INTO external_effects(id,request_id,unit_id,kind,status,payload_json,attempts,created_at,updated_at,operator_request_id,operator_step) "
+                "VALUES('effect','effect','batch','operator_action','uncertain','{}',1,100,100,'request','close')")
+        self.assertEqual(Queries(store).issue('issue-0')['lifecycle']['execution_condition'],'owned')
+        self.assertIsNone(Queries(store).issue('issue-1')['lifecycle']['execution_condition'])
+        self.assertTrue(schedules.escalate('batch',reason='stalled',member_id=first)['owned'])
+        self.assertEqual([row['member_id'] for row in schedules.audit()['items']],[second])
+        with store.write() as db:
+            db.execute("UPDATE external_effects SET status='confirmed',receipt_json='{}' WHERE id='effect'")
+        self.assertIsNone(Queries(store).issue('issue-0')['lifecycle']['execution_condition'])
+        schedules.audit();now+=300
+        self.assertEqual({row['member_id'] for row in schedules.audit()['items']},{first,second})
+
     def test_maintenance_does_not_create_an_orphan_or_charge(self):
         self.schedules.clear('u',owner='dispatch')
         self.schedules.cycle(maintenance=True)

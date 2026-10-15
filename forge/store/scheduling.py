@@ -33,6 +33,19 @@ def current_in(db, unit, member_id=None):
     return dict(row) if row else None
 
 
+def effect_owned_in(db, unit, member_id=None):
+    """Pending writes own only their current candidate or operator issue scope."""
+    return db.execute(
+        'SELECT 1 FROM external_effects e LEFT JOIN candidate_effects c ON c.effect_id=e.id '
+        'LEFT JOIN issue_action_requests r ON r.id=e.operator_request_id '
+        "WHERE e.unit_id=? AND e.status IN ('pending','running','uncertain') AND ("
+        'c.effect_id IS NOT NULL AND c.candidate_id IS ? OR '
+        'e.operator_request_id IS NOT NULL AND EXISTS(SELECT 1 FROM unit_issues m '
+        'WHERE m.unit_id=e.unit_id AND m.issue_id=r.issue_id AND m.left_at IS NULL '
+        'AND (? IS NULL OR m.id=?))) LIMIT 1',
+        (unit['id'],unit['current_candidate_id'],member_id,member_id)).fetchone() is not None
+
+
 def execution_condition_in(db, unit, member_id=None, *, gates=(), action=None):
     """Describe present ownership independently of phase and retry scheduling.
 
@@ -51,11 +64,7 @@ def execution_condition_in(db, unit, member_id=None, *, gates=(), action=None):
         return 'running'
     if gates or jobs:
         return 'owned'
-    effect = db.execute(
-        "SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
-        "WHERE e.unit_id=? AND e.status IN ('pending','running','uncertain') AND c.candidate_id IS ? LIMIT 1",
-        (unit['id'], unit['current_candidate_id'])).fetchone()
-    if effect:
+    if effect_owned_in(db,unit,member_id):
         return 'owned'
     return 'scheduled' if action else None
 
@@ -161,9 +170,7 @@ class Scheduling(Lifecycle):
                 live = db.execute('SELECT 1 FROM jobs j JOIN job_members s ON s.job_id=j.id '
                     'WHERE j.unit_id=? AND s.member_id=? AND (j.cleanup=0 OR (j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.capture_authorized=1 AND x.result_revoked=0)))) LIMIT 1',
                     (unit['id'], member['id'])).fetchone()
-                effect = db.execute("SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
-                    "WHERE e.unit_id=? AND e.status IN ('pending','running','uncertain') "
-                    'AND c.candidate_id IS ? LIMIT 1', (unit['id'], unit['current_candidate_id'])).fetchone()
+                effect = effect_owned_in(db,unit,member['id'])
                 owned = maintenance or gates or live or effect or action and action['due_at'] + self.stall_seconds > now
                 if owned:
                     db.execute('DELETE FROM scheduling_orphans WHERE member_id=?', (member['id'],))
@@ -196,7 +203,9 @@ class Scheduling(Lifecycle):
                 if orphan is None or self.clock()-orphan['unowned_since']<self.stall_seconds:
                     raise TransitionError('stall has not reached its bound')
                 action=current_in(db,unit,member_id)
-                if applicable_gates(db,unit,member_id,unit['current_candidate_id']) or action and action['due_at']+self.stall_seconds>self.clock():
+                if (applicable_gates(db,unit,member_id,unit['current_candidate_id'])
+                        or effect_owned_in(db,unit,member_id)
+                        or action and action['due_at']+self.stall_seconds>self.clock()):
                     return {'owned':True}
                 if db.execute('SELECT 1 FROM jobs j JOIN job_members m ON m.job_id=j.id WHERE j.unit_id=? '
                     'AND m.member_id=? AND (j.cleanup=0 OR (j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.capture_authorized=1 AND x.result_revoked=0))))',(unit_id,member_id)).fetchone():
