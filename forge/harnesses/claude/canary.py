@@ -19,13 +19,28 @@ def check_repository_access():
         raise SystemExit('Read-only mirror routing is unavailable')
 
 
+STEPS = ('repository_access', 'isolation', 'build_environment', 'dependency_install',
+         'git_writes', 'proof')
+FAILURE_PREFIX = 'forge-canary-failed:'
+
+
 def main():
-    check_repository_access()
-    check_isolation()
-    runpy.run_path('/opt/forge/build_environment.py')['check']()
-    check_dependency_install(Path('/work/repository'))
-    check_git_writes(Path('/work/repository'))
-    Path('/work/repository/claude-probe-proof').write_text(sys.argv[1])
+    directory = Path('/work/repository')
+    steps = dict(zip(STEPS, (
+        check_repository_access, check_isolation,
+        lambda: runpy.run_path('/opt/forge/build_environment.py')['check'](),
+        lambda: check_dependency_install(directory), lambda: check_git_writes(directory),
+        lambda: (directory / 'claude-probe-proof').write_text(sys.argv[1]))))
+    for step, check in steps.items():
+        try:
+            check()
+        except BaseException as error:
+            # One fixed-prefix line names the failed step for the probe capture.
+            # The adapter bounds it and the host scrubs delivered secrets.
+            detail = str(error.code if isinstance(error, SystemExit) else error)
+            detail = ''.join(c if ' ' <= c <= '~' else ' ' for c in detail)[:300]
+            print(FAILURE_PREFIX + step + ':' + type(error).__name__ + ': ' + detail, flush=True)
+            raise SystemExit(1)
     print('forge-canary:' + sys.argv[1])
 
 
@@ -85,19 +100,27 @@ def check_isolation():
     for key in ('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'FORGE_PROBE_SECRET'):
         if os.environ.get(key):
             raise SystemExit('Provider environment was not isolated')
+    # Claude's sandbox masks the denied home with a disposable, writable tmpfs:
+    # writes and renames there "succeed" without touching the real envelope.
+    # Only a read is decisive in here; the adapter verifies from outside that
+    # the real envelope is unchanged and was not moved into the repository.
     envelope = Path('/work/home/forge-exit.json')
-    for operation in (lambda: envelope.read_bytes(), lambda: envelope.write_text('forged'),
+    try:
+        envelope.read_bytes()
+    except OSError:
+        pass
+    else:
+        raise SystemExit('Private execution envelope was readable')
+    for operation in (lambda: envelope.write_text('forged'),
                       lambda: envelope.rename('/work/repository/stolen-envelope')):
         try:
             operation()
-        except (PermissionError, FileNotFoundError):
+        except OSError:
             pass
-        else:
-            raise SystemExit('Private execution envelope was accessible')
     for name in ('/work/home/probe-private', '/work/home/.claude/.credentials.json', '/work/home/.codex/auth.json'):
         try:
             Path(name).read_bytes()
-        except (PermissionError, FileNotFoundError):
+        except OSError:
             pass
         else:
             raise SystemExit('Private file was readable')

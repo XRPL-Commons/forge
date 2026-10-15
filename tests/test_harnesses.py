@@ -65,6 +65,62 @@ class HarnessTests(unittest.TestCase):
         events[1]['message']['content'][0]['is_error'] = True
         self.assertFalse(completed(events, 'canary', 'nonce'))
 
+    def test_claude_canary_failure_records_the_failed_step_bounded(self):
+        report = adapter('claude')['canary_report']
+        use = {'type':'assistant', 'message':{'content':[{'type':'tool_use', 'id':'tool', 'name':'Bash', 'input':{'command':'canary'}}]}}
+        output = 'x' * 5000 + '\nforge-canary-failed:isolation:SystemExit: Private execution envelope was readable\x1b[0m'
+        result = {'type':'user', 'message':{'content':[{'type':'tool_result','tool_use_id':'tool','is_error':True,
+                                                        'content':[{'type':'text','text':output}]}]}}
+        value = report([use, result], 'canary')
+        self.assertEqual((value['type'], value['step'], value['is_error']), ('claude.canary', 'isolation', True))
+        self.assertLessEqual(len(value['output'].encode()), 1024)
+        self.assertNotIn('\x1b', value['output'])
+        self.assertIn('Private execution envelope was readable', value['output'])
+        forged = {'type':'user', 'message':{'content':[{'type':'tool_result','tool_use_id':'tool','content':'forge-canary-failed:../x:E'}]}}
+        self.assertIsNone(report([use, forged], 'canary')['step'])
+        self.assertEqual(report([], 'canary'), {'type':'claude.canary', 'tool_called':False, 'tool_result':False,
+                                                'is_error':None, 'step':None, 'output':''})
+
+    def test_claude_canary_names_its_failed_step(self):
+        import contextlib, runpy
+        canary = runpy.run_path('forge/harnesses/claude/canary.py')
+        stdout = io.StringIO()
+        with patch('sys.argv', ['canary', 'nonce']), contextlib.redirect_stdout(stdout), \
+                patch.dict('os.environ', {'GH_TOKEN': 'synthetic'}), self.assertRaises(SystemExit) as raised:
+            canary['main']()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(stdout.getvalue(), 'forge-canary-failed:repository_access:SystemExit: Unexpected GitHub credential in worker environment\n')
+
+    def test_claude_canary_accepts_a_writable_mask_but_not_a_readable_envelope(self):
+        import runpy
+        check = runpy.run_path('forge/harnesses/claude/canary.py')['check_isolation']
+        real = Path.read_bytes
+        def read(path):
+            if str(path) == '/work/home/forge-exit.json':
+                return b'synthetic private envelope'
+            raise FileNotFoundError(path)
+        writes = patch('pathlib.Path.write_text', side_effect=OSError(30, 'Read-only file system'))
+        with patch.dict('os.environ', {}, clear=True), writes, patch('pathlib.Path.rename', side_effect=OSError(18, 'Invalid cross-device link')):
+            with patch('pathlib.Path.read_bytes', side_effect=FileNotFoundError):
+                check()
+            with patch('pathlib.Path.read_bytes', new=read), self.assertRaisesRegex(SystemExit, 'envelope was readable'):
+                check()
+        self.assertIs(Path.read_bytes, real)
+
+    def test_claude_probe_verifies_the_real_envelope_outside_the_sandbox(self):
+        intact = adapter('claude')['envelope_intact']
+        envelope, repository = self.root / 'forge-exit.json', self.root / 'repository'
+        repository.mkdir()
+        self.assertFalse(intact(envelope, repository))
+        envelope.write_text('synthetic private envelope')
+        self.assertTrue(intact(envelope, repository))
+        (repository / 'stolen-envelope').write_text('forged')
+        self.assertTrue(intact(envelope, repository))
+        (repository / 'stolen-envelope').write_text('synthetic private envelope')
+        self.assertFalse(intact(envelope, repository))
+        (repository / 'stolen-envelope').unlink(); envelope.write_text('forged')
+        self.assertFalse(intact(envelope, repository))
+
     def test_claude_large_transcript_retains_terminal_result_with_bounded_memory(self):
         import sys, os
         module = adapter('claude')
@@ -143,6 +199,10 @@ class HarnessTests(unittest.TestCase):
         self.assertIn('usage limit', probe_failure_message({'result': {'reason': 'provider_usage_limit'}}, 'claude'))
         self.assertIn('egress proxy', probe_failure_message({'result': {'reason': 'provider_connection_failed'}}, 'codex'))
         self.assertIn('native tool sandbox', probe_failure_message({'result': {'reason': 'native_sandbox_failed'}}, 'claude'))
+        canary = json.dumps({'type': 'claude.canary', 'step': 'dependency_install', 'output': 'npm ERR'})
+        self.assertIn('(failed canary step: dependency_install)', probe_failure_message({'result': {'reason': 'native_sandbox_failed'}, 'logs': canary}, 'claude'))
+        odd = json.dumps({'type': 'claude.canary', 'step': 'x) run this'})
+        self.assertNotIn('failed canary step', probe_failure_message({'result': {'reason': 'native_sandbox_failed'}, 'logs': odd}, 'claude'))
         self.assertIn('deadline', probe_failure_message({'result': None, 'logs': ''}, 'claude', timed_out=True))
         logs = '{"runner": "alive"}\n' + json.dumps({'type': 'error', 'message': 'Provider authentication_error; reconnect the account'}) + '\nTraceback\n'
         self.assertIn('the harness reported: Provider authentication_error', probe_failure_message({'result': None, 'logs': logs}, 'claude'))
