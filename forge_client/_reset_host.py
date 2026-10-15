@@ -21,7 +21,7 @@ else:
         need, read, validate_intent, service, require_setup_entrypoint, private_directory, run)
 
 ARCHIVES = Path('/var/lib/forge-reset')
-SERVICES = ['forge-mirror.service', 'forge-status.service', 'forge-ui.service', 'forge-supervisor.service']
+SERVICES = ['forge-mirror.service', 'forge-registry.service', 'forge-status.service', 'forge-ui.service', 'forge-supervisor.service']
 # Only these package defaults may remain active while retiring the dedicated
 # account. Other inactive package services are checked for an empty cgroup.
 SYSTEM_UNITS = frozenset({
@@ -114,15 +114,18 @@ def unit_inventory(view):
     for path, expected in view['units'].items():
         need(Path(path).parent == units and Path(path).name in SERVICES
              and file_digest(Path(path)) == expected, 'source_conflict')
-    need(set(view['units']) == {str(units / name) for name in SERVICES}, 'unsafe_install_state')
+    known = {str(units / name) for name in SERVICES}
+    previous = known - {str(units / 'forge-registry.service')}
+    need(set(view['units']) in (known, previous), 'unsafe_install_state')
+    owned_names = {Path(path).name for path in view['units']}
     # A dedicated service account may contain only these managed user services
     # and their enablement links. Preserve unrelated services by refusing reset.
     for path in units.iterdir():
-        need(path.name in SERVICES or path.name == 'default.target.wants', 'unsafe_install_state')
+        need(path.name in owned_names or path.name == 'default.target.wants', 'unsafe_install_state')
         if path.name == 'default.target.wants':
             need(path.is_dir() and not path.is_symlink(), 'unsafe_install_state')
             for link in path.iterdir():
-                need(link.name in SERVICES and link.is_symlink() and link.resolve() == units / link.name,
+                need(link.name in owned_names and link.is_symlink() and link.resolve() == units / link.name,
                      'unsafe_install_state')
 
 

@@ -50,6 +50,17 @@ class WorkerBoundaryTests(unittest.TestCase):
     def prepare(self,job=None):
         return self.boundary.prepare(job or self.job,input_directory=self.path,broker_socket_directory=self.path)
 
+    def test_registry_socket_is_mounted_only_into_trusted_gateway(self):
+        self.boundary.registry_directory = self.path
+        spec = self.prepare()
+        gateway = self.engine.resources['container'][spec.gateway]
+        self.assertIn('--registry-socket', gateway['Config']['Cmd'])
+        self.assertEqual(gateway['Mounts'], [dict(Type='bind', Destination='/registry',
+            Source=str(self.path), Name=str(self.path), RW=False)])
+        self.assertNotIn('/registry', ' '.join(spec.worker_args))
+        self.assertFalse(any(m['Destination'] == '/registry'
+            for m in self.engine.resources['container'][spec.frontend]['Mounts']))
+
     def test_restart_reuses_exact_boundary_and_stopped_work_keeper(self):
         first=self.prepare();count=len([c for c in self.engine.calls if 'create' in c])
         self.assertEqual(self.prepare(),first)

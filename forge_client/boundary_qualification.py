@@ -56,7 +56,8 @@ def main(payload):
 HOST = 'INSPECT = ' + repr(INSPECT) + '\n' + HOST
 
 CHECKS = ['exact image and engine', 'read-only Git clone/fetch', 'provider TLS',
-          'public npm/pip downloads', 'GitHub, host and cross-job denial',
+          'public npm/pip downloads', 'shared archive cache across jobs with upstream offline',
+          'GitHub, host and cross-job denial',
           'read-only assignment', 'bounded volume', 'stopped capture', 'cleanup']
 
 

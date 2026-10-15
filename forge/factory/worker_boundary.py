@@ -29,10 +29,11 @@ class BoundarySpec:
 
 
 class WorkerBoundary:
-    def __init__(self, call, *, image, uplink='forge-uplink', work_bytes=8*1024**3):
+    def __init__(self, call, *, image, uplink='forge-uplink', work_bytes=8*1024**3, registry_directory=None):
         if not isinstance(image,str) or not re.fullmatch(r'(?:sha256:|[^\s]+@sha256:)[0-9a-f]{64}',image) or type(work_bytes) is not int or not 16*1024**2 <= work_bytes <= 64*1024**3:
             raise ValueError('worker volume requires a bounded byte quota')
         self.call, self.image, self.uplink, self.work_bytes = call, image, uplink, work_bytes
+        self.registry_directory = registry_directory
 
     @staticmethod
     def identity(job):
@@ -158,7 +159,13 @@ class WorkerBoundary:
             ['type=bind,source='+broker_socket_directory+',target=/broker,readonly',
              'type=volume,source='+volume+',target=/retained-work,readonly,volume-nocopy'], ['forge-git'],
             user=f'{os.geteuid()}:{os.getegid()}')
-        self.endpoint(gateway, labels, network, ['/opt/forge/gateway.py'], [], ['forge-egress','forge-registry'], uplink=True)
+        gateway_command, gateway_mounts = ['/opt/forge/gateway.py'], []
+        if self.registry_directory is not None:
+            directory = self.directory(self.registry_directory)
+            gateway_command += ['--registry-socket', '/registry/registry.sock']
+            gateway_mounts = ['type=bind,source='+directory+',target=/registry,readonly']
+        self.endpoint(gateway, labels, network, gateway_command, gateway_mounts,
+            ['forge-egress','forge-registry'], uplink=True, user=f'{os.geteuid()}:{os.getegid()}')
         environment = self.environment()
         return BoundarySpec(network,volume,frontend,gateway,('--network',network,'--dns','127.0.0.1',
             '--mount','type=volume,source='+volume+',target=/work,volume-nocopy',

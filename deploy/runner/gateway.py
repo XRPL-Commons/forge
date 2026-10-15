@@ -5,6 +5,7 @@ use GET/HEAD upstream; CONNECT is reserved for approved model providers. Every
 DNS result must be public and the socket uses the validated address directly.
 """
 from contextlib import closing
+import argparse
 import http.client
 import ipaddress
 import json
@@ -117,6 +118,16 @@ class PublicHTTPS(http.client.HTTPSConnection):
         self.sock=self._context.wrap_socket(connect_public(self.host),server_hostname=self.host)
 
 
+class CacheConnection(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__('localhost', timeout=330)
+        self.path = path
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
+
+
 class Handler(socketserver.StreamRequestHandler):
     rbufsize=0  # Never strand TLS bytes in the HTTP parser's buffer.
     def reply(self,status,body=b'',headers=()):
@@ -190,8 +201,11 @@ class Handler(socketserver.StreamRequestHandler):
                     (upstream if peer is self.connection else self.connection).sendall(data)
 
     def registry(self,method,host,path,headers):
-        with closing(PublicHTTPS(host,timeout=20,context=ssl.create_default_context())) as upstream:
-            upstream.request(method,path,headers={'Accept':headers.get('accept','*/*'),'Accept-Encoding':'identity','User-Agent':'Forge-readonly-registry/1'})
+        cache_socket = getattr(self.server, 'cache_socket', None)
+        connection = CacheConnection(cache_socket) if cache_socket else PublicHTTPS(host,timeout=20,context=ssl.create_default_context())
+        with closing(connection) as upstream:
+            target = '/' + host + path if cache_socket else path
+            upstream.request(method,target,headers={'Accept':headers.get('accept','*/*'),'Accept-Encoding':'identity','User-Agent':'Forge-readonly-registry/1'})
             response=upstream.getresponse()
             content_type=response.getheader('Content-Type','application/octet-stream')
             if '\r' in content_type or '\n' in content_type:raise ValueError('invalid content type')
@@ -245,6 +259,10 @@ class Server(socketserver.ThreadingTCPServer):
 
 
 if __name__=='__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--registry-socket')
+    args = parser.parse_args()
     with Server(('0.0.0.0',3128),'provider') as provider_server, Server(('0.0.0.0',8081),'registry') as registry_server:
+        registry_server.cache_socket = args.registry_socket
         thread=threading.Thread(target=provider_server.serve_forever,daemon=True);thread.start()
         registry_server.serve_forever()

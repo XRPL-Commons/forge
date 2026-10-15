@@ -21,6 +21,7 @@ from .factory.worker_boundary import BoundaryError, WorkerBoundary
 from .mirror.git_store import GitStore, environment, run_git
 from .mirror.policy import Repository
 from .mirror.service import Broker, SessionServer
+from .registry_cache import ArchiveCache, Server as RegistryServer
 
 
 @contextmanager
@@ -119,6 +120,7 @@ except OSError:pass
 else:raise AssertionError('assignment input was writable')
 assert shutil.which('gh') is None
 assert not any(k in os.environ for k in ('GH_TOKEN','GITHUB_TOKEN','FORGE_GITHUB_TOKEN'))
+assert not Path('/registry').exists()
 result['immutable_input_no_github_credentials']=True
 Path('/work/sentinel').write_text('stopped capture survives')
 written=0
@@ -164,6 +166,14 @@ def qualify(image, *, docker=None):
     with tempfile.TemporaryDirectory(prefix='forge-qualification-',dir='/tmp') as temporary:
         root=Path(temporary);fixture=Fixture(root)
         try:
+            registry_directory = root / 'registry-socket'
+            registry_directory.mkdir(mode=0o700)
+            registry_cache = ArchiveCache(root / 'registry-cache')
+            registry_server = RegistryServer(registry_directory / 'registry.sock', registry_cache)
+            servers.append(registry_server)
+            thread = threading.Thread(target=registry_server.serve_forever, daemon=True)
+            thread.start(); threads.append(thread)
+            boundary.registry_directory = registry_directory
             docker(['network','create','--driver','bridge',*boundary.labels(labels),uplink])
             for i,job in enumerate(jobs):
                 inputs=root/str(i)/'inputs';inputs.mkdir(parents=True,mode=0o755)
@@ -200,6 +210,26 @@ def qualify(image, *, docker=None):
                     if exitcode!='0':output += logs.stderr
                     if exitcode!='0':raise BoundaryError('Worker qualification failed: '+output[-1000:])
                     result['checks']=json.loads(output.strip().splitlines()[-1])
+                    # A second physical job must reuse the first job's archive
+                    # while the trusted cache's upstream is deliberately offline.
+                    upstream = registry_cache.upstream
+                    def offline(*args, **kwargs):
+                        raise OSError('qualification cache miss with upstream disabled')
+                    registry_cache.upstream = offline
+                    hits = registry_cache.hits
+                    try:
+                        docker(['run','--rm','--pull=never','--read-only','--user','1000:1000',
+                            '--cap-drop','ALL','--security-opt','no-new-privileges',
+                            '--memory','128m','--pids-limit','32',*specs[1].worker_args,
+                            '--entrypoint','/usr/local/bin/python3',image,'-I','-c',
+                            'import urllib.request,pathlib; assert not pathlib.Path("/registry").exists(); '
+                            'r=urllib.request.urlopen("http://forge-registry:8081/registry.npmjs.org/is-number/-/is-number-7.0.0.tgz",timeout=30); '
+                            'assert r.status==200 and len(r.read())>100'])
+                    finally:
+                        registry_cache.upstream = upstream
+                    if registry_cache.hits != hits + 1:
+                        raise BoundaryError('Second job did not reuse the shared package archive')
+                    result['checks']['registry_cache_cross_job_offline_hit'] = True
                     docker(['cp',worker+':/work/sentinel',str(root/'sentinel')])
                     if (root/'sentinel').read_text()!='stopped capture survives':raise BoundaryError('Stopped capture failed')
                     result['checks']['stopped_capture']=True

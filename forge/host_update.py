@@ -44,7 +44,7 @@ RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses',
                  'forge/factory/harness.py', 'forge/factory/startup.py', 'forge/factory/probe.py', 'forge/factory/build_environment.py',
                  'deploy/runner/browser-canary.cjs', 'deploy/runner/gitconfig', 'deploy/runner/gateway.py', 'forge/mirror/frontend.py')
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
-SERVICES = ('forge-mirror', 'forge-status', 'forge-ui', 'forge-supervisor')
+SERVICES = ('forge-mirror', 'forge-registry', 'forge-status', 'forge-ui', 'forge-supervisor')
 # Disabled leftovers of removed host services. Update deletes exactly these
 # unit files when present; any other unit is left alone.
 STALE_UNITS = tuple(name + suffix for name in ('forge-activity', 'forge-notify', 'forge-observability',
@@ -242,6 +242,7 @@ def desired_units(root, bind):
                 ui[-3:-3] = ['--env', 'NITRO_FORGE_TAILSCALE_IDENTITY=serve']
     return {
         'forge-mirror': unit('Forge job-bound read-only Git mirrors', '/usr/bin/python3 -m forge.launch forge.mirror_daemon --root ' + unit_quote(root), python),
+        'forge-registry': unit('Forge shared read-only package cache', '/usr/bin/python3 -m forge.launch forge.registry_cache --root ' + unit_quote(root), python),
         'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 -m forge.launch --script ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
                              python + ['FORGE_BIND_ADDRESS=127.0.0.1', 'FORGE_PORT=' + str(API_PORT),
                                        'FORGE_UPSTREAM_SECRET_FILE=' + str(root / UPSTREAM_SECRET)]),
@@ -254,7 +255,8 @@ def desired_units(root, bind):
                                'ExecStop=-' + docker + ' stop --time 10 ' + name + '\n'
                                'ExecStopPost=-' + docker + ' rm --force ' + name + '\n'),
         'forge-supervisor': unit('Forge supervisor', unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root), python,
-                                 after='network-online.target forge-mirror.service', requires='forge-mirror.service'),
+                                 after='network-online.target forge-mirror.service forge-registry.service',
+                                 requires='forge-mirror.service forge-registry.service'),
     }
 
 
@@ -489,6 +491,20 @@ def wait_mirror(root, *, timeout=20):
         time.sleep(.25)
 
 
+def wait_registry(root, *, timeout=20):
+    deadline = time.monotonic() + timeout
+    while True:
+        result = subprocess.run(['/usr/bin/python3', '-m', 'forge.launch', 'forge.registry_cache',
+                                 '--root', str(root), '--check'],
+                                env={**os.environ, 'PYTHONPATH': str(SOURCE)},
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise ValueError('The package cache service is unhealthy. Inspect forge-registry.service and rerun the supported update.')
+        time.sleep(.25)
+
+
 def qualify_runner(image, seccomp, profile, *, full=False):
     """Offline canary: tools, memory limits, browser and credential protection in the real sandbox."""
     runpy.run_path(str(SOURCE / 'deploy/build_environment_check.py'))['validate'](image, seccomp, profile, services=full)
@@ -501,9 +517,12 @@ def reconcile_services(root, bind, restart=()):
     mirror_action = 'restart' if 'forge-mirror' in restart else 'start'
     command(['systemctl', '--user', mirror_action, 'forge-mirror.service'])
     wait_mirror(root)
-    # The mirror must be healthy before dispatch can start.
+    registry_action = 'restart' if 'forge-registry' in restart else 'start'
+    command(['systemctl', '--user', registry_action, 'forge-registry.service'])
+    wait_registry(root)
+    # Both read-only services must be healthy before dispatch can start.
     for action in ('restart', 'start'):
-        ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror'
+        ordered = [name + '.service' for name in SERVICES if name not in ('forge-mirror', 'forge-registry')
                    and (name in restart) == (action == 'restart')]
         if ordered:
             command(['systemctl', '--user', action, *ordered])
@@ -554,7 +573,7 @@ def reconcile(root, bind=None, assume_yes=False):
         print('Keeping drop-in ' + str(path) + ' (it does not change what the service runs).')
     restart = set(unit_changes) | {name for name, _, _ in overrides}
     if source != record.data.get('source'):
-        restart.update(('forge-mirror', 'forge-status', 'forge-supervisor'))  # Python services run this checkout.
+        restart.update(('forge-mirror', 'forge-registry', 'forge-status', 'forge-supervisor'))  # Python services run this checkout.
     if release != record.data.get('ui_release'):
         restart.add('forge-ui')
     if runtime_changed and not fresh:

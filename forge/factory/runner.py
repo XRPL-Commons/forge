@@ -119,7 +119,10 @@ class ContainerRunner:
 
     def boundary(self):
         from .worker_boundary import WorkerBoundary
-        return WorkerBoundary(self.call, image=self.config['image'])
+        from ..registry_cache import socket_directory
+        root = self.environ.get('FORGE_CREDENTIAL_ROOT')
+        return WorkerBoundary(self.call, image=self.config['image'],
+            registry_directory=socket_directory(root) if root else None)
 
     def source_record(self, job):
         if self.source_preparation is None and not self.environ.get('FORGE_CREDENTIAL_ROOT'):

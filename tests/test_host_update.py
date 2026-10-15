@@ -123,7 +123,7 @@ class ReconcileTests(unittest.TestCase):
             self.assertTrue((self.host.root / 'ui/current/docs' / guide).exists())
         self.assertTrue((self.host.root / 'ui/current/docs/assets/setup-hero.svg').exists())
         self.assertIn('"FORGE_ROOT=/app"', ui)
-        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-ui.service', 'forge-supervisor.service']])
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-registry.service'], ['forge-status.service', 'forge-ui.service', 'forge-supervisor.service']])
         self.host.qualify.assert_called_once()
         runtime = self.host.document('host-runtime.json')
         self.assertEqual(runtime['image'], 'sha256:' + '1' * 64)
@@ -148,7 +148,7 @@ class ReconcileTests(unittest.TestCase):
             self.assertEqual(active, {name + '.service' for name in host_update.SERVICES})
         self.host.healthy = healthy
         self.host.reconcile()
-        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-supervisor.service']])
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-registry.service'], ['forge-status.service', 'forge-supervisor.service']])
         self.assertIn(['systemctl', '--user', 'start', 'forge-ui.service'], self.host.calls)
         self.assertEqual(self.host.document('host.json')['source'], 'b' * 40)
         _, output = self.host.reconcile()
@@ -186,6 +186,12 @@ class ReconcileTests(unittest.TestCase):
         health = next(i for i, call in enumerate(self.host.calls) if 'forge.mirror_daemon' in call and '--check' in call)
         start = next(i for i, call in enumerate(self.host.calls) if call[:3] == ['systemctl', '--user', 'restart'] and 'forge-supervisor.service' in call)
         self.assertLess(health, start)
+        registry = self.host.unit('forge-registry')
+        self.assertIn('forge.launch forge.registry_cache --root', registry)
+        self.assertIn('Requires=forge-mirror.service forge-registry.service', supervisor)
+        registry_health = next(i for i, call in enumerate(self.host.calls)
+                              if 'forge.registry_cache' in call and '--check' in call)
+        self.assertLess(registry_health, start)
 
     def test_unsupported_engine_refuses_before_build_or_host_changes(self):
         original = self.host.run
@@ -222,7 +228,7 @@ class ReconcileTests(unittest.TestCase):
         self.host.revision = 'b' * 40
         changed, _ = self.host.reconcile()
         self.assertFalse(changed)
-        self.assertEqual(self.host.restarted(), [['forge-mirror.service'],
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-registry.service'],
                                                 ['forge-status.service', 'forge-supervisor.service']])
         self.assertIn(['systemctl', '--user', 'start', 'forge-ui.service'], self.host.calls)
         self.assertEqual(self.host.health_checks, 2)
@@ -236,7 +242,7 @@ class ReconcileTests(unittest.TestCase):
         changed, _ = self.host.reconcile()
         self.assertFalse(changed)
         self.assertEqual(self.host.restarted(), [])
-        self.assertEqual(self.host.activations, {'forge-mirror.service': 2, 'forge-status.service': 1,
+        self.assertEqual(self.host.activations, {'forge-mirror.service': 2, 'forge-registry.service': 1, 'forge-status.service': 1,
                                                  'forge-ui.service': 2, 'forge-supervisor.service': 1})
         health = next(i for i, call in enumerate(self.host.calls)
                       if 'forge.mirror_daemon' in call and '--check' in call)
@@ -303,7 +309,7 @@ class ReconcileTests(unittest.TestCase):
         self.host.revision = 'b' * 40
         changed, _ = self.host.reconcile()
         self.assertFalse(changed)
-        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-supervisor.service']])
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-registry.service'], ['forge-status.service', 'forge-supervisor.service']])
         self.assertEqual(self.host.builds, 1)
 
     def test_a_new_runner_is_qualified_before_every_runtime_switches_to_it(self):
