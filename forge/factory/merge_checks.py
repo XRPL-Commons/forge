@@ -1,22 +1,16 @@
-"""Which pull requests carry forge/merge-policy, and the passing path for human PRs.
+"""Admit every in-scope pull request to the same durable Review/Audit lifecycle."""
+import time
 
-Scope ``all`` (the default) publishes forge/merge-policy on every open pull
-request, so a repository can require the check without blocking people: a PR
-Forge did not create passes it, and only the repository's own rules (reviews,
-CI, signatures) decide its merge. Forge-created PRs pass only through the merge
-controller's verified gates. Scope ``forge`` leaves human PRs untouched.
-
-Publication is idempotent (one external ID per PR, one run per commit) and
-read back from GitHub, so a lost response or a restart simply reconciles again.
-"""
-from .config import merge_check_scope
+from ..store.models import TransitionError
+from ..store.review_pulls import ReviewPullRequests, normalize_source
+from ..store.transitions import manifest_hash
+from .config import merge_check_scope, policy
 from .github import GitHubUnavailable
 
 MERGE_POLICY = 'forge/merge-policy'
 
 
 def merge_policy_rule(app_id):
-    """The baseline rule that requires forge/merge-policy from the Forge App only."""
     if type(app_id) is not int or app_id <= 0:
         raise ValueError('The Forge App ID is required to pin forge/merge-policy')
     return {'type': 'required_status_checks', 'parameters': {
@@ -24,36 +18,65 @@ def merge_policy_rule(app_id):
         'required_status_checks': [{'context': MERGE_POLICY, 'integration_id': app_id}]}}
 
 
-class HumanMergeChecks:
-    def __init__(self, github, runtime, *, limit=50):
-        self.github, self.runtime, self.limit = github, runtime, limit
+class ReviewPullsController:
+    """GitHub reads outside SQL; store admission never publishes a passing check."""
+    def __init__(self, store, github, config, settings=None, *, clock=time.time):
+        self.store, self.github, self.config, self.settings, self.clock = store, github, config, settings, clock
+        self.commands = ReviewPullRequests(store, clock=clock)
 
-    def reconcile(self, item, pulls=None):
-        """Publish the human passing check for one repository's open pull requests."""
-        if merge_check_scope(self.runtime, item['repo_id']) != 'all':
+    def _config(self):
+        return self.config() if callable(self.config) else self.config
+
+    def _observe(self, item, remote, *, expected_version):
+        config = self._config()
+        source = normalize_source(remote, item['repo_id'], item['repo'])
+        enabled = bool(config['enabled'])
+        with self.store.read_snapshot() as db:
+            paused = db.execute("SELECT enabled FROM runtime_controls WHERE name='factory_paused'").fetchone()
+        if paused and paused[0]:
+            return {'pull_number': source['pull_number'], 'admitted': False, 'reason': 'factory_paused'}
+        return self.commands.observe(source, policy_hash=manifest_hash(policy(config, item['repo_id'], repository_name=item['repo'])),
+            scope=merge_check_scope(config, item['repo_id']), enabled=enabled, hold_labels=config['hold_labels'], expected_version=expected_version)
+
+    def reconcile(self, item, pulls):
+        """Discover candidates from a complete inventory; bound units refresh in cycle."""
+        config = self._config()
+        if merge_check_scope(config, item['repo_id']) != 'all' or not config['enabled']:
             return []
-        pulls = self.github.pulls(item) if pulls is None else pulls
-        forge_heads = {(pr.get('head') or {}).get('sha') for pr in pulls if pr.get('forge_owned')}
+        with self.store.read_snapshot() as db:
+            known = {row[0] for row in db.execute("SELECT p.pull_number FROM review_pull_requests p JOIN units u ON u.id=p.unit_id WHERE p.repository_id=? AND u.state NOT IN ('closed','merged')", (item['repo_id'],))}
+            owned = {row[0] for row in db.execute('SELECT c.pull_number FROM candidates c JOIN units u ON u.id=c.unit_id '
+                'WHERE u.repository_id=? AND NOT EXISTS(SELECT 1 FROM review_pull_requests p WHERE p.unit_id=u.id)', (item['repo_id'],))}
         results = []
         for pr in pulls:
-            if len(results) >= self.limit:
+            if pr.get('forge_owned') or pr.get('number') in known | owned or pr.get('state') != 'open' or pr.get('draft') is not False:
+                continue
+            # Listing is discovery only. Fetch the exact PR for complete admission.
+            remote = self.github.pr(item, pr['number'])
+            if remote.get('number') != pr['number']:
+                raise GitHubUnavailable('Review PR identity changed during observation')
+            results.append(self._observe(item, remote, expected_version=0))
+            if len(results) >= 50:
                 break
-            head = (pr.get('head') or {}).get('sha')
-            if (pr.get('forge_owned') or pr.get('state') != 'open' or pr.get('draft') is True
-                    or ((pr.get('base') or {}).get('repo') or {}).get('id') != item['repo_id']):
-                continue
-            if head in forge_heads:
-                # A commit shared with a Forge candidate is governed by its gates.
-                results.append({'pull_number': pr.get('number'), 'head': head, 'status': 'forge_candidate'})
-                continue
-            try:
-                check_id = self.github.human_merge_policy(item, pr)
-            except ValueError:
-                continue
-            except GitHubUnavailable as error:
-                results.append({'pull_number': pr['number'], 'head': head, 'status': 'unconfirmed',
-                                'http_status': error.status})
-                continue
-            results.append({'pull_number': pr['number'], 'head': head,
-                            'status': 'forge_candidate' if check_id is None else 'published', 'check_id': check_id})
         return results
+
+    def cycle(self, *, after=None, limit=50):
+        """Refresh existing review bindings once per caller-owned bounded sweep."""
+        from ..store.queries import _limit
+        limit = _limit(limit)
+        with self.store.read_snapshot() as db:
+            rows = [dict(row) for row in db.execute('SELECT p.unit_id,p.pull_number,u.version,r.id AS repo_id,r.full_name AS repo '
+                'FROM review_pull_requests p JOIN units u ON u.id=p.unit_id JOIN repositories r ON r.id=p.repository_id '
+                "WHERE u.state NOT IN ('closed','merged') AND p.unit_id>? ORDER BY p.unit_id LIMIT ?", (after or '', limit + 1))]
+        items = []
+        for row in rows[:limit]:
+            try:
+                remote = self.github.pr(row, row['pull_number'])
+                if remote.get('number') != row['pull_number']:
+                    raise GitHubUnavailable('Review PR identity changed during observation')
+                items.append(self._observe(row, remote, expected_version=row['version']))
+            except GitHubUnavailable as error:
+                items.append({'unit_id': row['unit_id'], 'reason': 'github_unavailable', 'http_status': error.status})
+            except TransitionError:
+                items.append({'unit_id': row['unit_id'], 'reason': 'observation_unavailable'})
+        return {'items': items, 'next_cursor': rows[limit - 1]['unit_id'] if len(rows) > limit else None}

@@ -624,7 +624,17 @@ class Lifecycle:
                    and (job["candidate_id"] is None or job["candidate_id"] == unit["current_candidate_id"]))
         pins=db.execute('SELECT p.requirements_revision_id,m.requirements_revision_id AS current_revision,m.left_at FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=?',(job_id,)).fetchall()
         if job['role']!='recovery':
-            current=bool(current and pins and all(pin['left_at'] is None and pin['requirements_revision_id']==pin['current_revision'] for pin in pins))
+            from .review_pulls import review_only_in, source_in
+            if review_only_in(db, unit['id']):
+                source = source_in(db, job['candidate_id'])
+                identity = db.execute('SELECT * FROM candidates WHERE id=?', (job['candidate_id'],)).fetchone()
+                current = bool(current and not pins and job['role'] in {'review', 'audit'} and source and identity
+                    and source['head']['sha'] == identity['head_oid'] and source['base']['sha'] == identity['base_oid']
+                    and input_manifest.get('candidate_id') == identity['id']
+                    and all(input_manifest.get(key) == identity[key] for key in
+                            ('head_oid', 'base_oid', 'policy_hash', 'requirements_hash', 'input_manifest_hash')))
+            else:
+                current=bool(current and pins and all(pin['left_at'] is None and pin['requirements_revision_id']==pin['current_revision'] for pin in pins))
         delegation = db.execute('SELECT a.assignment_generation,a.membership_generation FROM job_delegations d '
             'JOIN delegation_plans p ON p.id=d.plan_id JOIN jobs j ON j.id=p.parent_job_id '
             'JOIN attempts a ON a.id=j.attempt_id WHERE d.job_id=?', (job_id,)).fetchone()
@@ -912,6 +922,10 @@ class Lifecycle:
 
     def _invalidate(self, db, command, unit, reason, evidence):
         self._live(unit)
+        from .review_pulls import review_only_in, invalidate_in
+        if review_only_in(db, unit['id']):
+            invalidate_in(self, db, command, unit, reason, evidence)
+            return
         members = self._members(db, unit['id'])
         from .delivery_inputs import approved_in
         grouped = approved_in(db,unit["id"]) or len(members) > 1
@@ -978,6 +992,10 @@ class Lifecycle:
             self._result(db, command, job, evidence, "rejected")
             db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,attempt_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,?,?,'fail',?,?,?)",
                        (_id(command.request_id, "evidence"), unit["id"], job["candidate_id"], job["attempt_id"], job["role"], command.actor_id, self.clock(), _json(evidence)))
+            from .review_pulls import review_only_in
+            if review_only_in(db, unit['id']):
+                self._invalidate(db, command, unit, "technical_rejection", evidence)
+                return {"accepted": True, "charged": False, "phase": unit['state']}
             charge_id = _id(command.request_id, "charge")
             db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','technical_rejection',?)", (charge_id, job["attempt_id"], self.clock()))
             self._event(db, command, "budget_charged", {"charge_id": charge_id}, job_id=job_id)

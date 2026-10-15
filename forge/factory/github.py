@@ -534,27 +534,6 @@ class GitHub:
             raise GitHubUnavailable('Published check has not been verified')
         return verified[0]['id']
 
-    HUMAN_POLICY = ('Not a Forge change: Forge review and audit do not apply to this pull request. '
-                    "The repository's own review rules and required checks still decide whether it can merge.")
-
-    def human_merge_policy(self, item, pr, *, observe_only=False):
-        """Give a pull request Forge did not create its passing forge/merge-policy.
-
-        Check runs belong to a commit, not a PR: a commit that also heads a
-        Forge candidate keeps only the verdict Forge's own gates publish."""
-        head = (pr.get('head') or {}).get('sha')
-        if (not isinstance(head, str) or not SHA.fullmatch(head) or pr.get('forge_owned')
-                or ((pr.get('base') or {}).get('repo') or {}).get('id') != item['repo_id']
-                or type(pr.get('number')) is not int or pr['number'] <= 0):
-            raise ValueError('Only an observed pull request Forge did not create gets a human merge-policy check')
-        runs = self.pages('controller', item, f'/commits/{head}/check-runs?filter=all', 'check_runs')
-        apps = self.app_ids('controller')
-        ours = [r for r in runs if r.get('name') == 'forge/merge-policy' and (r.get('app') or {}).get('id') in apps]
-        if any(not str(r.get('external_id') or '').startswith('human:') for r in ours):
-            return None
-        return self.check(item, 'controller', {'head': head}, 'human:' + str(pr['number']), 'success',
-                          self.HUMAN_POLICY, observe_only=observe_only)
-
     def verdict(self, job, report, *, observe_only=False):
         """Post an executor's verdict exactly as returned: a check run plus a comment.
 

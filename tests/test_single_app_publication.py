@@ -154,15 +154,12 @@ class SingleAppPublicationTests(unittest.TestCase):
                 'state': 'open', 'merged': False, 'draft': False}
 
     def test_grouped_inventory_cannot_take_the_human_automatic_pass_path(self):
-        from forge.factory.merge_checks import HumanMergeChecks
         pr = self.grouped_pr()
         self.github.pages = Mock(return_value=[pr])
         item = {'repo': 'example/project', 'repo_id': 1}
         observed = self.github.pulls(item)
         self.assertTrue(observed[0]['forge_owned'])
-        self.github.human_merge_policy = Mock()
-        self.assertEqual(HumanMergeChecks(self.github, validate({})).reconcile(item, observed), [])
-        self.github.human_merge_policy.assert_not_called()
+        self.assertFalse(hasattr(self.github, 'human_merge_policy'))
         # A grouped delivery never becomes issue-specific continuation authority.
         self.assertFalse(own_build_pr(pr, 1, 3, self.github.publishers('build')))
 
