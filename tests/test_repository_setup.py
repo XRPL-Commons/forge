@@ -72,6 +72,9 @@ class RepositorySetupTests(unittest.TestCase):
             {'actor_id': controller, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
         ])
         self.assertEqual(payload['rules'][0]['type'], 'pull_request')
+        # Scope 'all' is the default: the Forge App's merge-policy check is required on every PR.
+        self.assertEqual(payload['rules'][1]['parameters']['required_status_checks'],
+                         [{'context': 'forge/merge-policy', 'integration_id': controller}])
         self.assertEqual(filename, 'forge-review-rules-10.json')
         self.assertEqual(row['protection']['bypass']['status'], 'operator_review')
         self.assertEqual(self.settings.load()['repositories'][0]['enabled'], True)

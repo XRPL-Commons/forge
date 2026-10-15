@@ -93,10 +93,23 @@ def validate_branch(branch):
             and '..' not in branch and '@{' not in branch)
 
 
-def baseline(branch, controller_app_id):
+def baseline(branch, controller_app_id, merge_check_scope=None):
+    """Forge's additive ruleset: one App bypass actor, and with scope 'all' the
+    forge/merge-policy check required from that App on every pull request.
+
+    It never replaces or relaxes another ruleset or classic protection."""
     validate_branch(branch)
     require(positive(controller_app_id), 'controller_identity_required',
             'Verify the controller App before preparing repository rules.')
+    require(merge_check_scope in (None, 'all', 'forge'), 'invalid_merge_check_scope')
+    rules = [{'type': 'pull_request', 'parameters': {
+        'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
+        'require_code_owner_review': False, 'require_last_push_approval': False,
+        'required_review_thread_resolution': False}}]
+    if merge_check_scope == 'all':
+        rules.append({'type': 'required_status_checks', 'parameters': {
+            'strict_required_status_checks_policy': False,
+            'required_status_checks': [{'context': 'forge/merge-policy', 'integration_id': controller_app_id}]}})
     return {'name': 'Forge review baseline', 'target': 'branch', 'enforcement': 'active',
             # RepositoryRole 5 is GitHub's administrator role. Keep operators
             # able to bypass this additive baseline independently of the App.
@@ -105,7 +118,4 @@ def baseline(branch, controller_app_id):
                 {'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
             ],
             'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
-            'rules': [{'type': 'pull_request', 'parameters': {
-                'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
-                'require_code_owner_review': False, 'require_last_push_approval': False,
-                'required_review_thread_resolution': False}}]}
+            'rules': rules}

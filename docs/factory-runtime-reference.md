@@ -423,6 +423,17 @@ mean `human`. The old global `human_required` field is retained for legacy impor
 and the retired JSON supervisor; live SQLite admission uses the repository map.
 The global `merge_enabled` switch still gates every merge.
 
+`repository_merge_check_scopes` maps the same repository ID strings to `all`
+(the default when missing) or `forge`. With `all`, Forge publishes
+`forge/merge-policy` on every open pull request: a PR Forge did not create
+passes it (Forge review and audit do not apply; the repository's own reviews,
+CI and signing rules still decide), while a Forge-created PR passes only through
+the merge controller's verified gates. A commit shared with a Forge candidate
+keeps the merge controller's verdict. The downloaded baseline ruleset then also
+requires `forge/merge-policy` from the Forge App. With `forge`, human PRs carry
+no Forge check and the ruleset does not require it. The scope is outside the
+candidate policy hash, so changing it never withdraws a pending merge.
+
 `policy(config, repository_id, repository_name=...)` returns a candidate policy
 bound to the repository ID, its effective mode, human reviewer eligibility,
 merge method and only that repository's verification checks. Candidate hashes

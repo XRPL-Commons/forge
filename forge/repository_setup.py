@@ -18,10 +18,10 @@ class SetupObservationChanged(ValueError):
 
 
 
-def ruleset(branch, controller_app_id):
+def ruleset(branch, controller_app_id, merge_check_scope=None):
     # The standalone client and server download must produce the same policy.
     from forge_client.contracts import baseline
-    return baseline(branch, controller_app_id)
+    return baseline(branch, controller_app_id, merge_check_scope)
 
 
 def observation_key(config, row):
@@ -331,4 +331,7 @@ class RepositorySetup:
         if row['protection_status'] not in ('ready', 'needs_setup') or not report.get('branch'):
             raise ValueError('Check this repository before downloading its rules.')
         controller = self.settings.load()['connections'].get('controller', {})
-        return ruleset(report['branch'], controller.get('app_id')), 'forge-review-rules-' + str(repo_id) + '.json'
+        from .factory.config import load as runtime_config, merge_check_scope
+        scope = merge_check_scope(runtime_config(self.settings.authority.root, scope=self.settings.scope), repo_id)
+        return (ruleset(report['branch'], controller.get('app_id'), scope),
+                'forge-review-rules-' + str(repo_id) + '.json')
