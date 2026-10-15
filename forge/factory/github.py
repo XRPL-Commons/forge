@@ -661,7 +661,7 @@ class GitHub:
                   'additional_rules': [], 'code_owner_reviews': False,
                   'bypass': {'status': 'operator_review', 'detail':
                       'GitHub may hide bypass permissions. Review who can bypass these rules on GitHub.'}}
-        reviews = []
+        reviews = [];required_checks=[]
         try:
             protection = self.call('controller', item, 'GET', '/branches/' + quote(branch, safe='') + '/protection')
             if not isinstance(protection, dict):
@@ -674,6 +674,11 @@ class GitHub:
             report['sources'].append(source)
             if review:
                 reviews.append((review, source))
+            checks=protection.get('required_status_checks')
+            if checks is not None:
+                if not isinstance(checks,dict) or not isinstance(checks.get('checks',[]),list):
+                    raise GitHubUnavailable('Malformed required status checks')
+                required_checks.extend((check,source,'app_id') for check in checks.get('checks',[]))
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable as error:
@@ -700,6 +705,10 @@ class GitHub:
                                      parameters.get('require_code_owner_review', False)}, source))
                 else:
                     report['additional_rules'].append({'type': rule['type'], 'source': source})
+                    if rule['type']=='required_status_checks':
+                        checks=(rule.get('parameters') or {}).get('required_status_checks')
+                        if not isinstance(checks,list):raise GitHubUnavailable('Malformed required status checks')
+                        required_checks.extend((check,source,'integration_id') for check in checks)
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable:
@@ -728,6 +737,16 @@ class GitHub:
              'detail': 'Approvals are dismissed when new commits are pushed.' if stale else
                        'Dismiss stale pull request approvals when new commits are pushed.',
              'sources': [s for _, s in stale]}]
+        from ..app_access import shared_app
+        from .config import merge_check_scope
+        connection=shared_app(self.settings.load()['connections'])
+        if connection and merge_check_scope(self.runtime,item['repo_id'])=='all':
+            app_id=connection['app_id']
+            sources=[source for check,source,key in required_checks if isinstance(check,dict)
+                     and check.get('context')=='forge/merge-policy' and type(check.get(key)) is int and check[key]==app_id]
+            report['requirements'].append({'id':'merge_policy','label':'Forge merge policy from the Forge App',
+                'passed':bool(sources),'detail':f'Require forge/merge-policy from Forge App {app_id} on the target branch.',
+                'sources':sources})
         report['bypass'] = self.controller_bypass(item, reviews)
         return report
 

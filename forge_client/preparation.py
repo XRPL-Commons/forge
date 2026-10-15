@@ -42,8 +42,9 @@ class Preparation:
             if app['access'] == 'ready':
                 continue
             if app['access'] == 'missing_access' and len(app['installation_ids']) == 1:
-                steps.append({'kind': 'github.installation.add_repository', 'role': role,
-                              'installation_id': app['installation_ids'][0]})
+                if not any(step.get('installation_id')==app['installation_ids'][0] for step in steps):
+                    steps.append({'kind': 'github.installation.add_repository', 'role': role,
+                                  'installation_id': app['installation_ids'][0]})
             else:
                 blockers.append({'code': 'app_access_unverified', 'role': role})
         readiness = value['readiness']
@@ -75,7 +76,7 @@ class Preparation:
                         if collisions:
                             blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
                         else:
-                            steps.append({'kind': 'github.ruleset.ensure_baseline'})
+                            steps.append({'kind': 'github.ruleset.ensure_baseline',**({'merge_check_scope':value['baseline']['merge_check_scope']} if 'merge_check_scope' in value['baseline'] else {})})
                     else:
                         blockers.append({'code': 'protection_unverified'})
         if steps and not target['admin']:
@@ -141,6 +142,8 @@ class Preparation:
             else:
                 require(step['kind'] == 'github.ruleset.ensure_baseline')
                 require(fresh['baseline']['branch'] == target['branch'], 'default_branch_changed')
+                require(fresh['baseline'].get('merge_check_scope')==step.get('merge_check_scope'),
+                        'plan_stale', 'Merge check scope changed; create a new plan.')
                 if not fresh['readiness']['protection_ready']:
                     # A failed/uncertain create is never blindly repeated. A
                     # same-name rule from a previous attempt becomes a conflict
@@ -150,7 +153,7 @@ class Preparation:
                             'ruleset_conflict', 'A baseline already exists; verify it before retrying.')
                     try:
                         self.progress('started', step)
-                        self.github.create_baseline(target['name'], target['branch'], self.apps['controller']['app_id'])
+                        self.github.create_baseline(target['name'], target['branch'], self.apps['controller']['app_id'],step.get('merge_check_scope'))
                     except SetupError as error:
                         return {'status': 'write_unconfirmed', 'code': error.code,
                                 'completed': completed, 'next_actions': [{'kind': 'forge.repositories.verify'}]}

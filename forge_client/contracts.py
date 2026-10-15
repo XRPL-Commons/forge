@@ -56,7 +56,11 @@ def requirements(value):
                                   'stale', 'missing_permissions', 'name_changed', 'archived'))
         if role['app_id'] is not None:
             app_ids.append(role['app_id'])
-    require(len(app_ids) == len(set(app_ids)))
+    controller=value['roles']['controller']
+    for role in value['roles'].values():
+        if role['app_id'] is not None and app_ids.count(role['app_id'])>1:
+            require(role['app_id']==controller['app_id'] and role['installation_ids']==controller['installation_ids'],
+                    'invalid_contract', 'Shared role identities must use the exact Forge App installation.')
     fields(value['readiness'], ('discovered', 'enabled', 'access_ready', 'protection_ready', 'protection_status'))
     require(all(type(value['readiness'][k]) is bool for k in
                 ('discovered', 'enabled', 'access_ready', 'protection_ready')))
@@ -68,7 +72,11 @@ def requirements(value):
             ('enabled', 'access_ready', 'protection_ready')))
     # The client understands one additive policy. It will not accept a server's
     # arbitrary ruleset body, permissions, endpoints or shell instructions.
-    fields(value['baseline'], ('branch', 'required_approvals', 'dismiss_stale_reviews'))
+    baseline_fields={'branch','required_approvals','dismiss_stale_reviews'}
+    require(isinstance(value['baseline'],dict) and set(value['baseline']) in
+            (baseline_fields,baseline_fields|{'merge_check_scope'}))
+    if 'merge_check_scope' in value['baseline']:
+        require(value['baseline']['merge_check_scope'] in ('all','forge'))
     require(type(value['baseline']['required_approvals']) is int
             and value['baseline']['required_approvals'] == 2
             and value['baseline']['dismiss_stale_reviews'] is True)

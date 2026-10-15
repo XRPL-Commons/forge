@@ -186,9 +186,9 @@ class GitHub:
                 return result
         raise SetupError('github_inventory_limit', 'Too many rulesets to plan safely.')
 
-    def create_baseline(self, name, branch, controller_app_id):
+    def create_baseline(self, name, branch, controller_app_id, merge_check_scope=None):
         require(isinstance(name, str) and NAME.fullmatch(name))
-        value = self._request('POST', '/repos/' + name + '/rulesets', baseline(branch, controller_app_id))
+        value = self._request('POST', '/repos/' + name + '/rulesets', baseline(branch, controller_app_id, merge_check_scope))
         require(isinstance(value, dict) and positive(value.get('id')), 'github_write_unconfirmed',
                 'The rule write is unconfirmed; inspect GitHub before retrying.')
         return {'id': value['id']}

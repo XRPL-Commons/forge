@@ -287,7 +287,8 @@ class RepositorySetup:
                     try:
                         if not row['access_ready']:
                             raise ValueError('All four Apps need access. Refresh GitHub access first.')
-                        github = self.github_class(self.settings, {}, clock=self.settings.clock)
+                        from .factory.config import load as runtime_config
+                        github = self.github_class(self.settings, runtime_config(self.settings.authority.root,scope=self.settings.scope), clock=self.settings.clock)
                         github.deadline = time.monotonic() + 60
                         item = {'repo_id': row['id'], 'repo': row['name']}
                         branch = github.target(item)

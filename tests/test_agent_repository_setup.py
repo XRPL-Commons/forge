@@ -109,6 +109,51 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(len(result['completed']), 5)
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
 
+    def test_baseline_scope_is_pinned_in_plan_and_written_by_local_cli(self):
+        result=self.preparation.setup('example/project',apply=True)
+        self.assertEqual(result['status'],'ready')
+        created=next(body for method,path,body in self.writes if method=='POST' and path.endswith('/rulesets'))
+        self.assertEqual(created,baseline('main',4,'all'))
+        self.assertEqual(created['rules'][1]['parameters']['required_status_checks'],
+                         [{'context':'forge/merge-policy','integration_id':4}])
+
+    def test_explicit_forge_scope_is_preserved_and_scope_change_invalidates_plan(self):
+        from forge.factory.config import save
+        self.prepare_access()
+        save(self.root,{'repository_merge_check_scopes':{'10':'forge'}})
+        plan=self.preparation.plan('example/project')
+        self.assertEqual(plan['steps'],[{'kind':'github.ruleset.ensure_baseline','merge_check_scope':'forge'}])
+        save(self.root,{})
+        with self.assertRaises(SetupError) as caught:self.preparation.apply(plan)
+        self.assertEqual(caught.exception.code,'plan_stale')
+        self.assertFalse(any(method=='POST' for method,_,_ in self.writes))
+        save(self.root,{'repository_merge_check_scopes':{'10':'forge'}})
+        self.preparation.apply(self.preparation.plan('example/project'))
+        created=next(body for method,path,body in self.writes if method=='POST')
+        self.assertEqual(created,baseline('main',4,'forge'))
+
+    def test_one_app_contract_accepts_exact_aliases_and_grants_one_installation_once(self):
+        from forge.app_access import APP_PERMISSIONS
+        config=self.settings.load();controller=config['connections']['controller']
+        config['connections']={role:deepcopy(controller) for role in ROLES}
+        self.settings.save_config(config)
+        self.client.discover.side_effect=lambda connection:{
+            'repositories':[{'id':10,'name':'example/project','archived':False}] if 4 in self.granted else [],
+            'permissions':APP_PERMISSIONS,'account':'example','app_slug':'forge',
+            'installation_url':'https://github.com/organizations/example/settings/installations/104'}
+        self.settings.refresh()
+        value=describe(self.settings,self.target)
+        self.preparation.apps=connection_identity(value)
+        plan=self.preparation.plan('example/project')
+        self.assertEqual(len(plan['steps']),1)
+        self.assertEqual(plan['steps'][0]['installation_id'],104)
+        self.assertEqual(self.preparation.setup('example/project',apply=True)['status'],'ready')
+        self.assertEqual(sum(method=='PUT' for method,_,_ in self.writes),1)
+        malformed=deepcopy(value);malformed['roles']['build']['installation_ids']=[999]
+        with self.assertRaises(SetupError):requirements(malformed)
+        ambiguous=deepcopy(value);ambiguous['roles']['build']['app_id']=88;ambiguous['roles']['review']['app_id']=88
+        with self.assertRaises(SetupError):requirements(ambiguous)
+
     def test_plan_uses_one_clock_sample_for_its_lifetime(self):
         import itertools
         self.preparation.clock = lambda: next(ticks)
@@ -231,10 +276,10 @@ class BoundaryTests(unittest.TestCase):
         self.prepare_access()
         self.assertEqual(self.settings.load()['repositories'], [])
         plan = self.preparation.plan('example/project')
-        self.assertEqual(plan['steps'], [{'kind': 'github.ruleset.ensure_baseline'}])
+        self.assertEqual(plan['steps'], [{'kind': 'github.ruleset.ensure_baseline','merge_check_scope':'all'}])
         result = self.preparation.apply(plan, enable=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(self.writes[-1][2], ruleset('main', 4))
+        self.assertEqual(self.writes[-1][2], ruleset('main', 4, 'all'))
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
         # A repeat does no additional GitHub administrative writes.
         repeated = self.preparation.apply(self.preparation.plan('example/project'), enable=True)

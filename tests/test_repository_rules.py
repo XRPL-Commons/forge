@@ -48,6 +48,41 @@ class RepositoryRuleTests(unittest.TestCase):
         github.call = Mock(side_effect=read)
         return github
 
+    def shared(self,reader,scope='all'):
+        connection={'app_id':4959034,'installation_id':1,'private_key_env':'FORGE_KEY'}
+        reader.settings.load.return_value={'connections':{role:dict(connection) for role in ('build','review','audit','controller')}}
+        reader.runtime={'repository_merge_check_scopes':{'71':scope}}
+        return reader
+
+    def policy_rule(self,app_id=4959034):
+        return {'type':'required_status_checks','ruleset_id':13,
+                'parameters':{'required_status_checks':[{'context':'forge/merge-policy','integration_id':app_id}]}}
+
+    def test_shared_app_requires_exact_pinned_policy_check_without_weakening_reviews(self):
+        for app_id in (None,-1,4959035,True):
+            with self.subTest(app_id=app_id):
+                reader=self.shared(self.reader(None,[rule(),self.policy_rule(app_id)]))
+                self.assertFalse(reader.protections(self.item,{'base_ref':'main'}))
+        reader=self.shared(self.reader(None,[rule(4),self.policy_rule()]))
+        report=reader.protection_report(self.item,{'base_ref':'main'})
+        self.assertTrue(reader.protections(self.item,{'base_ref':'main'}))
+        self.assertEqual(report['required_approvals'],4)
+        self.assertEqual(report['requirements'][-1]['id'],'merge_policy')
+        self.assertTrue(all(call.args[2]=='GET' for call in reader.call.call_args_list))
+        self.assertFalse(self.shared(self.reader(None,[self.policy_rule()])).protections(self.item,{'base_ref':'main'}))
+
+    def test_shared_app_scope_override_and_legacy_preserve_existing_qualification(self):
+        self.assertFalse(self.shared(self.reader(None,[rule()])).protections(self.item,{'base_ref':'main'}))
+        self.assertTrue(self.shared(self.reader(None,[rule()]),'forge').protections(self.item,{'base_ref':'main'}))
+        self.assertTrue(self.reader(None,[rule()]).protections(self.item,{'base_ref':'main'}))
+
+    def test_classic_check_requires_app_binding_not_context_name_only(self):
+        protection=classic()
+        protection['required_status_checks']={'contexts':['forge/merge-policy']}
+        self.assertFalse(self.shared(self.reader(protection,[])).protections(self.item,{'base_ref':'main'}))
+        protection['required_status_checks']['checks']=[{'context':'forge/merge-policy','app_id':4959034}]
+        self.assertTrue(self.shared(self.reader(protection,[])).protections(self.item,{'base_ref':'main'}))
+
     def test_classic_ruleset_and_mixed_share_the_same_minimum(self):
         for protection, rules in [(classic(), []), (None, [rule()]),
                                   (classic(3, False), [rule(0, True)])]:

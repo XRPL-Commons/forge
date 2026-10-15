@@ -26,6 +26,8 @@ def describe(settings, target, *, initial_setup=False):
         roles[role] = {'app_id': connection.get('app_id'), 'installation_ids': ids,
                        'access': row['access'][role] if row else
                        ('missing_access' if view['roles'][role]['status'] == 'ok' else view['roles'][role]['status'])}
+    from .factory.config import load as runtime_config, merge_check_scope
+    check_scope=merge_check_scope(runtime_config(settings.authority.root,scope=settings.scope),target['id'])
     return requirements({
         'version': 1, 'repository': {'id': target['id'], 'name': row['name'] if row else target['name']},
         'revision': view['revision'], 'roles': roles,
@@ -34,5 +36,5 @@ def describe(settings, target, *, initial_setup=False):
                       'protection_ready': bool(row and row['protection_ready']),
                       'protection_status': row['protection_status'] if row else 'undiscovered'},
         'baseline': {'branch': (row.get('protection') or {}).get('branch') if row and row['protection_status'] in ('ready', 'needs_setup') else None,
-                     'required_approvals': 2, 'dismiss_stale_reviews': True},
+                     'required_approvals': 2, 'dismiss_stale_reviews': True, 'merge_check_scope':check_scope},
     })

@@ -18,14 +18,20 @@ identity, instance/generation, capabilities and configuration revisions.
 
 `Preparation` combines current Forge requirements with GitHub repository state.
 Plans have a ten-minute lifetime and pin App/installation IDs and the exact
-repository. Applying a plan reconstructs it from fresh observations. Grant calls
-add one repository; rule writes create an additive review baseline. Existing
+repository and merge-check scope. Applying a plan reconstructs it from fresh
+observations. Roles sharing the Forge App use one installation grant. Grant calls
+add one repository; rule writes create an additive review baseline. With scope
+`all`, the baseline also requires `forge/merge-policy` from the exact Forge App.
+Single-App qualification verifies that check alongside existing review rules;
+installations still using separate Apps retain their previous qualification. Existing
 effective review rules can receive a bypass-only update that preserves their
 rules and current actors. Classic protection receives only review bypass
 allowances. Organization rules require organization admin authority. A ruleset
 that also enforces signatures needs an operator to separate that rule first;
 Forge does not add a signing bypass. A baseline name collision still requires
-independent verification or operator resolution.
+independent verification or operator resolution. Migrating to one App can therefore
+report `needs_setup` when an older baseline lacks the pinned merge-policy check.
+Setup does not overwrite that existing ruleset.
 
 A failed grant returns a GitHub browser link. An uncertain rule write returns
 `write_unconfirmed`; the engine does not retry it automatically. Subsequent setup
