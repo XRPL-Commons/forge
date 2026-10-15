@@ -34,8 +34,19 @@ class DeviceLoginTests(unittest.TestCase):
                 else: out = json.dumps([self.record])
             elif action == 'create':
                 labels = {argv[i+1].split('=', 1)[0]: argv[i+1].split('=', 1)[1] for i, a in enumerate(argv) if a == '--label'}
-                self.record = {'Id': 'docker-id', 'Config': {'Labels': labels}, 'State': {'Status': 'created', 'Running': False, 'ExitCode': 0}}
-            elif action == 'start': self.record['State'].update(Status='running', Running=True)
+                options = dict(argv[i+1].split('=', 1) for i, value in enumerate(argv) if value == '--log-opt')
+                self.record = {'Id': 'docker-id', 'Config': {'Labels': labels},
+                    'HostConfig': {'LogConfig': {'Type': argv[argv.index('--log-driver')+1], 'Config': options}},
+                    'State': {'Status': 'created', 'Running': False, 'ExitCode': 0}}
+            elif action == 'start':
+                logging = self.record['HostConfig']['LogConfig']
+                options = logging['Config']
+                # Docker's local driver defaults compression to true and rejects
+                # that combination with a single retained log file at task start.
+                if logging['Type'] == 'local' and options.get('max-file') == '1' and options.get('compress', 'true') != 'false':
+                    code = 1
+                else:
+                    self.record['State'].update(Status='running', Running=True)
             elif action == 'logs': out = self.output
             elif action == 'rm': self.record = None
             elif action == 'container': out = '' if self.record is None else 'docker-id'
@@ -52,6 +63,12 @@ class DeviceLoginTests(unittest.TestCase):
         path.write_text(json.dumps(auth if auth is not None else login())); path.chmod(0o600)
         self.record['State'].update(Status='exited', Running=False, ExitCode=0)
         return path
+
+    def test_single_file_logs_start_with_compression_disabled(self):
+        self.assertEqual(self.call(apply=True)['status'], 'account_login_pending')
+        self.assertTrue(self.record['State']['Running'])
+        self.assertEqual(self.record['HostConfig']['LogConfig'], {'Type': 'local',
+            'Config': {'max-size': '64k', 'max-file': '1', 'compress': 'false'}})
 
     def test_survives_client_restart_and_imports_renewable_login_privately(self):
         self.assertEqual(self.call()['status'], 'account_login_required')

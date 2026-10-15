@@ -144,7 +144,7 @@ class DeviceAccount:
                 self.docker('create', '--name', record['name'], '--label', 'forge.login=' + record['name'],
                     '--label', 'forge.login-root=' + owner(self.root), '--label', 'forge.login-generation=' + generation,
                     '--label', 'forge.login-session=' + record['id'], '--log-driver', 'local', '--log-opt', 'max-size=64k',
-                    '--log-opt', 'max-file=1', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                    '--log-opt', 'max-file=1', '--log-opt', 'compress=false', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                     '--user', str(os.getuid()) + ':' + str(os.getgid()), '--pids-limit', '128', '--memory', '1g',
                     '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m', '--mount', 'type=bind,source=' + str(home) + ',target=/work/home',
                     '--env', 'HOME=/work/home', '--env', 'DISABLE_AUTOUPDATER=1', '--entrypoint', item['command'],
