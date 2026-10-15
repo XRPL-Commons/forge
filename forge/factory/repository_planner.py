@@ -103,6 +103,11 @@ class RepositoryPlanner:
     def drive(self,job):
         job=self.plans.job(job['id'],context=True);runner=self.runner(job['runner_config'])
         try:
+            if self.plans.maintenance_interrupted(job['id']):
+                if not job['cleanup']:
+                    runner.reset(dict(job))
+                    self.plans.interrupt_for_maintenance(job['id'], cleanup=True)
+                return {'phase': 'interrupted', 'reason': 'maintenance_interrupted'}
             if job['fenced'] or self.clock()>=job['deadline']:
                 if not job['fenced']:job=self.plans.progress(job['id'],fenced=True)
                 if not job['cleanup']:
@@ -140,6 +145,9 @@ class RepositoryPlanner:
 
     def _finish(self,job):
         job=self.plans.job(job['id'],context=True)
+        if self.plans.maintenance_interrupted(job['id']):
+            self.plans.interrupt_for_maintenance(job['id'], cleanup=True)
+            return {'phase': 'interrupted', 'reason': 'maintenance_interrupted'}
         capture=job.get('capture') or {};result=capture.get('result')
         steward=bool(job.get('steward_mode')=='triage')
         valid=(isinstance(result,dict) and result.get('attempt')==job['id'] and result.get('role')=='triage'

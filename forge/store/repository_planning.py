@@ -694,6 +694,37 @@ class RepositoryPlanning(Lifecycle):
                 db.execute("UPDATE repository_triage_runs SET status='captured' WHERE id=? AND status='running'",(run['id'],))
             return job
 
+    def maintenance_interrupted(self, execution_id):
+        with self.store.read_snapshot() as db:
+            row = db.execute('SELECT error FROM repository_triage_runs WHERE execution_id=?', (execution_id,)).fetchone()
+            return bool(row and row['error'] == 'maintenance_interrupted')
+
+    def interrupt_for_maintenance(self, execution_id, *, cleanup=False):
+        """Retain the invocation while relinquishing an unstarted owned worker.
+
+        The maintenance caller proves the physical worker never started before
+        the first fence. Cleanup is recorded only after verified runner teardown.
+        This is an operator interruption, not an unsuccessful model result.
+        """
+        from .auxiliary import save_in, job_in
+        with self.store.write() as db:
+            writable(db)
+            job = job_in(db, execution_id)
+            run = db.execute('SELECT * FROM repository_triage_runs WHERE execution_id=?', (execution_id,)).fetchone()
+            if not run or job.get('capture') is not None:
+                raise TransitionError('Maintenance requires an uncollected triage worker')
+            if cleanup and (not job['fenced'] or run['error'] != 'maintenance_interrupted'):
+                raise TransitionError('Maintenance cleanup requires its persisted interruption')
+            if run['error'] != 'maintenance_interrupted':
+                db.execute("INSERT INTO events(transaction_id,kind,at,actor_id,payload_json) VALUES(?,?,?,?,?)",
+                    ('maintenance:'+execution_id, 'lifecycle_changed', self.clock(), 'operator:maintenance',
+                     _json({'execution_id': execution_id, 'repository_id': job['repo_id'], 'reason': 'maintenance_interrupted'})))
+            job.update(fenced=True, cleanup=cleanup or job['cleanup'])
+            save_in(db, 'triage', run['id'], job, self.clock())
+            db.execute("UPDATE repository_triage_runs SET error='maintenance_interrupted',status=? WHERE id=?",
+                       ('failed' if job['cleanup'] else run['status'], run['id']))
+            return job
+
     def settle_run(self,proposal_id,*,error=None):
         with self.store.write() as db:
             writable(db)

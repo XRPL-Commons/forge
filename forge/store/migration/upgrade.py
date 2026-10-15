@@ -172,6 +172,8 @@ class Upgrade:
                     self.host.prepare_source_update(value['previous_revision'], revision, tool_version, **source_options)
                 from .probe_cleanup import cleanup_fenced_probe
                 cleanup_fenced_probe(self.root, store)
+                from .auxiliary_cleanup import cleanup_unstarted_auxiliary
+                cleanup_unstarted_auxiliary(self.root, store)
                 if self.blockers(store):
                     return {'status': 'draining', **self.status(), 'next_command': 'forge migrate upgrade'}
                 self.save(value, 'stopping')

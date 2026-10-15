@@ -193,6 +193,57 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT status FROM triage_proposals WHERE id=?',
                                        (existing['proposal_id'],)).fetchone()[0], 'draft')
 
+    def interrupt_triage(self, plans, proposal_id, execution_id):
+        from forge.store.transitions import manifest_hash
+        context = plans.context(proposal_id, head='a'*40)
+        job = dict(id=execution_id, proposal_id=proposal_id, slot='repository-triage', role='triage',
+            repo_id=1, repo='owner/repo', head='a'*40, deadline=self.now+1800, fenced=False, cleanup=False,
+            runner_config={}, context_hash=manifest_hash(context))
+        plans.reserve(proposal_id, job, context)
+        plans.interrupt_for_maintenance(execution_id)
+        plans.interrupt_for_maintenance(execution_id, cleanup=True)
+
+    def test_maintenance_interruption_queues_deterministic_successors_without_duplicate_runs(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        for index in range(3):
+            self.call('launch')
+            runs = plans.runs()
+            self.assertEqual(len(runs), 1)
+            identifier = runs[0]['id']
+            self.call('launch')
+            self.assertEqual(plans.runs()[0]['id'], identifier)
+            with self.store.read_snapshot() as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM repository_triage_runs').fetchone()[0], index+1)
+            self.interrupt_triage(plans, identifier, 'interrupted-'+str(index))
+            self.now += 1
+        self.call('launch')
+        self.assertEqual(len(plans.runs()), 1)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM repository_triage_runs').fetchone()[0], 4)
+            self.assertEqual(db.execute("SELECT count(*) FROM repository_triage_runs WHERE error='maintenance_interrupted'").fetchone()[0], 3)
+
+    def test_interruption_before_smoke_start_cannot_create_a_successor(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: 50)
+        old = plans.queue(1, request_id='old-maintenance', actor_id='operator', base_branch='main')
+        self.interrupt_triage(plans, old['proposal_id'], 'old-interrupted')
+        with patch('forge.store.repository_planning.RepositoryPlanning.queue') as queue:
+            self.call('launch')
+        self.assertNotIn(':after:', queue.call_args.kwargs['request_id'])
+
+    def test_generic_failure_does_not_create_a_smoke_successor(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        self.active_smoke()
+        plans = RepositoryPlanning(self.store, clock=lambda: self.now)
+        self.call('launch')
+        plans.settle_run(plans.runs()[0]['id'], error='triage_result_invalid')
+        self.call('launch')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM repository_triage_runs').fetchone()[0], 1)
+
     def test_completed_smoke_triage_does_not_schedule_another_run(self):
         self.active_smoke()
         with patch('forge.installation_smoke.triage_run_in', return_value={'id': 'complete'}), \

@@ -182,6 +182,16 @@ class InstallationSmoke:
             completed = triage_run_in(db, binding)
             active = db.execute("SELECT id,requested_at FROM repository_triage_runs WHERE repository_id=? "
                                 "AND status IN ('queued','running','captured')", (target['id'],)).fetchone()
+            interrupted = db.execute("SELECT r.id FROM repository_triage_runs r "
+                "JOIN auxiliary_executions a ON a.id=r.execution_id "
+                "JOIN auxiliary_runtime x ON x.execution_id=a.id WHERE r.repository_id=? "
+                "AND a.domain='triage' AND a.owner_id=r.id AND a.fenced=1 AND a.cleanup=1 AND x.capture_digest IS NULL "
+                "AND r.status='failed' AND r.error='maintenance_interrupted' AND r.requested_at>=? "
+                "AND (SELECT count(*) FROM triage_proposal_inputs p WHERE p.proposal_id=r.id)=1 "
+                "AND EXISTS(SELECT 1 FROM triage_proposal_inputs p JOIN issues i ON i.id=p.issue_id "
+                "WHERE p.proposal_id=r.id AND i.repository_id=? AND i.github_number=?) "
+                "ORDER BY r.requested_at DESC,r.rowid DESC LIMIT 1",
+                (target['id'], binding['started_at'], target['id'], binding['number'])).fetchone()
             if active:
                 members = list(db.execute('SELECT i.repository_id,i.github_number FROM triage_proposal_inputs p '
                     'JOIN issues i ON i.id=p.issue_id WHERE p.proposal_id=?', (active['id'],)))
@@ -194,7 +204,10 @@ class InstallationSmoke:
             return {'status': 'smoke_pending', 'phase': 'triage',
                     'reason': 'Waiting for the existing repository triage to finish before planning the exact smoke issue.'}
         if not active and not completed:
-            plans.queue(target['id'], request_id='installation-smoke:' + digest(binding), actor_id='operator:installation',
+            request_id = 'installation-smoke:' + digest(binding)
+            if interrupted:
+                request_id += ':after:' + interrupted['id']
+            plans.queue(target['id'], request_id=request_id, actor_id='operator:installation',
                         base_branch=github.target(item))
         waiting = self.accept_keep(binding, github, runtime)
         return waiting or self.status()
