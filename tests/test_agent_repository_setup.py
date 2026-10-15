@@ -41,8 +41,10 @@ class BoundaryTests(unittest.TestCase):
         self.app_github = Mock()
         self.app_github.return_value.target.side_effect = lambda _: self.repo['default_branch']
         self.app_github.return_value.pages.return_value = []
+        from forge.factory.config import load as runtime_config, merge_check_scope
         self.app_github.return_value.protection_report.side_effect = lambda *_: {
             'repo_id': 10, 'branch': self.repo['default_branch'], 'available': True,
+            'merge_check_scope': merge_check_scope(runtime_config(self.root),10),
             'requirements': [{'id': 'reviews', 'passed': bool(self.github_rules)},
                              {'id': 'stale', 'passed': bool(self.github_rules)}]}
         self.service = RepositorySetup(self.settings, github_class=self.app_github)
