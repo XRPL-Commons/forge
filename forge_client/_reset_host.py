@@ -22,13 +22,12 @@ else:
 
 ARCHIVES = Path('/var/lib/forge-reset')
 SERVICES = ['forge-mirror.service', 'forge-status.service', 'forge-ui.service', 'forge-supervisor.service']
-# Package-provided user-manager infrastructure on the supported Ubuntu host.
-# Custom/transient workloads are refused before stopping the account's manager.
+# Only these package defaults may remain active while retiring the dedicated
+# account. Other inactive package services are checked for an empty cgroup.
 SYSTEM_UNITS = frozenset({
-    'basic.target', 'default.target', 'paths.target', 'sockets.target', 'timers.target',
-    'shutdown.target', 'exit.target', 'app.slice', 'background.slice', 'session.slice',
     'dbus.service', 'dbus.socket', 'dbus-broker.service',
     'systemd-tmpfiles-setup.service', 'systemd-tmpfiles-clean.service', 'systemd-tmpfiles-clean.timer',
+    'launchpadlib-cache-clean.timer',
     'dirmngr.socket', 'gpg-agent.socket', 'gpg-agent-browser.socket', 'gpg-agent-extra.socket',
     'gpg-agent-ssh.socket', 'keyboxd.socket', 'pk-debconf-helper.socket', 'snapd.session-agent.socket',
 })
@@ -74,7 +73,7 @@ def write_receipt(directory, value):
 
 def snapshot(*, instance=None, generation=None):
     require_setup_entrypoint(SOURCE, 'forge.install_reset')
-    command = ['/usr/bin/python3', '-m', 'forge.launch', 'forge.install_reset', '--root', str(ROOT)]
+    command = ['/usr/bin/env', '-C', str(SOURCE), '/usr/bin/python3', '-m', 'forge.launch', 'forge.install_reset', '--root', str(ROOT)]
     if instance is not None:
         command += ['--instance', instance, '--generation', generation]
     raw = service(command, capture=True)
@@ -177,19 +176,30 @@ def docker_mounts_clear():
 
 def user_units_clear(intent, uid):
     """Never terminate an unrelated user-manager workload to delete the account."""
-    raw = service(['systemctl', '--user', 'list-units', '--all', '--plain', '--no-legend'], capture=True)
+    raw = service(['systemctl', '--user', 'list-units', '--all', '--plain', '--no-legend',
+                   '--type=service,scope,socket,timer,path'], capture=True)
     environment = 'forge-install-environment-' + intent['id'] + '.service'
     for line in raw.splitlines():
         parts = line.split(None, 4)
         need(len(parts) >= 4, 'unsafe_user_units')
-        name = parts[0]
-        need(name in SYSTEM_UNITS or name in SERVICES or name in ('init.scope', environment), 'unrelated_user_unit')
+        name, _, active, substate = parts[:4]
+        # Devices, mounts, slices and targets reflected from the host do not
+        # describe executable workloads owned by this user manager.
+        if name.rsplit('.', 1)[-1] not in ('service', 'scope', 'socket', 'timer', 'path'):
+            continue
+        inactive_service = name.endswith('.service') and active == 'inactive' and substate == 'dead'
+        need(name in SYSTEM_UNITS or name in SERVICES or name in ('init.scope', environment)
+             or inactive_service, 'unrelated_user_unit')
         if name == 'init.scope':
             continue  # systemd's own manager scope; it has no unit file.
+        properties = ['FragmentPath', 'DropInPaths', 'Transient']
+        if inactive_service:
+            properties.append('ControlGroup')
         observed = service(['systemctl', '--user', 'show', name,
-                            '--property=FragmentPath,DropInPaths,Transient'], capture=True)
+                            '--property=' + ','.join(properties)], capture=True)
         values = dict(row.split('=', 1) for row in observed.splitlines() if '=' in row)
-        need(set(values) == {'FragmentPath', 'DropInPaths', 'Transient'} and not values['DropInPaths'], 'unsafe_user_units')
+        need(set(values) == set(properties) and not values['DropInPaths']
+             and (not inactive_service or not values['ControlGroup']), 'unsafe_user_units')
         path = Path(values['FragmentPath'])
         if name in SERVICES:
             need(values['Transient'] == 'no' and path == HOME / '.config/systemd/user' / name, 'unsafe_user_units')
@@ -198,7 +208,8 @@ def user_units_clear(intent, uid):
                  'unsafe_user_units')
         else:
             resolved = path.resolve()
-            need(values['Transient'] == 'no' and path.is_file() and resolved.name in SYSTEM_UNITS
+            need(values['Transient'] == 'no' and path.is_file()
+                 and (resolved.name in SYSTEM_UNITS or inactive_service and resolved.suffix == '.service')
                  and resolved.parent == Path('/usr/lib/systemd/user')
                  and path.stat().st_uid == 0 and path.stat().st_mode & 0o022 == 0, 'unsafe_user_units')
 
