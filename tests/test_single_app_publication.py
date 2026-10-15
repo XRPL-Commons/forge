@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock
 
 from forge.factory.config import validate
-from forge.factory.github import GitHub, GitHubUnavailable, own_build_pr
+from forge.factory.github import GitHub, GitHubUnavailable, own_build_pr, own_grouped_pr
 from forge.settings import ROLES
 from tests.test_settings import configured
 
@@ -144,6 +144,44 @@ class SingleAppPublicationTests(unittest.TestCase):
         self.assertTrue(own_build_pr(pr, 1, 3, self.github.publishers('build')))
         self.assertFalse(own_build_pr({**pr, 'user': {'login': 'someone[bot]', 'type': 'Bot'}}, 1, 3,
                                       self.github.publishers('build')))
+
+    def grouped_pr(self):
+        from forge.store.transitions import _id
+        # Match _reserve_group: the persisted unit UUID plus request[:8].
+        branch = 'forge/unit-' + _id('group-request', 'unit') + '-12345678'
+        return {'number': 7, 'head': {'ref': branch, 'sha': HEAD, 'repo': {'id': 1}},
+                'base': {'repo': {'id': 1}}, 'user': {'login': 'forge[bot]', 'type': 'Bot'},
+                'state': 'open', 'merged': False, 'draft': False}
+
+    def test_grouped_inventory_cannot_take_the_human_automatic_pass_path(self):
+        from forge.factory.merge_checks import HumanMergeChecks
+        pr = self.grouped_pr()
+        self.github.pages = Mock(return_value=[pr])
+        item = {'repo': 'example/project', 'repo_id': 1}
+        observed = self.github.pulls(item)
+        self.assertTrue(observed[0]['forge_owned'])
+        self.github.human_merge_policy = Mock()
+        self.assertEqual(HumanMergeChecks(self.github, validate({})).reconcile(item, observed), [])
+        self.github.human_merge_policy.assert_not_called()
+        # A grouped delivery never becomes issue-specific continuation authority.
+        self.assertFalse(own_build_pr(pr, 1, 3, self.github.publishers('build')))
+
+    def test_grouped_ownership_requires_known_bot_and_exact_local_branch(self):
+        pr = self.grouped_pr()
+        publishers = self.github.publishers('build') + self.github.publishers('controller')
+        self.assertTrue(own_grouped_pr(pr, 1, publishers))
+        retired = {**pr, 'user': {'login': 'forge-build[bot]', 'type': 'Bot'}}
+        self.assertTrue(own_grouped_pr(retired, 1, publishers))
+        for changed in (
+            {'user': {'login': 'other[bot]', 'type': 'Bot'}},
+            {'user': {'login': 'forge[bot]', 'type': 'User'}},
+            {'head': {**pr['head'], 'repo': {'id': 2}}},
+            {'base': {'repo': {'id': 2}}}, {'state': 'closed'}, {'merged': True},
+            {'head': {**pr['head'], 'ref': 'forge/unit-guessed-12345678'}},
+            {'head': {**pr['head'], 'ref': pr['head']['ref'] + '-extra'}},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(own_grouped_pr({**pr, **changed}, 1, publishers))
 
     def test_new_checks_always_come_from_the_current_app(self):
         self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'effect', 'head_sha': HEAD,

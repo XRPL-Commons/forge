@@ -14,16 +14,31 @@ from ..request_metrics import RequestBudgetExhausted, deadline as request_deadli
 COMPARISONS = {}
 
 
-def own_build_pr(pr, repo_id, number, publisher):
-    # During the move to one App, PRs opened by the retired build bot stay Forge's.
+def _owned_publication_pr(pr, repo_id, publisher):
+    # Author identity comes from GitHub, and publishers from verified App access
+    # or retained App history. A branch prefix alone never establishes ownership.
     publishers = {publisher} if isinstance(publisher, str) else set(publisher)
     return (isinstance(pr, dict)
-            and str((pr.get('head') or {}).get('ref') or '').startswith(f'forge/issue-{number}-')
             and (pr.get('user') or {}).get('login') in publishers
             and (pr.get('user') or {}).get('type') == 'Bot'
             and pr.get('state') == 'open' and not pr.get('merged')
             and ((pr.get('head') or {}).get('repo') or {}).get('id') == repo_id
             and ((pr.get('base') or {}).get('repo') or {}).get('id') == repo_id)
+
+
+def own_build_pr(pr, repo_id, number, publisher):
+    # Issue-specific callers must never adopt a grouped delivery as one issue.
+    return (_owned_publication_pr(pr, repo_id, publisher)
+            and str((pr.get('head') or {}).get('ref') or '').startswith(f'forge/issue-{number}-'))
+
+
+# Group dispatch uses the delivery UUID and the first eight UUID request digits.
+UNIT_BRANCH = re.compile(r'forge/unit-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{8}')
+
+
+def own_grouped_pr(pr, repo_id, publisher):
+    return (_owned_publication_pr(pr, repo_id, publisher)
+            and bool(UNIT_BRANCH.fullmatch(str((pr.get('head') or {}).get('ref') or ''))))
 
 
 def bot_logins(github, role):
@@ -328,9 +343,11 @@ class GitHub:
         for pr in rows:
             match = re.match(r'forge/issue-(\d+)-', str((pr.get('head') or {}).get('ref') or ''))
             pr['forge_owned'] = False
-            if match:
-                publisher = publisher or self.publishers('build')
-                pr['forge_owned'] = own_build_pr(pr, item['repo_id'], int(match[1]), publisher)
+            branch = str((pr.get('head') or {}).get('ref') or '')
+            if match or UNIT_BRANCH.fullmatch(branch):
+                publisher = publisher or set(self.publishers('build') + self.publishers('controller'))
+                pr['forge_owned'] = (own_build_pr(pr, item['repo_id'], int(match[1]), publisher) if match
+                                     else own_grouped_pr(pr, item['repo_id'], publisher))
         from .ownership import linked_pulls
         return linked_pulls(self,item,rows)
 
