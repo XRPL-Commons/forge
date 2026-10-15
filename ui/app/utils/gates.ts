@@ -69,6 +69,16 @@ export const gateRegistry = {
     ],
     "status": "attention"
   },
+  "review_source": {
+    "class": "external",
+    "owner": "external",
+    "release": "observation",
+    "scopes": [
+      "candidate",
+      "unit"
+    ],
+    "status": "attention"
+  },
   "ownership_conflict": {
     "class": "external",
     "owner": "external",

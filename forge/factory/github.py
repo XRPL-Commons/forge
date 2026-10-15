@@ -740,6 +740,8 @@ class GitHub:
         from ..app_access import shared_app
         from .config import merge_check_scope
         connection=shared_app(self.settings.load()['connections'])
+        if connection:
+            report['merge_check_scope']=merge_check_scope(self.runtime,item['repo_id'])
         if connection and merge_check_scope(self.runtime,item['repo_id'])=='all':
             app_id=connection['app_id']
             sources=[source for check,source,key in required_checks if isinstance(check,dict)

@@ -34,6 +34,11 @@ ALTER TABLE gate_codes ADD COLUMN owner TEXT NOT NULL DEFAULT 'core'
  CHECK(owner IN ('core','supervisor','operator','external'));
 ALTER TABLE gate_codes ADD COLUMN public_status TEXT NOT NULL DEFAULT 'waiting'
  CHECK(public_status IN ('backlog','blocked','attention','working','waiting'));
+DROP TRIGGER gate_codes_no_insert;
+INSERT INTO gate_codes(code,legacy_kind,priority,release,unit_scope,member_scope,candidate_scope,job_scope)
+ VALUES('review_source','readiness',2,'observation',1,0,1,0);
+CREATE TRIGGER gate_codes_no_insert BEFORE INSERT ON gate_codes
+ BEGIN SELECT RAISE(ABORT,'registry changes require a migration'); END;
 -- BEGIN GENERATED GATE REGISTRY
 UPDATE gate_codes SET kind='operator-choice',priority=2,release='operator',unit_scope=1,member_scope=1,candidate_scope=0,job_scope=0,owner='operator',public_status='backlog' WHERE code='operator_pause';
 UPDATE gate_codes SET kind='operator-choice',priority=2,release='operator',unit_scope=1,member_scope=1,candidate_scope=0,job_scope=0,owner='operator',public_status='backlog' WHERE code='operator_backlog';
@@ -42,6 +47,7 @@ UPDATE gate_codes SET kind='operator-choice',priority=2,release='operator',unit_
 UPDATE gate_codes SET kind='transitional',priority=2,release='observation',unit_scope=1,member_scope=1,candidate_scope=0,job_scope=0,owner='core',public_status='working' WHERE code='operator_sync';
 UPDATE gate_codes SET kind='transitional',priority=2,release='observation',unit_scope=0,member_scope=1,candidate_scope=0,job_scope=0,owner='core',public_status='working' WHERE code='triage_sync';
 UPDATE gate_codes SET kind='supervisor-remedy',priority=2,release='observation',unit_scope=1,member_scope=1,candidate_scope=0,job_scope=0,owner='supervisor',public_status='attention' WHERE code='external_change';
+UPDATE gate_codes SET kind='external',priority=2,release='observation',unit_scope=1,member_scope=0,candidate_scope=1,job_scope=0,owner='external',public_status='attention' WHERE code='review_source';
 UPDATE gate_codes SET kind='external',priority=2,release='observation',unit_scope=1,member_scope=1,candidate_scope=0,job_scope=0,owner='external',public_status='blocked' WHERE code='ownership_conflict';
 UPDATE gate_codes SET kind='operator-choice',priority=3,release='operator',unit_scope=1,member_scope=0,candidate_scope=0,job_scope=0,owner='operator',public_status='attention' WHERE code='budget_exhausted';
 UPDATE gate_codes SET kind='supervisor-remedy',priority=3,release='operator',unit_scope=1,member_scope=1,candidate_scope=0,job_scope=0,owner='supervisor',public_status='attention' WHERE code='approach_required';
@@ -74,7 +80,7 @@ DROP TRIGGER unit_transitions_no_delete;
 DROP TRIGGER unit_transition_legal;
 DROP TRIGGER unit_terminal_facts_fixed;
 INSERT INTO unit_states VALUES('publishing',0);
-INSERT INTO close_codes VALUES('dissolved',NULL);
+INSERT INTO close_codes VALUES('dissolved',NULL),('pull_request_closed',NULL),('pull_retargeted',NULL);
 CREATE TRIGGER close_codes_no_insert BEFORE INSERT ON close_codes BEGIN
  SELECT RAISE(ABORT,'registry changes require a migration');
 END;
@@ -83,6 +89,7 @@ DELETE FROM unit_transitions;
 INSERT INTO unit_transitions SELECT from_state,to_state FROM mapped_unit_transitions WHERE from_state!=to_state;
 DROP TABLE mapped_unit_transitions;
 INSERT INTO unit_transitions VALUES('building','publishing'),('publishing','building'),('publishing','reviewing'),('publishing','closed'),('publishing','merged');
+INSERT OR IGNORE INTO unit_transitions VALUES('auditing','reviewing'),('merging','reviewing');
 UPDATE units SET state='building' WHERE state IN('queued','integrating');
 UPDATE units SET state='closed',close_code='dissolved' WHERE state='dissolved';
 UPDATE units SET state='publishing' WHERE state='building' AND EXISTS(SELECT 1 FROM publication_intents p JOIN jobs j ON j.id=p.job_id WHERE p.unit_id=units.id AND p.status!='superseded' AND j.outcome IS NULL);
@@ -188,3 +195,37 @@ CREATE TRIGGER steward_subject_decisions_no_delete BEFORE DELETE ON steward_subj
  BEGIN SELECT RAISE(ABORT,'steward subject decision is retained'); END;
 
 ALTER TABLE triage_proposal_rows ADD COLUMN steward_choice_id TEXT;
+
+-- Review-only PR units share candidates/jobs/effects, without synthetic issues.
+CREATE TABLE review_pull_requests (
+ unit_id TEXT PRIMARY KEY NOT NULL REFERENCES units(id),
+ repository_id INTEGER NOT NULL REFERENCES repositories(id),
+ pull_number INTEGER NOT NULL CHECK(pull_number>0),
+ created_at REAL NOT NULL
+) STRICT;
+CREATE INDEX review_pull_lookup ON review_pull_requests(repository_id,pull_number,created_at);
+CREATE TABLE review_candidate_sources (
+ candidate_id TEXT PRIMARY KEY NOT NULL,
+ unit_id TEXT NOT NULL,
+ source_hash TEXT NOT NULL,
+ source_json TEXT NOT NULL CHECK(json_valid(source_json) AND length(CAST(source_json AS BLOB))<=1048576),
+ FOREIGN KEY(unit_id,candidate_id) REFERENCES candidates(unit_id,id),
+ FOREIGN KEY(unit_id) REFERENCES review_pull_requests(unit_id)
+) STRICT;
+CREATE TRIGGER review_pull_binding_fixed BEFORE UPDATE ON review_pull_requests
+ BEGIN SELECT RAISE(ABORT,'review PR binding is immutable'); END;
+CREATE TRIGGER review_pull_binding_retained BEFORE DELETE ON review_pull_requests
+ BEGIN SELECT RAISE(ABORT,'review PR binding is retained'); END;
+CREATE TRIGGER review_source_fixed BEFORE UPDATE ON review_candidate_sources
+ BEGIN SELECT RAISE(ABORT,'review candidate source is immutable'); END;
+CREATE TRIGGER review_source_retained BEFORE DELETE ON review_candidate_sources
+ BEGIN SELECT RAISE(ABORT,'review candidate source is retained'); END;
+CREATE TRIGGER review_only_no_builder BEFORE INSERT ON jobs
+ WHEN NEW.role='build' AND EXISTS(SELECT 1 FROM review_pull_requests WHERE unit_id=NEW.unit_id)
+ BEGIN SELECT RAISE(ABORT,'review-only PRs cannot dispatch builders'); END;
+CREATE TRIGGER review_only_no_members BEFORE INSERT ON unit_issues
+ WHEN EXISTS(SELECT 1 FROM review_pull_requests WHERE unit_id=NEW.unit_id)
+ BEGIN SELECT RAISE(ABORT,'review-only PRs have no issue membership'); END;
+CREATE TRIGGER review_only_no_build_phase BEFORE UPDATE OF state ON units
+ WHEN NEW.state IN ('building','publishing') AND EXISTS(SELECT 1 FROM review_pull_requests WHERE unit_id=NEW.id)
+ BEGIN SELECT RAISE(ABORT,'review-only PRs cannot enter build phases'); END;

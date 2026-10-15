@@ -77,6 +77,8 @@ class GitHubPrepare:
         self.requirements, self.readiness = requirements, readiness
 
     def __call__(self, snapshot, role):
+        if snapshot.get('review_only'):
+            return self.review_pull(snapshot, role)
         if snapshot.get('grouped'):
             return self.group(snapshot, role)
         unit, member, issue = snapshot['unit'], snapshot['member'], snapshot['issue']
@@ -154,6 +156,32 @@ class GitHubPrepare:
                     context.update(resume_pr=draft['pr'], resume_head=current['head']['sha'],
                                    publication_author={key: current['user'].get(key) for key in ('id','login','type')})
         return PreparedDispatch(base, publisher, config, branch, context, refreshed['unit_version'] if refreshed else None)
+
+    def review_pull(self, snapshot, role):
+        from ..store.review_pulls import exact_source_matches
+        from .config import merge_check_scope
+        if role not in ('review', 'audit'):
+            return None
+        unit, candidate, source = snapshot['unit'], snapshot['candidate'], snapshot['review_source']
+        if merge_check_scope(self.config, unit['repository_id']) != 'all':
+            return None
+        item = {'repo_id': unit['repository_id'], 'repo': snapshot['repo']}
+        remote = self.github.pr(item, candidate['pull_number'])
+        if not exact_source_matches(remote, source):
+            return None
+        if set(source['labels']).intersection(self.config['hold_labels']):
+            return None
+        target = source['base']['ref']
+        base = (self.github.call('controller', item, 'GET', '/branches/' + quote(target, safe='')).get('commit') or {}).get('sha')
+        if base != candidate['base_oid']:
+            return None  # Admission observes the replacement; no builder owns human branches.
+        config = memory_config(deepcopy(self.config), role, snapshot.get('memory_bytes', {}).get(role, 0), [])
+        if config is None:
+            return None
+        context = {'review_policy': policy(config, item['repo_id'], repository_name=item['repo']),
+                   'verification_checks': config['repository_verification'].get(item['repo'], []),
+                   'ci_evidence': self.github.ci_evidence({**item, 'candidate': {'head': candidate['head_oid'], 'base': base}})}
+        return PreparedDispatch(base, self.github.publisher(role), config, candidate['branch'], context)
 
     def group(self, snapshot, role):
         unit, candidate = snapshot['unit'], snapshot['candidate']
@@ -246,6 +274,9 @@ class DispatchController:
             if row is None:
                 raise KeyError(unit_id)
             unit = dict(row)
+            from ..store.review_pulls import review_only_in, snapshot_in
+            if review_only_in(db, unit_id):
+                return snapshot_in(db, unit)
             rows = db.execute('SELECT * FROM unit_issues WHERE unit_id=? AND left_at IS NULL ORDER BY id', (unit_id,)).fetchall()
             members = []
             for member_row in rows:
@@ -346,9 +377,10 @@ class DispatchController:
         result = {'unit_id': unit_id, 'reserved': False}
         if not self.config['enabled']:
             return {**result, 'reason': 'runtime_disabled'}
-        if self.readiness:
-            self.readiness.observe(unit_id)
         snapshot = self.snapshot(unit_id)
+        if self.readiness and not snapshot.get('review_only'):
+            self.readiness.observe(unit_id)
+            snapshot = self.snapshot(unit_id)
         if snapshot['reason']:
             return {**result, 'reason': snapshot['reason']}
         if role is not None and role != snapshot['role']:
@@ -358,7 +390,7 @@ class DispatchController:
             return {**result, 'reason': 'repository_setup'}
         # Cached human/hold facts fail closed even with a custom prepare adapter.
         issue = snapshot['issue']
-        if not snapshot['grouped']:
+        if not snapshot['grouped'] and not snapshot.get('review_only'):
             labels = {row['name'] if isinstance(row, dict) else row for row in issue['labels']}
             if labels.intersection(self.config['hold_labels']):
                 return {**result, 'reason': 'label_hold'}

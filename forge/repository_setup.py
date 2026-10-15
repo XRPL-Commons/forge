@@ -17,6 +17,13 @@ class SetupObservationChanged(ValueError):
     """The configuration owning a remote setup observation was replaced."""
 
 
+def scope_matches(report, config, runtime, repo_id):
+    from .app_access import shared_app
+    from .factory.config import merge_check_scope
+    return (not shared_app(config['connections']) or
+            (report or {}).get('merge_check_scope') == merge_check_scope(runtime, repo_id))
+
+
 
 def ruleset(branch, controller_app_id, merge_check_scope=None):
     # The standalone client and server download must produce the same policy.
@@ -91,7 +98,7 @@ class RepositorySetup:
         data, now = self.read(), self.settings.clock()
         profiles = {r['id']: r.get('deployment') for r in config['repositories']}
         denied = {r['id']: r.get('mirror_denied_repositories', []) for r in config['repositories']}
-        from .factory.config import load as runtime_config, merge_mode
+        from .factory.config import load as runtime_config, merge_mode, merge_check_scope
         runtime = runtime_config(self.settings.authority.root,scope=self.settings.scope) if runtime is None else runtime
         entries = self.proposals()
         result = []
@@ -99,6 +106,8 @@ class RepositorySetup:
             previous = data['repositories'].get(str(row['id']), {})
             current = previous.get('revision') == observation_key(config, row) and previous.get('name') == row['name']
             report = previous.get('report') if current else None
+            if not scope_matches(report, config, runtime, row['id']):
+                current, report = False, None
             fresh = report and 0 <= now - report.get('observed_at', 0) < MAX_AGE
             status = previous.get('status', 'unchecked') if current else 'unchecked'
             if status == 'checking' and now - previous.get('started_at', 0) >= CHECK_TIMEOUT:
@@ -111,6 +120,7 @@ class RepositorySetup:
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
             result.append({**row, 'mirror_denied_repositories': denied.get(row['id'], []), 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
+                           'merge_check_scope': merge_check_scope(runtime, row['id']), 'merge_check_revision': digest(runtime),
                            'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
                            'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
@@ -141,6 +151,19 @@ class RepositorySetup:
                 'connections': connections, 'sync': settings['sync'],
                 'activation_available': self.settings.scope != 'setup',
                 'continue_url': '/onboarding' if self.settings.scope == 'setup' else '/factory'}
+
+    def review_scope(self, repo_id, revision, scope):
+        from .factory.config import load, save
+        if type(repo_id) is not int or repo_id <= 0 or scope not in ('all', 'forge'):
+            raise ValueError('Select a repository and all or forge review scope')
+        if not any(repo['id'] == repo_id for repo in self.settings.load()['repositories']):
+            raise ValueError('Configure this repository before changing its review scope')
+        runtime = load(self.settings.authority.root, scope=self.settings.scope)
+        if revision != digest(runtime):
+            raise ValueError('Runtime settings changed. Reload before saving review scope')
+        runtime['repository_merge_check_scopes'][str(repo_id)] = scope
+        save(self.settings.authority.root, runtime, revision=revision, scope=self.settings.scope)
+        return self.view(repo_id)
 
     def mirror_policy(self, repo_id, revision, denied_repositories):
         from .settings import mirror_denied_repositories

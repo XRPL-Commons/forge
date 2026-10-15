@@ -44,7 +44,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     readiness = RepositoryReadiness(store, settings, clock=clock)
 
     def execution_admission(item):
-        return admission(item) if item['role'] in {'recovery','steward'} else readiness.allowed(item)
+        return admission(item) if item.get('review_only') or item['role'] in {'recovery','steward'} else readiness.allowed(item)
 
     def current_config():
         current = load(root)
@@ -56,7 +56,8 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     verification = VerificationController(store, github, profiles=lambda repo: current_config()['repository_verification'].get(repo, []),
         policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), clock=clock, hold_labels=config['hold_labels'])
     merge_admission = MergeAdmission(store, github, config=current_config,
-                                     repository_ready=lambda repo: readiness.allowed({'repo': repo}), clock=clock)
+                                     repository_ready=lambda repo: readiness.allowed({'repo': repo}),
+                                     review_repository_ready=lambda repo: settings.admission(repo)['allowed'], clock=clock)
     from ..store.scheduling import Scheduling
     reliability = config['reliability']
     scheduling = Scheduling(store, clock=clock, retry_seconds=reliability['retry_seconds'],
@@ -78,7 +79,8 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         recovery=StewardController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
-                                      admission=readiness.allowed, readiness=readiness, clock=clock))
+                                      admission=lambda item: admission(item) if item.get('review_only') else readiness.allowed(item),
+                                      readiness=readiness, clock=clock))
 
     from .repository_planner import RepositoryPlanner
     from .triage_effects import TriageEffects
@@ -92,6 +94,8 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         observations=parts['observations'], runner=planner_runner, clock=clock)
     parts['triage_effects'] = TriageEffects(store, github, config=config, clock=clock)
     parts['steward_effects'] = StewardEffectController(store, github, config=current_config, admission=admission, clock=clock)
+    from .merge_checks import ReviewPullsController
+    parts['review_pulls'] = ReviewPullsController(store, github, config=config, settings=settings, clock=clock)
     return parts
 
 def operator_actions(root, actor_id, **kwargs):
@@ -119,7 +123,7 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
             errors = adapter.observe(parts['github'], read_commit)
             return {'items': [{'repo': row['repo'], 'error': 'deployment_observation_unavailable'} for row in errors], 'next_cursor': None}
     supervisor = SqliteSupervisor(parts['store'], **{key: parts[key] for key in
-        ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'planning', 'triage_effects', 'steward_effects')},
+        ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'planning', 'triage_effects', 'steward_effects', 'review_pulls')},
         requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(),
         scheduling=parts['scheduling'], clock=clock, cycle_budget_seconds=parts['config']['cycle_budget_seconds'])
     return supervisor.cycle()

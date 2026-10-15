@@ -117,6 +117,8 @@ export interface RepositoryRow {
   protection_last_known: ProtectionReport | null
   rules_url: string; setup_url: string
   merge_policy?: 'auto' | 'human'
+  merge_check_scope?: 'all' | 'forge'
+  merge_check_revision?: string
   deployment?: DeploymentRow
   environment?: RepositoryEnvironment
 }

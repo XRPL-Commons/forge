@@ -37,6 +37,8 @@ CLOSE_CODES: dict[str, CloseCode] = {
     # Retired after its members moved into a combined unit.
     'combined': CloseCode(None),
     'dissolved': CloseCode(None),
+    'pull_request_closed': CloseCode(None),
+    'pull_retargeted': CloseCode(None),
     # An imported delivery retired by migration 041; discovery admits its open
     # issue again as a new delivery.
     'import_superseded': CloseCode(None),
@@ -85,6 +87,7 @@ GATES: dict[str, Gate] = {
     'operator_sync': Gate('transitional', 'observation', frozenset(('member', 'unit')), 2, 'working'),
     'triage_sync': Gate('transitional', 'observation', frozenset(('member',)), 2, 'working'),
     'external_change': Gate('supervisor-remedy', 'observation', frozenset(('member', 'unit')), 2, 'attention'),
+    'review_source': Gate('external', 'observation', frozenset(('unit', 'candidate')), 2, 'attention'),
     'ownership_conflict': Gate('external', 'observation', frozenset(('member', 'unit')), 2, 'blocked'),
     'budget_exhausted': Gate('operator-choice', 'operator', frozenset(('unit',)), 3, 'attention'),
     'approach_required': Gate('supervisor-remedy', 'operator', frozenset(('member', 'unit')), 3, 'attention'),

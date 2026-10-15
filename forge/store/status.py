@@ -30,6 +30,8 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'github_duplicate': ('Closed on GitHub as a duplicate', 'Closed on GitHub as a duplicate of #{duplicate_of}'),
     'operator_closed': ('Stopped by the operator', None),
     'combined': ('Combined into another unit', 'Combined into unit {into}'),
+    'pull_request_closed': ('Review ended because the pull request closed', None),
+    'pull_retargeted': ('Review continues against the new target branch', None),
     'import_superseded': ('Imported delivery retired; the issue can start again as a new delivery', None),
     # Gates
     'operator_pause': ('Paused by the operator', None),
@@ -39,6 +41,7 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'operator_sync': ("Applying the operator's decision on GitHub", None),
     'triage_sync': ('Applying the approved triage decision on GitHub', None),
     'external_change': ('Paused after a change made outside Forge', None),
+    'review_source': ('Waiting for the pull request author or current review scope', None),
     'ownership_conflict': ('Someone else is working on this issue', '{login} is working on this issue'),
     'budget_exhausted': ('Stopped after three failed attempts; choose how to continue', None),
     'approach_required': ('The same failure keeps recurring; a new approach is needed', None),

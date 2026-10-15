@@ -296,5 +296,19 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
-  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, refreshAccess }
+  async function updateReviewScope(scope: 'all' | 'forge') {
+    const current = row.value
+    if (!current?.merge_check_revision || busy.value) return
+    busy.value = true; error.value = ''
+    try {
+      const next = await api.act<RepositoriesView>('/api/repositories/review-scope', {
+        repo_id: current.id, revision: current.merge_check_revision, scope,
+      })
+      if (repoId.value === current.id) poll.replace(next)
+    } catch (failure: unknown) {
+      error.value = actionMessage(failure, 'Could not save the review scope. Refresh before trying again.')
+    } finally { busy.value = false }
+  }
+
+  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, refreshAccess }
 }

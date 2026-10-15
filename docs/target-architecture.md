@@ -194,8 +194,9 @@ intended baseline has the Forge App as its one pull-request bypass actor and pin
 `forge/merge-policy` to its App identity.
 
 Repository settings select the merge-check scope: **all PRs** (default) or
-**Forge-created PRs only**. Human PRs need an achievable path to satisfy the
-check, and stronger repository protections remain in force.
+**Forge-created PRs only**. Human-authored PRs must pass independent Forge Review
+and Audit for their exact head and base. They receive review-only work with no
+builder or automatic merge; stronger repository protections remain in force.
 
 **Open policy/proofs:**
 

@@ -175,8 +175,10 @@ One schema owner integrates state and contract changes. UI/proxy files also need
 explicit ownership across the first and third lanes.
 
 Repository setting: `forge/merge-policy` defaults to **all PRs**; the operator
-may select Forge-created PRs only. Preserve stronger repository policies and an achievable path for
-human PRs. Acceptance includes resumable identity/App migration, independent
+may select Forge-created PRs only. Human-authored PRs receive independent Forge
+Review and Audit on their exact current candidate; passing those checks does not
+authorize Forge to merge or change their branches. Preserve stronger repository
+policies. Acceptance includes resumable identity/App migration, independent
 logical Review/Audit, spoofed identity-header rejection and agent revocation.
 
 ## Run 5 — install and cleanup
