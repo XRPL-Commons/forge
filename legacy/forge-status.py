@@ -177,17 +177,31 @@ class H(BaseHTTPRequestHandler):
         expected=f'[{address}]:{port}' if ':' in address else f'{address}:{port}'
         return self.headers.get('Host','')==expected
 
+    def _tailnet_login(self):
+        # Only the operator UI sets this, and only for a request Tailscale Serve
+        # delivered to it; reaching this API at all required the upstream secret.
+        from forge.tailnet_identity import UPSTREAM_HEADER, login
+        values = (self.headers.get_all(UPSTREAM_HEADER) if hasattr(self.headers, 'get_all')
+                  else [self.headers[UPSTREAM_HEADER]] if UPSTREAM_HEADER in self.headers else None) or []
+        return login(values[0]) if len(values) == 1 else None
+
     def _operator(self):
         from forge.operator_auth import OperatorAuth, read_cookie, SESSION_COOKIE
         self._auth = OperatorAuth(WD)
         self._auth_config = self._auth.config()
         self._session_token = read_cookie(self.headers.get('Cookie', ''), SESSION_COOKIE)
         self._session = self._auth.session(self._session_token) if self._auth_config else None
+        # Tailscale identity first when enabled; a GitHub cookie is the fallback.
+        tailnet = self._tailnet_login() if self._auth_config else None
+        found = self._auth.tailnet_session(tailnet) if tailnet else None
+        if found:
+            self._session_token, self._session = found
         # Control belongs to a signed-in operator only; there is no anonymous token.
         self._action_token = self._session['csrf'] if self._session else None
         if getattr(self, '_mutation_audit', None):
             from forge.operator_auth import digest
-            self._mutation_audit.bind(session=self._session, session_id=digest(self._session_token) if self._session else None)
+            self._mutation_audit.bind(session=self._session, session_id=(self._session.get('id') or digest(self._session_token))
+                                      if self._session else None)
         if self._auth_config and self._public_host() != urlparse(self._auth_config['origin']).netloc:
             self.send_error(403)
             return False
@@ -198,6 +212,14 @@ class H(BaseHTTPRequestHandler):
             if not read_snapshot:
                 return self._operator()
             from forge.store.runtime import required
+            # A Tailscale session is recorded once per window; do that write
+            # before the read session, which then only observes it.
+            login = self._tailnet_login()
+            if login:
+                from forge.operator_auth import OperatorAuth
+                auth = OperatorAuth(WD)
+                if auth.config():
+                    auth.tailnet_session(login)
             # Authentication and pause state describe the same committed state.
             # Close before cache fingerprinting, projection, callbacks or waits.
             with required(WD).read_session():
@@ -218,9 +240,17 @@ class H(BaseHTTPRequestHandler):
     def _auth_get(self, url):
         from forge.operator_auth import read_cookie, FLOW_COOKIE, cookie, failure_reason
         if url.path == '/api/auth/session':
+            mode = self._auth.identity_settings()['mode'] if self._auth_config else None
             self._send(json.dumps({'ok': True, 'enabled': bool(self._auth_config),
                                   'operator': self._session['operator'] if self._session else None,
-                                  **({'controls_token': self._action_token} if self._session else {})}))
+                                  **({'mode': mode} if self._auth_config else {}),
+                                  **({'controls_token': self._action_token, 'via': self._session.get('via', 'github')} if self._session else {})}))
+            return True
+        if url.path == '/api/auth/identity':
+            if not self._session:
+                self.send_error(401)
+                return True
+            self._send(json.dumps({'ok': True, **self._auth.identity_settings(), 'controls_token': self._action_token}))
             return True
         if url.path not in ('/auth/github/start', '/auth/github/callback'):
             return False
@@ -239,7 +269,8 @@ class H(BaseHTTPRequestHandler):
                 if 'iss' in query and query['iss'] != ['https://github.com/login/oauth']:
                     raise ValueError('Invalid callback issuer')
                 value, target = self._auth.callback(query['state'][0], query['code'][0],
-                                            read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token, with_target=True)
+                                            read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token,
+                                            with_target=True, tailnet_login=self._tailnet_login())
                 self._redirect(target, [('Set-Cookie', value), ('Set-Cookie', cookie(FLOW_COOKIE))])
         except (ValueError, OSError, RuntimeError, KeyError, TypeError) as error:
             print(json.dumps({'event': 'operator_sign_in_failed', 'reason': failure_reason(error)}), flush=True)
@@ -354,7 +385,7 @@ class H(BaseHTTPRequestHandler):
         if not self._session:
             # Without configured sign-in and a session, the API offers no control.
             self.send_error(401);return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -393,6 +424,16 @@ class H(BaseHTTPRequestHandler):
                     fields(value, ('id',))
                     clients.revoke(self._session_token, value['id'])
                     result = {'revoked': True}
+                self._send(json.dumps({'ok': True, **result}))
+                return
+            if self.path == '/api/auth/identity':
+                action = value.get('action') if isinstance(value, dict) else None
+                if action == 'mode' and set(value) == {'action', 'mode'}:
+                    result = self._auth.set_identity_mode(value['mode'])
+                elif action == 'unlink' and set(value) == {'action', 'login'} and isinstance(value['login'], str):
+                    result = self._auth.unlink_tailnet(value['login'])
+                else:
+                    raise ValueError('Expected an identity mode or a tailnet login to unlink')
                 self._send(json.dumps({'ok': True, **result}))
                 return
             if self.path == '/api/auth/logout':
