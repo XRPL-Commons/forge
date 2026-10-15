@@ -13,9 +13,9 @@ async function middleware() {
 }
 function request(method = 'GET') {
   const req = Object.assign(new PassThrough(), { method, headers: { host: 'localhost' }, socket: {} })
-  return { path: '/api/factory/changes?since=instance%3A1&wait=25', node: { req, res: new EventEmitter() } }
+  return { context: {}, path: '/api/factory/changes?since=instance%3A1&wait=25', node: { req, res: new EventEmitter() } }
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers() })
 
 describe('proxy request lifetime', () => {
   it('cancels the upstream long poll when its viewer disconnects', async () => {
@@ -46,5 +46,29 @@ describe('proxy request lifetime', () => {
     await handler(event as any)
     expect(fetch).not.toHaveBeenCalled()
     expect(setResponseHeader).toHaveBeenCalledWith(event, 'connection', 'close')
+  })
+})
+
+
+describe('proxy server-rendered identity', () => {
+  it('captures the page before its internal session fetch reaches the API proxy', async () => {
+    vi.stubEnv('NITRO_FORGE_TAILSCALE_IDENTITY', 'serve')
+    vi.stubEnv('NITRO_FORGE_PUBLIC_ORIGIN', 'https://anvil.tailnet.ts.net')
+    vi.stubEnv('NITRO_ALLOWED_HOSTS', 'anvil.tailnet.ts.net')
+    const handler = await middleware()
+    const page = request()
+    page.path = '/'
+    Object.assign(page.node.req.headers, { host: 'anvil.tailnet.ts.net', 'tailscale-user-login': 'operator@example.com' })
+    Object.assign(page.node.req.socket, { remoteAddress: '127.0.0.1' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
+    await handler(page as any)
+    expect(fetch).not.toHaveBeenCalled()
+    const internal = request()
+    internal.path = '/api/auth/session'
+    internal.node.req.headers.host = 'anvil.tailnet.ts.net'
+    Object.assign(internal.node.req, { __unenv__: page.context })
+    await handler(internal as any)
+    expect(fetch).toHaveBeenCalledWith('http://localhost:8788/api/auth/session',
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-forge-tailscale-user-login': 'operator@example.com' }) }))
   })
 })

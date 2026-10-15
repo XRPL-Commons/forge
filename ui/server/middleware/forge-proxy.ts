@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { compressJson } from '../utils/compression'
-import { allowedHosts, clientPath, guardClient, guardAction, guardHost, proxyPaths, tailscaleIdentity, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody, RequestBodyError, MAX_ACTION_BODY, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
+import { allowedHosts, clientPath, guardClient, guardAction, guardHost, proxyPaths, requestTailscaleIdentity, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody, RequestBodyError, MAX_ACTION_BODY, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
 
 export default defineEventHandler(async (event) => {
+  // Capture identity on the outer page before SSR makes its internal API calls.
+  const tailscaleLogin = requestTailscaleIdentity(event)
   const path = event.path
   if (!proxyPaths(path)) return
   const controller = new AbortController()
@@ -36,8 +38,6 @@ export default defineEventHandler(async (event) => {
     // A Node Buffer is a valid fetch body at runtime; the DOM `BodyInit` type
     // just does not name it.
     const body = (req.method === 'POST' ? await readRequestBody(req, client ? 16384 : MAX_ACTION_BODY, controller.signal) : undefined) as BodyInit | undefined
-    // Serve's identity header counts only on the loopback hop from Serve.
-    const tailscaleLogin = tailscaleIdentity(headers, req.socket?.remoteAddress, process.env)
     const upstream = await fetch(base + path, { method: req.method, headers: upstreamHeaders(headers, req.method ?? 'GET', upstreamHost, secret, client, tailscaleLogin) as Record<string, string>,
       body, redirect: 'manual', signal: controller.signal })
     const result = await readCapped(upstream, MAX_RESPONSE_BODY, controller)
