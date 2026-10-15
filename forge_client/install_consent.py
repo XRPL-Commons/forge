@@ -109,8 +109,19 @@ class InstallConsent:
         return url + '?' + urlencode([('suggested_target_id', self.binding['owner']['id']),
             *[('repository_ids[]', row['id']) for row in self.binding['repositories']]])
 
+    def installation_instruction(self):
+        names = ', '.join(row['name'] for row in self.binding['repositories'])
+        return ('On GitHub’s installation page, choose “Only select repositories” and select exactly: '
+                + names + '. Check the selection before clicking Install; GitHub may default to “All repositories”.')
+
+    def installation_guidance(self):
+        return '<p>' + html.escape(self.installation_instruction()) + '</p>'
+
     def action(self, url, instruction):
-        self.tell({'status': 'browser_action_required', 'url': url, 'instruction': instruction})
+        self.tell({'status': 'browser_action_required', 'url': url,
+                   'instruction': instruction + ' ' + self.installation_instruction(),
+                   'repository_selection': 'selected',
+                   'repositories': [dict(row) for row in self.binding['repositories']]})
         if self.open_browser:
             self.open_browser(url)
 
@@ -156,7 +167,7 @@ class InstallConsent:
                 if parsed.path == '/start/' + consent.state['browser'] and not parsed.query:
                     if consent.state['phase'] != 'waiting':
                         body = ('<!doctype html><title>Continue Forge setup</title><p>The manifest was sent to GitHub. '
-                                'Finish the existing GitHub registration tab.</p>')
+                                'Finish the existing GitHub registration tab.</p>' + consent.installation_guidance())
                         if consent.state['phase'] == 'submitted':
                             consent.state['refusal_nonce'] = secrets.token_urlsafe(24); consent.save()
                             body += ('<h1>Did GitHub report a missing manifest?</h1><p>Use this recovery only if GitHub displayed '
@@ -169,7 +180,8 @@ class InstallConsent:
                                 '<button type="submit">Resend this manifest</button></form>')
                         self.reply(200, body); return
                     body = ('<!doctype html><title>Set up Forge</title><h1>Register your Forge App</h1>'
-                        '<p>Approve the App on GitHub, then install it on the repositories selected for this factory.</p>'
+                        '<p>Approve the App on GitHub, then install it for this factory.</p>'
+                        + consent.installation_guidance() +
                         '<form method="post" action="/launch/' + consent.state['browser']
                         + '"><button type="submit">Continue on GitHub</button></form>')
                     self.reply(200, body); return

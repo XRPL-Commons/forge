@@ -136,6 +136,18 @@ class FreshConsentTests(unittest.TestCase):
         self.assertEqual(result['missing_repositories'], [{'id': 11, 'name': 'example/scratch'}])
         self.assertIn('repository_ids%5B%5D=10', self.events[-1]['url'])
         self.assertIn('repository_ids%5B%5D=11', self.events[-1]['url'])
+        self.assertEqual(self.events[-1]['repository_selection'], 'selected')
+        self.assertEqual(self.events[-1]['repositories'], [
+            {'id': 10, 'name': 'example/project'}, {'id': 11, 'name': 'example/scratch'}])
+        self.assertIn('Only select repositories', self.events[-1]['instruction'])
+        self.assertIn('example/project, example/scratch', self.events[-1]['instruction'])
+        self.assertIn('may default to “All repositories”', self.events[-1]['instruction'])
+
+    def test_repository_guidance_escapes_names_in_html(self):
+        self.client.binding['repositories'] = [{'id': 10, 'name': 'example/<script>&repo'}]
+        page = self.client.installation_guidance()
+        self.assertIn('example/&lt;script&gt;&amp;repo', page)
+        self.assertNotIn('<script>', page)
 
     def test_wrong_app_permissions_refused_before_configured_key_changes(self):
         self.begin(); self.client.checkpoint(self.app)
@@ -156,6 +168,9 @@ class FreshConsentTests(unittest.TestCase):
                         page = response.read().decode()
                         policy = response.headers['Referrer-Policy']
                     self.assertIn('Continue on GitHub', page)
+                    self.assertIn('Only select repositories', page)
+                    self.assertIn('example/project', page)
+                    self.assertEqual(event['repositories'], [{'id': 10, 'name': 'example/project'}])
                     launch = event['url'].replace('/start/', '/launch/')
                     origin = 'http://' + urlsplit(event['url']).netloc
                     # Browsers serialize the Origin as null for a form POST
@@ -181,7 +196,10 @@ class FreshConsentTests(unittest.TestCase):
                     registration_before = deepcopy(self.client.state['registration'])
                     with urlopen(event['url']) as response:
                         self.assertEqual(response.headers['Referrer-Policy'], 'same-origin')
-                        self.assertIn('no App was created', response.read().decode())
+                        recovery_page = response.read().decode()
+                        self.assertIn('no App was created', recovery_page)
+                        self.assertIn('Only select repositories', recovery_page)
+                        self.assertIn('example/project', recovery_page)
                     retry = event['url'].replace('/start/', '/retry/')
                     confirmation = urlencode({'nonce': self.client.state['refusal_nonce'],
                         'missing_manifest_no_app': 'confirmed'}).encode()
