@@ -25,6 +25,10 @@ from .app_access import (AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERM
 ROLES = tuple(ROLE_PERMISSIONS)
 DEFAULT = {'version': 1, 'sync_interval_seconds': 300, 'access_max_age_seconds': 900,
            'connections': {}, 'repositories': []}
+# Optional: Apps a role used before it moved to the single Forge App. They stay
+# resolvable so earlier check runs, reviews and PR authorship remain history,
+# never a current credential.
+OPTIONAL = ('retired_apps',)
 
 
 def _object(pairs):
@@ -62,7 +66,8 @@ def deployment(value):
 
 
 def validate(config):
-    if not isinstance(config, dict) or set(config) != set(DEFAULT) or type(config.get('version')) is not int or config['version'] != 1:
+    if (not isinstance(config, dict) or set(config) - set(OPTIONAL) != set(DEFAULT)
+            or type(config.get('version')) is not int or config['version'] != 1):
         raise ValueError('Expected version 1 settings with connections, repositories, and sync limits')
     for key in ('sync_interval_seconds', 'access_max_age_seconds'):
         if type(config[key]) is not int or not 30 <= config[key] <= 86400:
@@ -82,8 +87,15 @@ def validate(config):
             raise ValueError(role + ': App and installation IDs must be distinct positive integers')
         if not isinstance(value['private_key_env'], str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', value['private_key_env']):
             raise ValueError(role + ': private_key_env must be an environment variable name, not a secret')
-    if len({c['app_id'] for c in connections.values()}) != len(connections):
-        raise ValueError('Use a distinct App identity for each role')
+    # Roles may share one App only by sharing the controller's exact connection:
+    # that is the single Forge App. Any other reuse is an ambiguous identity.
+    controller = connections.get('controller')
+    for role, value in connections.items():
+        others = [other for name, other in connections.items() if name != role and other['app_id'] == value['app_id']]
+        if others and (value != controller or any(other != value for other in others)):
+            raise ValueError('Use a distinct App for each role, or point every role at the one Forge App')
+    if 'retired_apps' in config:
+        retired_apps(config['retired_apps'], connections)
     if not isinstance(config['repositories'], list) or len(config['repositories']) > 10000:
         raise ValueError('repositories must be a bounded list')
     ids, names = set(), set()
@@ -101,6 +113,32 @@ def validate(config):
             raise ValueError('Duplicate repository configuration')
         ids.add(row['id']); names.add(row['name'].lower())
     return config
+
+
+def retired_apps(value, connections=None):
+    """Historical App identities: readable evidence, never a minting credential."""
+    if not isinstance(value, list) or len(value) > 16:
+        raise ValueError('Retired Apps must be a bounded list')
+    seen = set()
+    active = {c['app_id'] for c in (connections or {}).values()}
+    for row in value:
+        if (not isinstance(row, dict) or set(row) != {'app_id', 'slug', 'roles', 'retired_at'}
+                or type(row['app_id']) is not int or not 0 < row['app_id'] < 2**53
+                or row['slug'] is not None and (not isinstance(row['slug'], str) or not re.fullmatch(r'[A-Za-z0-9-]{1,100}', row['slug']))
+                or not isinstance(row['roles'], list) or not row['roles'] or any(r not in ROLES for r in row['roles'])
+                or len(set(row['roles'])) != len(row['roles'])
+                or type(row['retired_at']) not in (int, float)):
+            raise ValueError('Each retired App needs an App ID, its slug if known, its former roles and when it retired')
+        if row['app_id'] in seen or row['app_id'] in active:
+            raise ValueError('A retired App cannot also be active or listed twice')
+        seen.add(row['app_id'])
+    return value
+
+
+def retired_for(config, role):
+    """Former App identities for a role, oldest first."""
+    role = 'controller' if role == 'recovery' else role
+    return [row for row in config.get('retired_apps', []) if role in row['roles']]
 
 
 def mirror_denied_repositories(value):
@@ -321,8 +359,15 @@ class Settings:
                         row.update(status='unknown', reason=reason)
                     row['observed_at'] = self.clock()
                     return role, row
+                # Roles that share the single Forge App observe it once.
+                unique = {}
+                for role in ROLES:
+                    connection = config['connections'].get(role)
+                    unique.setdefault(digest(connection) if connection else role, role)
                 with ThreadPoolExecutor(max_workers=4) as pool:
-                    roles = dict(pool.map(collect, ROLES))
+                    observed = dict(pool.map(collect, unique.values()))
+                roles = {role: dict(observed[unique[digest(config['connections'][role]) if config['connections'].get(role) else role]])
+                         for role in ROLES}
                 if self.paused():
                     return False
                 self.save_observation({'roles': roles, 'observed_at': self.clock()}, expected_generation=generation)

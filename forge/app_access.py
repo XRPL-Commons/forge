@@ -23,6 +23,23 @@ ROLE_PERMISSIONS = {
 # Recommended, never required: a role must keep minting tokens on an installation
 # that predates the grant, so callers ask for these only when they need them.
 OPTIONAL_PERMISSIONS = {'controller': {'deployments': 'read'}}
+RANK = {'none': 0, 'read': 1, 'write': 2, 'admin': 3}
+
+
+def _union(*grants):
+    result = {}
+    for grant in grants:
+        for key, level in grant.items():
+            if RANK[level] > RANK[result.get(key, 'none')]:
+                result[key] = level
+    return result
+
+
+# One Forge App holds every role's grant. It is a credential boundary, not a
+# judge: review and audit verdicts are still produced by separate executors and
+# every token stays narrowed to one role's permissions when it is minted.
+APP_PERMISSIONS = _union(*ROLE_PERMISSIONS.values())
+APP_OPTIONAL_PERMISSIONS = _union(*OPTIONAL_PERMISSIONS.values())
 REPO_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9_.-]+')
 
 
@@ -38,9 +55,6 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-RANK = {'none': 0, 'read': 1, 'write': 2, 'admin': 3}
-
-
 def _missing(wanted, permissions):
     return [f'{key}: {level}' for key, level in wanted.items()
             if RANK.get(permissions.get(key), 0) < RANK[level]]
@@ -48,6 +62,19 @@ def _missing(wanted, permissions):
 
 def missing_permissions(role, permissions):
     return _missing(ROLE_PERMISSIONS[role], permissions)
+
+
+def missing_app_permissions(permissions):
+    """Grants the single Forge App lacks before every role can point at it."""
+    return _missing(APP_PERMISSIONS, permissions)
+
+
+def shared_app(connections):
+    """The connection every role uses when all of them point at one App, else None."""
+    values = list(connections.values())
+    if len(values) != len(ROLE_PERMISSIONS) or set(connections) != set(ROLE_PERMISSIONS):
+        return None
+    return values[0] if all(value == values[0] for value in values) else None
 
 
 def recommended_permissions(role, permissions):
