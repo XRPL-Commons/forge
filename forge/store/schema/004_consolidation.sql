@@ -128,7 +128,7 @@ WITH latest AS (
  SELECT f.id AS issue_id,g.code,g.created_at,g.id AS gate_id FROM unit_gates g
  WHERE g.unit_id=f.unit_id AND f.current=1 AND g.resolved_at IS NULL AND (g.candidate_id IS NULL OR g.candidate_id=f.current_candidate_id)
  AND (g.job_id IS NULL OR CASE WHEN
-   (g.source='build_claim' AND g.code IN ('dependency','decision_required')) OR (g.source='worker_claim' AND g.code='environment')
+   (json_extract(g.details_json,'$.source')='build_claim' AND g.code IN ('dependency','decision_required')) OR (json_extract(g.details_json,'$.source')='worker_claim' AND g.code='environment')
  THEN EXISTS(SELECT 1 FROM json_each(g.details_json,'$.requirements_by_member') pin
    WHERE pin.key=f.member_id AND pin.value=f.requirements_revision_id)
  ELSE EXISTS(SELECT 1 FROM job_members scope WHERE scope.job_id=g.job_id AND scope.member_id=f.member_id) END)
@@ -169,3 +169,22 @@ SELECT *,CASE WHEN issue_state='done' THEN 'completed' WHEN issue_state='dropped
  AND (n.reason NOT IN ('cleanup','cleanup_pending') OR j.cleanup=0) AND s.member_id=classified.member_id))) THEN 'queued'
  ELSE 'waiting' END AS indexed_status
 FROM classified;
+
+-- One retained decision contract; domain stores retain selection/application authority.
+CREATE TABLE steward_subject_decisions (
+ subject_kind TEXT NOT NULL CHECK(subject_kind IN ('proposal_row','conversation_turn')),
+ subject_id TEXT NOT NULL,
+ subject_version INTEGER NOT NULL CHECK(subject_version>0),
+ execution_id TEXT NOT NULL,
+ dossier_json TEXT NOT NULL CHECK(json_valid(dossier_json) AND length(CAST(dossier_json AS BLOB))<=524288),
+ decision_json TEXT NOT NULL CHECK(json_valid(decision_json) AND length(CAST(decision_json AS BLOB))<=65536),
+ digest TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ PRIMARY KEY(subject_kind,subject_id,subject_version,execution_id)
+) STRICT;
+CREATE TRIGGER steward_subject_decisions_no_update BEFORE UPDATE ON steward_subject_decisions
+ BEGIN SELECT RAISE(ABORT,'steward subject decision is immutable'); END;
+CREATE TRIGGER steward_subject_decisions_no_delete BEFORE DELETE ON steward_subject_decisions
+ BEGIN SELECT RAISE(ABORT,'steward subject decision is retained'); END;
+
+ALTER TABLE triage_proposal_rows ADD COLUMN steward_choice_id TEXT;

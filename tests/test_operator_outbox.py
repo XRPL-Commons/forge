@@ -57,6 +57,20 @@ class OperatorOutboxTests(unittest.TestCase):
         self.assertEqual(self.github.calls,[])
 
 
+    def test_retired_readback_failure_does_not_reject_again(self):
+        from forge.store.models import TransitionError
+        request=self.lose_comment()
+        self.actions._reject(self.actions._request(request),'Authority changed')
+        before=self.status(request)
+        self.github.calls.clear()
+        with patch.object(self.actions,'_comment_receipt',side_effect=TransitionError('Original event is unavailable')):
+            result=self.actions.step(request)
+        self.assertEqual(result['pending'],'effect_reconciliation')
+        self.assertEqual(self.status(request),before)
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.actions.cycle()['items'],[])
+
+
 class OperatorOutboxMigrationTests(unittest.TestCase):
     def test_upgrade_preserves_payloads_receipts_and_marks_legacy_pending_as_uncertain(self):
         catalog=storage._migrations()

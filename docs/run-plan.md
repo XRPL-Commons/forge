@@ -174,8 +174,8 @@ and ownership; #259 one-App verdict checks/bypass and trusted Tailscale identity
 One schema owner integrates state and contract changes. UI/proxy files also need
 explicit ownership across the first and third lanes.
 
-Before starting, decide whether `forge/merge-policy` applies to all PRs or only
-Forge branches. Preserve stronger repository policies and an achievable path for
+Repository setting: `forge/merge-policy` defaults to **all PRs**; the operator
+may select Forge-created PRs only. Preserve stronger repository policies and an achievable path for
 human PRs. Acceptance includes resumable identity/App migration, independent
 logical Review/Audit, spoofed identity-header rejection and agent revocation.
 

@@ -303,7 +303,8 @@ class GitHub:
             if match:
                 publisher = publisher or self.publisher('build')
                 pr['forge_owned'] = own_build_pr(pr, item['repo_id'], int(match[1]), publisher)
-        return rows
+        from .ownership import linked_pulls
+        return linked_pulls(self,item,rows)
 
     def collaborators(self, item):
         """People who can approve here: push access, offered as reviewer choices."""

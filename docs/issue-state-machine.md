@@ -7,7 +7,8 @@ flowchart TD
   I[Intake: discover the issue] --> T[Check readiness and requirements]
   T --> Q[Queued]
   Q --> B[Build]
-  B --> R[Review]
+  B --> Publish[Publish and confirm pull request]
+  Publish --> R[Review]
   R --> A[Security audit]
   A --> H{Human approval needed?}
   H -->|Yes| P[Waiting to merge: approval]
@@ -32,8 +33,8 @@ The bay is the stage, not the main status. For example, an issue can have Review
 | --- | --- |
 | Backlog | Not admitted, paused by the operator or moved back to the backlog. |
 | Queued | Ready for its next worker. |
-| Working | A worker or merge step is in progress. |
-| Waiting | Waiting for capacity, cleanup, result checking or other automatic checks. |
+| Working | A worker, publication, cleanup, result check or merge step is in progress. |
+| Waiting | Waiting for capacity or an external prerequisite. |
 | Blocked | A dependency, hold or human ownership prevents progress. |
 | Needs attention | A person must decide, verify or repair something. |
 | Completed | Merged, or closed as completed elsewhere; the reason distinguishes them. |
@@ -56,7 +57,7 @@ flowchart TD
 
 A hold does not erase a dependency. Removing a hold label resumes work only when the remaining conditions also allow it; repository setup becoming ready is rechecked automatically.
 
-A worker may still be visible while **Blocked**: Forge can be stopping it or collecting its result. **Waiting — Cleaning up a finished attempt** and **Waiting — Checking the completed worker result** are not new failures.
+A worker may still be visible while **Blocked**: Forge can be stopping it or collecting its result. **Working — Cleaning up a finished attempt** and **Working — Checking the completed worker result** are not new failures.
 
 The small attention labels point to the next action:
 

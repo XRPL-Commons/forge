@@ -5,8 +5,8 @@ SQLite Activity rows, issue list/detail responses, and `forge repo activity`,
 
 ```json
 {
-  "code": "waiting",
-  "label": "Waiting",
+  "code": "working",
+  "label": "Working",
   "reason_code": "result_pending",
   "reason": "Checking the completed worker result"
 }
@@ -30,8 +30,8 @@ and observation age cannot override a supplied status.
 
 Completion elsewhere and a Forge merge both show **Completed**, with different
 reason codes. Reopening an issue removes its old completion from the current
-projection. Cleanup and result validation show **Waiting**, with separate
-reasons. Releasing a hold preserves any independently scoped remaining gate.
+projection. Cleanup, result validation and confirmation of pending operator writes show
+**Working**, with separate reasons. Releasing a hold preserves any independently scoped remaining gate.
 None of these presentation fields changes dispatch, authorization, or gates.
 
 `tests/fixtures/operator-status.json` is the shared acceptance matrix. Python
@@ -39,6 +39,36 @@ creates its cases with typed lifecycle commands and checks public projections,
 SQL filters, scoped client reads and CLI output. The UI test uses the same
 fixture for Activity cards/line, issue cards/detail labels and pipeline reasons,
 including contradictory legacy fields that must not override canonical values.
+
+## Phase, execution and gates
+
+The delivery phases are `building`, `publishing`, `reviewing`, `auditing`,
+`merging`, `merged` and `closed`. Planning and integration are build stages.
+Dissolving a group closes its delivery with reason `dissolved`; its issues can
+continue separately. The operator badge **Queued** means a current next action
+exists; it is not a stored delivery phase.
+
+The lifecycle also exposes `execution_condition`: `running` while an unfenced
+worker is starting, running or collecting; `owned` while a gate, retained job or
+candidate effect owns the next step; or `scheduled` when a current next action
+exists. An active unit with no owner has a null
+condition until the stall detector assigns investigation. A condition does not
+clear a gate or authorize a worker.
+
+Gate classes identify who owns progress:
+
+| Class | Owner | Exit |
+| --- | --- | --- |
+| `transitional` | Deterministic core | The pending operation is confirmed. |
+| `supervisor-remedy` | Supervisor | The proposed remedy is verified. |
+| `operator-choice` | Operator | An authorized choice is applied. |
+| `external` | External prerequisite | Fresh evidence confirms the prerequisite. |
+
+`forge/store/codes.py` defines the registry. Run
+`python -m forge.store.gate_registry` after changing it; SQL and TypeScript are
+generated together, and tests reject mismatches. Individual reason codes retain
+their scope and release authority so one completed operation cannot clear an
+unrelated hold. Historical reason codes remain readable.
 
 ## Reloading after a changed issue or pull request
 

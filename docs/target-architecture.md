@@ -193,12 +193,14 @@ comments. GitHub review count must not be inferred from machine verdicts. The
 intended baseline has the Forge App as its one pull-request bypass actor and pins
 `forge/merge-policy` to its App identity.
 
+Repository settings select the merge-check scope: **all PRs** (default) or
+**Forge-created PRs only**. Human PRs need an achievable path to satisfy the
+check, and stronger repository protections remain in force.
+
 **Open policy/proofs:**
 
 - Does configuring the App-pinned required check need any additional permission,
   particularly Commit statuses write? Do not add it speculatively.
-- Is `forge/merge-policy` required on all PRs or only the intended Forge branch
-  scope? Human PRs must not acquire an unsatisfiable Forge-only check.
 - Define the baseline human review count and bypass behavior together. Current
   two-review baseline wording and #259's counted-human path need one explicit
   rule; a check run does not itself count as a human approval.
