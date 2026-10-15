@@ -461,7 +461,13 @@ class RepositoryPlanning(Lifecycle):
         for unit_id,members in groups.items():
             unit=_unit(db,unit_id)
             command=Command(_id(request,'brief-environment:'+unit_id),actor,unit_id,unit['version'])
-            steward_environment_in(self,db,command,unit,brief['environment'],config,member_ids=members)
+            before=self._lifecycle_summary(project_unit(db,unit_id))
+            results=steward_environment_in(self,db,command,unit,brief['environment'],config,member_ids=members)
+            if results:
+                self._save(db,command,'triage_environment',
+                    {'proposal_id':proposal['id'],'row_id':row['id'],'choice_id':row['steward_choice_id'],
+                     'member_ids':sorted(members),'environment':brief['environment']},
+                    {'environments':results},before=before)
 
     def _effect_in(self,db,proposal,row,request,actor,config):
         member=row['members'][0]

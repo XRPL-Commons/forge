@@ -4,7 +4,7 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from forge.factory.config import validate
-from forge.store.models import TransitionError, VersionConflict, IdempotencyConflict
+from forge.store.models import Command, TransitionError, VersionConflict, IdempotencyConflict
 from forge.store.transitions import Lifecycle, manifest_hash
 from forge.steward_contract import decision, decision_schema
 from forge.steward_subjects import triage_dossiers, triage_schema, triage_output
@@ -97,7 +97,7 @@ class ProposalSubjects(unittest.TestCase):
         self.assertEqual(f.plans.repository(1)['notes'][0]['actor_id'],'supervisor:triage')
         self.assertEqual(f.controller.cycle(launch=False)['items'],[])
 
-    def test_brief_environment_applies_only_on_exact_approved_choice(self):
+    def environment_proposal(self):
         f=self.f;config=validate({})
         config['environment_tiers']={'standard':{'image':'sha256:'+'1'*64}}
         # Rebuild captured dossiers with the actual configured environment capability.
@@ -108,15 +108,45 @@ class ProposalSubjects(unittest.TestCase):
         self.context=context;self.job['context_hash']=manifest_hash(context)
         value=self.result();value['decisions'][0]['brief']={'choice_id':'first','instructions':'Run focused tests.',
             'evidence_refs':[],'environment':{'environment_id':'standard','services':[]}}
-        self.capture(value);proposal=f.plans.proposal(f.request['proposal_id']);a,b=proposal['rows']
+        self.capture(value)
+        return config,f.plans.proposal(f.request['proposal_id'])
+
+    def test_brief_environment_applies_only_on_exact_approved_choice(self):
+        f=self.f;config,proposal=self.environment_proposal();a,b=proposal['rows']
         with f.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM unit_environment').fetchone()[0],0)
-        f.plans.accept(proposal['id'],expected_version=proposal['version'],accept_rows=[a['id']],reject_rows=[],request_id='accept-env',
+        args=dict(expected_version=proposal['version'],accept_rows=[a['id']],reject_rows=[],request_id='accept-env',
             actor_id='github:123',config=config)
+        receipt=f.plans.accept(proposal['id'],**args)
+        self.assertEqual(f.plans.accept(proposal['id'],**args),receipt)
         with f.store.read_snapshot() as db:
             selected=json.loads(db.execute('SELECT choice FROM unit_environment').fetchone()[0])
             self.assertEqual(selected['source'],'steward')
             self.assertEqual(db.execute('SELECT COUNT(*) FROM unit_environment').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT version FROM units WHERE id='unit'").fetchone()[0],2)
+            self.assertEqual(db.execute("SELECT version FROM units WHERE id='second'").fetchone()[0],1)
+            effect=db.execute("SELECT expected_version FROM external_effects WHERE kind='environment_label'").fetchone()
+            self.assertEqual(effect[0],2)
+            saved=db.execute("SELECT * FROM decisions WHERE command='triage_environment'").fetchall()
+            self.assertEqual(len(saved),1)
+            self.assertEqual(saved[0]['actor_id'],'github:123')
+            self.assertEqual(json.loads(saved[0]['payload_json'])['choice_id'],'first')
+        self.assertEqual([row['status'] for row in f.plans.proposal(proposal['id'])['rows']],['accepted','proposed'])
+        with self.assertRaises(VersionConflict):
+            Lifecycle(f.store).pause(Command('stale-before-environment','github:123','unit',1))
+
+    def test_matching_manual_environment_does_not_advance_unit_or_add_effect(self):
+        f=self.f;config,proposal=self.environment_proposal();row=proposal['rows'][0]
+        with f.store.write() as db:
+            db.execute('INSERT INTO issue_environment_observations(issue_id,choice_json) VALUES(?,?)',
+                ('1:1',json.dumps({'tier':'standard','services':[],'automatic':False})))
+        f.plans.accept(proposal['id'],expected_version=proposal['version'],accept_rows=[row['id']],reject_rows=[],
+            request_id='matching-env',actor_id='github:123',config=config)
+        with f.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT version FROM units WHERE id='unit'").fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM unit_environment').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM external_effects').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM decisions WHERE command='triage_environment'").fetchone()[0],0)
 
     def test_physical_invocation_limit_keeps_all_attempts_without_budget_charge(self):
         f=self.f
