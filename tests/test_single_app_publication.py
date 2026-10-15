@@ -86,6 +86,48 @@ class SingleAppPublicationTests(unittest.TestCase):
         self.assertEqual(self.github.verdict(job, {'outcome': 'pass', 'summary': 'ok'}, observe_only=True), 40)
         self.assertEqual(self.posts, [])
 
+    def test_migrated_lost_verdict_reply_is_read_before_any_new_write(self):
+        marker = '<!-- forge-verdict review-job -->'
+        self.reviews = [{'id': 1, 'body': marker, 'user': {'login': 'forge-review[bot]'},
+                         'commit_id': HEAD, 'state': 'APPROVED'}]
+        self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'review-job',
+                      'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success', 'output': {'summary': 'ok'}}]
+        report = {'outcome': 'pass', 'summary': 'ok'}
+        # The old App wrote before migration; its reply was lost. Normal retry
+        # must reuse that receipt, even if this retry's local reply is also lost.
+        self.assertEqual(self.github.verdict(self.job('review'), report), 40)
+        self.assertEqual(self.github.verdict(self.job('review'), report, observe_only=True), 40)
+        self.assertEqual(self.posts, [])
+
+    def test_obsolete_retired_run_does_not_hide_current_exact_receipt(self):
+        self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'effect',
+                      'head_sha': HEAD, 'status': 'in_progress', 'output': {'summary': 'waiting'}}]
+        receipt = self.github.check({}, 'review', {'head': HEAD}, 'effect', 'success', 'ok')
+        self.assertNotEqual(receipt, 40)
+        self.assertEqual(self.github.check({}, 'review', {'head': HEAD}, 'effect', 'success', 'ok',
+                                          observe_only=True), receipt)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_retired_receipt_must_match_exact_effect_head_and_outcome(self):
+        original = {'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'effect',
+                    'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success', 'output': {'summary': 'ok'}}
+        for mismatch in ({'name': 'forge/audit'}, {'app': {'id': 999}}, {'external_id': 'another'},
+                         {'head_sha': 'b' * 40}, {'conclusion': 'failure'}, {'output': {'summary': 'different'}}):
+            with self.subTest(mismatch=mismatch):
+                self.runs = [{**original, **mismatch}]
+                self.assertIsNone(self.github.check({}, 'review', {'head': HEAD}, 'effect', 'success', 'ok',
+                                                    observe_only=True))
+        self.assertEqual(self.posts, [])
+
+    def test_two_exact_receipts_across_apps_still_require_reconciliation(self):
+        original = {'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'effect',
+                    'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success', 'output': {'summary': 'ok'}}
+        self.runs = [original, {**original, 'id': 41, 'app': {'id': self.app_id}}]
+        for observe_only in (True, False):
+            with self.assertRaisesRegex(GitHubUnavailable, 'Duplicate'):
+                self.github.check({}, 'review', {'head': HEAD}, 'effect', 'success', 'ok', observe_only=observe_only)
+        self.assertEqual(self.posts, [])
+
     def test_gates_accept_evidence_a_retired_app_published(self):
         item = {'candidate': {'head': HEAD}, 'evidence': {'review': {'check_id': 40}, 'audit': {'check_id': 41}}}
         self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'status': 'completed', 'conclusion': 'success'},

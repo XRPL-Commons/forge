@@ -467,13 +467,25 @@ class GitHub:
         name = 'forge/merge-policy' if role == 'controller' else 'forge/' + role
         runs = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
         app_id = self.connection(role)['app_id']
-        # Read-back also recognizes a run a retired role App published before the
-        # move to one App; new publications always come from the current App.
-        readable = self.app_ids(role) if observe_only else [app_id]
-        own = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') in readable
-               and r.get('external_id') == external_id]
-        if len(own) > 1:
+        # A lost reply before migration may already have an exact receipt from
+        # the retired App. Read it before writing under the new App identity.
+        readable = self.app_ids(role)
+        observed = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') in readable
+                    and r.get('external_id') == external_id]
+        for identity in readable:
+            if sum(r['app']['id'] == identity for r in observed) > 1:
+                raise GitHubUnavailable('Duplicate check publication needs reconciliation')
+        expected_status = 'completed' if conclusion else 'in_progress'
+        receipts = [r for r in observed if (r['app']['id'] == app_id or conclusion is not None)
+                    and r.get('head_sha') == candidate_value['head'] and r.get('status') == expected_status and r.get('conclusion') == conclusion
+                    and (r.get('output') or {}).get('summary') == summary[:60000]]
+        if len(receipts) > 1:
             raise GitHubUnavailable('Duplicate check publication needs reconciliation')
+        if receipts:
+            return receipts[0]['id']
+        # An obsolete retired run is immutable history. Only the current App's
+        # run can be updated, and only an exact receipt can finish read-back.
+        own = [r for r in observed if r['app']['id'] == app_id]
         # GitHub retains a completed check's conclusion when asked to mark it
         # in_progress again. Keep that verdict until a new revision/verdict is
         # available; trying to reopen it makes verification fail and blocks the
