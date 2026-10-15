@@ -178,6 +178,13 @@ class PipelineViews:
             for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND member_id=? AND code='dependency' AND resolved_at IS NULL",
                                    (unit_id,issue['lifecycle']['member_id'])):
                 reasons.update((row['reference'],row['reason']) for row in json.loads(gate[0]).get('blocked',[]))
+        if unit_id:
+            from ..store.claim_overrides import dependencies_in
+            for gate in dependencies_in(db,unit_id,issue['lifecycle']['member_id']):
+                details=json.loads(gate['details_json'])
+                refs.update(details.get('references',[]))
+                for fact in details.get('dependency_observations',[]):
+                    facts.setdefault(fact['reference'],fact)
         result=[]
         for ref in sorted(refs):
             repository,number=ref.rsplit('#',1)
@@ -207,7 +214,9 @@ class PipelineViews:
         context=db.execute('SELECT * FROM unit_context WHERE unit_id=?',(unit_id,)).fetchone() if unit_id else None
         gates={}
         if unit_id:
-            for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'],life['member_id'])):
+            from ..store.transitions import applicable_gates
+            for gate in applicable_gates(db,unit,life['member_id'],life['candidate_id']):
+                if gate['id'] is None:continue
                 from ..store.worker_waits import details_in
                 value=details_in(db,gate);gates[gate['code']]=(dict(gate),value.get('value',value))
         decision=gates.get('decision_required',(None,None))[1]
@@ -243,6 +252,10 @@ class PipelineViews:
             environment_block=json.loads(environment['environment_hold_json'])
         fresh = not issue.get('body_truncated') and issue['observed_at'] is not None and 0 <= self.clock()-issue['observed_at'] < 300
         actions = available_actions(issue, unit, cleanup=cleanup, pending=pending) if fresh else []
+        if fresh and unit and not pending and not cleanup and issue['github_state']=='open':
+            from ..store.claim_overrides import dependencies_in
+            if dependencies_in(db,unit_id,life['member_id']):
+                actions.append('start_anyway')
         wording = life['display_status']
         from .contracts import clamp,operator_text,plain_text,HEADLINE_LIMIT
         # The bubble speaks to the operator; the worker's technical report stays

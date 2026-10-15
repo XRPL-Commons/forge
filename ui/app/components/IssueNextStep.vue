@@ -100,13 +100,14 @@ const nextActionTime = computed(() => {
             <div id="issue-action-block" class="flex flex-col gap-2.5">
               <LazyStewardDecision v-if="detail.steward_decision" :key="detail.key" :issue-key="detail.key"
                 :expected="detail.steward_decision" :disabled="busy" @selected="poll.refresh()" />
-              <section v-else-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
+              <section v-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
                 <h3 id="decision-question" class="font-semibold">{{ detail.decision_request.question }}</h3>
                 <ul class="list-disc space-y-1 pl-5">
                   <li v-for="option in detail.decision_request.options" :key="option">{{ option }}</li>
                 </ul>
                 <p><strong>Recommendation:</strong> {{ detail.decision_request.recommendation }}</p>
-                <p class="text-muted">{{ detail.decision_request.evidence }}</p>
+                <p class="whitespace-pre-line text-muted">{{ detail.decision_request.evidence }}</p>
+                <p v-if="detail.decision_request.acknowledgment_scope" class="text-muted">{{ detail.decision_request.acknowledgment_scope }}</p>
                 <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
               </section>
               <a v-if="reportUrl" id="issue-forge-report" :href="reportUrl" target="_blank" rel="noopener noreferrer" class="text-sm text-sky-200 underline underline-offset-4">Report to Forge ↗</a>
@@ -191,7 +192,7 @@ const nextActionTime = computed(() => {
                   >Reopen it on GitHub to bring it back ↗</a>
                 </span>
               </div>
-              <div v-else-if="!detail.steward_decision" id="issue-actions" class="flex flex-wrap items-center gap-2">
+              <div v-else-if="!detail.steward_decision || detail.decision_request || actions.includes('start_anyway')" id="issue-actions" class="flex flex-wrap items-center gap-2">
                 <span v-if="detail.status === 'attention' && (primary === 'discuss' || !primary)" id="issue-needs-person" class="inline-flex min-h-8 basis-full items-center gap-2 text-sm text-amber-200">
                   <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
                   {{ attentionNote(detail) }}

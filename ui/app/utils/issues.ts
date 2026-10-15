@@ -56,7 +56,7 @@ export interface IssueRow extends OperatorStatusSource {
   delivery_approved?: boolean
   setup_needed: boolean; environment_blocker: string | null
   forge_problem_report?: { status: 'draft'; signature: string; title: string; body: string; affected: number } | null
-  decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
+  decision_request?: { question: string; options: string[]; recommendation: string; evidence: string; acknowledgment_scope?: string } | null
   approval?: { pr: number; reason: string } | null
   verification_request?: { what: string; why: string; created_at: number; gate_id?: string; can_confirm?: boolean; ci?: { name: string; app_id: number }[] } | null
   // Each reviewer's latest review on the candidate pull request as Forge last

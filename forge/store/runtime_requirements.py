@@ -318,13 +318,12 @@ class RuntimeRequirements(Executions):
         member=self._revision_member(db,unit,requirements_revision_id)
         if member['requirements_revision_id']!=requirements_revision_id:
             raise TransitionError('dependency override quotes obsolete requirements')
-        digest=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(requirements_revision_id,)).fetchone()[0])
+        from .claim_overrides import dependencies_in, acknowledge_in
         resolved=[]
-        for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='dependency' AND resolved_at IS NULL",(unit['id'],)).fetchall():
-            details=json.loads(gate['details_json'])
-            if details.get('requirements')==digest and details.get('issues') and details.get('source')!='runtime_dependencies':
+        for gate in dependencies_in(db,unit['id'],member['id'],requirements_revision_id):
+            if not acknowledge_in(self,db,command,unit,gate,member['id'],requirements_revision_id,evidence):
                 self._resolve(db,command,gate['id'],evidence)
-                resolved.append(gate['id'])
+            resolved.append(gate['id'])
         self._event(db,command,'lifecycle_changed',{'declared_dependencies_cleared':resolved})
         return {'accepted':True,'resolved':resolved}
 

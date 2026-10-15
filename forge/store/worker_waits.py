@@ -9,6 +9,16 @@ from .models import TransitionError
 
 def details_in(db,gate):
     value=json.loads(gate['details_json'])
+    if value.get('source')=='build_claim' and gate['code']=='decision_required':
+        decision=next((claim for claim in value.get('claims',[]) if claim['type']=='needs_decision'),None)
+        scope=next((claim for claim in value.get('claims',[]) if claim['type']=='too_large'),None)
+        evidence=[decision['evidence']] if decision else []
+        if scope:evidence.append('Scope needs adjustment: '+scope['reason'])
+        return {**value,'question':decision['question'] if decision else 'How should this issue be reduced in scope?',
+            'options':decision['options'] if decision else [],
+            'recommendation':decision['recommendation'] if decision else 'Record a smaller scope before retrying.',
+            'evidence':'\n\n'.join(evidence),
+            'acknowledgment_scope':'Your answer acknowledges these claims for this issue only. Other issues keep their own decisions.'}
     references=value.get('worker_waits',[]) if value.get('source')=='worker_waits' else []
     if not references: return value
     waits=[{'job_id':value.get('job_id'),'details':value}]

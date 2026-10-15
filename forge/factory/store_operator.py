@@ -206,8 +206,10 @@ class OperatorActions(Lifecycle):
                 if grouped:raise TransitionError('Closing a grouped issue requires an explicit member removal decision')
                 allowed.append('close')
             if action=='environment' and unit and not cleanup:allowed.append('environment')
-            if action=='start_anyway' and unit and not cleanup and any(g['code']=='dependency' and g['member_id'] in {None,scoped_member} and json.loads(g['details_json']).get('requirements') for g in _gates(db,unit_id)):
-                allowed.append('start_anyway')
+            if action=='start_anyway' and unit and not cleanup:
+                from ..store.claim_overrides import dependencies_in
+                if dependencies_in(db,unit_id,issue['lifecycle']['member_id']):
+                    allowed.append('start_anyway')
             if action not in allowed:raise TransitionError('Action is not available for the current issue')
             if action=='environment':
                 from .environments import override
@@ -683,6 +685,12 @@ class OperatorActions(Lifecycle):
                 if action=='resume_delivery' and gate['member_id'] is not None:continue
                 if scope is not None and gate['member_id']!=scope:continue
                 if scope is None and gate['member_id'] is not None and action not in {'retry','close'}|DELIVERY_ACTIONS:continue
+                if action=='retry' and gate['code']=='decision_required':
+                    from ..store.claim_overrides import typed_claim, acknowledge_in
+                    if typed_claim(gate,json.loads(gate['details_json'])):
+                        acknowledge_in(self,db,command,unit,gate,selected['id'],revision,
+                            {'operator':row['actor_id'],'request_id':row['id'],'reason':row['reason']})
+                        continue
                 if gate['code'] in resolve:
                     if gate['code']=='operator_sync' and gate['id']!=row['gate_id']:raise TransitionError('Operator intent changed')
                     self._resolve(db,command,gate['id'],{'operator':row['actor_id'],'request_id':row['id'],'verified':True,'observed_at':self.clock()})
