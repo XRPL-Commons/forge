@@ -132,6 +132,31 @@ class DeliveryExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(TransitionError,'independent gate'):
                 commands._ready(db,row)
 
+    def test_owner_job_wait_is_not_offered_as_a_rejected_builder_reservation(self):
+        # Production 2026-10-15: a Forge problem on the owning planning job left
+        # the selector offering planning; reserve_builder rejected it each cycle.
+        self.compose()
+        manifest=self.manifest()
+        owner=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='owner-fence',input_manifest=manifest,
+            launch=Launch('forge/batch','builder[bot]','codex',1000,{},{}))
+        Executions(self.store,clock=lambda:100).collect(self.command(),owner['job_id'],execution_fence='owner-fence',
+            capture={'result':None,'logs':''})
+        self.clean(owner,'owner-fence')
+        command=self.command()
+        def change(db,unit):
+            # The shape ExecutionProblems.defer leaves: a deferred owner job and
+            # its exact memberless forge_problem wait.
+            job=dict(db.execute('SELECT * FROM jobs WHERE id=?',(owner['job_id'],)).fetchone())
+            self.life._result(db,command,job,{'reason':'forge_problem'},'deferred')
+            self.life._open_gate(db,command,'forge_problem',{'reason':'fixture'},job_id=owner['job_id'])
+            return {}
+        self.life._apply(command,'fixture_gate',{},change)
+        selected=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')
+        self.assertIsNone(selected['assignment'])
+        self.assertEqual(selected['pending_reason'],'forge_problem')
+        with self.assertRaisesRegex(TransitionError,'owning builder'):
+            self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='next-fence',input_manifest=manifest)
+
     def test_parallel_parts_resume_same_builder_then_one_exact_review_and_audit(self):
         self.compose(); parent,plan,children=self.plan()
         first,one=self.child(plan,'0'); second,two=self.child(plan,'1')
