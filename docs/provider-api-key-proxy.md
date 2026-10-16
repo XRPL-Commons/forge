@@ -103,8 +103,10 @@ forge setup qualify-boundary --ssh anvil --provider-proxy --apply
 ```
 
 This uses the installed service account and exact image. A host fake upstream
-supplies a real Claude Bash tool call and structured output. It checks shell
-credential absence, host-only key injection, direct-provider denial, another
+supplies a real Claude Bash tool call and structured output. It consumes and deletes the same private credential envelope as production; the
+read-only assignment contains no capability. It checks shell environment absence,
+private-file denial, a separate PID namespace and procfs, alternate process-root
+paths, host-only key injection, direct-provider denial, another
 job's capability, revocation, and verified resource cleanup. It uses synthetic
 credentials and makes no provider API requests. It requires the normal Forge
 private-proc AppArmor policy; it never disables the sandbox to obtain a pass.

@@ -14,9 +14,9 @@ import threading
 import time
 import uuid
 
-from .factory.runner import process_isolation
+from .factory.runner import ContainerRunner, process_isolation
 from .factory.worker_boundary import BoundaryError, WorkerBoundary
-from .provider_proxy import Assignment, Broker, SessionServer
+from .provider_proxy import Assignment, Broker, SessionServer, claude_environment
 
 MODEL = 'claude-sonnet-4-6'
 CAPABILITY = 'synthetic-job-capability-for-qualification'
@@ -42,7 +42,7 @@ class Upstream(BaseHTTPRequestHandler):
                 assert any('forge-shell-private' in json.dumps(result) for result in results)
                 assert not any(result.get('is_error') for result in results)
             tool, arguments = ('StructuredOutput', {'ready': True}) if results else ('Bash', {
-                'command': "python3 -c \"import os; assert not any(os.environ.get(k) for k in ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN']); print('forge-shell-private')\"",
+                'command': 'python3 /work/repository/proxy-privacy.py',
                 'description':'Verify that shell tools cannot read inference credentials'})
             self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
             self.event('message_start', {'type':'message_start','message':{'id':'fixture','type':'message',
@@ -64,10 +64,55 @@ class Upstream(BaseHTTPRequestHandler):
         self.wfile.write(('event: '+name+'\ndata: '+json.dumps(value)+'\n\n').encode()); self.wfile.flush()
 
 
+SHELL_CHECK = r'''import json,os
+from pathlib import Path
+keys = {'ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN'}
+assert not any(os.environ.get(key) for key in keys), 'shell environment exposes credential'
+def unreadable(path):
+    try: Path(path).read_bytes()
+    except OSError: return
+    raise AssertionError('protected credential file is readable')
+unreadable('/work/credentials.json')
+unreadable('/work/home/proxy-private')
+# The public assignment is never a credential envelope, even if readable.
+try: assignment = json.loads(Path('/run/forge-input/assignment.json').read_text())
+except OSError: pass
+else: assert not ({'capability'} | keys).intersection(assignment)
+outer = json.loads(Path('/work/repository/namespace.json').read_text())
+assert os.readlink('/proc/self/ns/pid') != outer['pid_namespace'], 'parent processes remain visible'
+# A private PID namespace and its own procfs must hide the credential-bearing
+# harness, including alternate /proc/<pid>/root and fd paths into its files.
+for process in Path('/proc').iterdir():
+    if not process.name.isdigit(): continue
+    try: namespace = os.readlink(process / 'ns/pid')
+    except OSError: namespace = None
+    assert namespace != outer['pid_namespace'], 'parent procfs exposes the harness'
+    try: values = (process / 'environ').read_bytes().split(b'\0')
+    except OSError: values = []
+    assert not any(value.split(b'=',1)[0].decode(errors='ignore') in keys for value in values), 'process environment exposes credential'
+    unreadable(process / 'root/work/home/proxy-private')
+    unreadable(process / 'root/work/credentials.json')
+print('forge-shell-private')
+'''
+
+
+def handoff(docker, worker):
+    """Use production's private tar envelope, with only a synthetic capability."""
+    runner = ContainerRunner({}, environ={})
+    runner.call = docker
+    runner._send_credentials({'id': worker}, {'id': worker},
+        claude_environment({}, 'http://forge-provider:8082', CAPABILITY, auth_mode='api_key'))
+
+
 WORKER = r'''
 import http.client,json,os,subprocess
 from pathlib import Path
 config=json.loads(Path('/run/forge-input/assignment.json').read_text())
+assert 'capability' not in config
+credentials=json.loads(Path('/work/credentials.json').read_text())
+assert set(credentials)=={'ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN'}
+Path('/work/credentials.json').unlink()
+assert not Path('/work/credentials.json').exists()
 assert subprocess.check_output(['claude','--version'],text=True).startswith('2.1.273 ')
 assert not Path('/provider').exists()
 for host in ('api.anthropic.com','api.openai.com','claude.ai'):
@@ -78,8 +123,14 @@ c=http.client.HTTPConnection('forge-provider',8082,timeout=10)
 c.request('POST','/v1/messages',json.dumps({'model':config['model']}),{'Authorization':'Bearer wrong-job'})
 r=c.getresponse();assert r.status==403;r.read();c.close()
 Path('/work/repository').mkdir();Path('/work/home').mkdir()
+Path('/work/repository/proxy-privacy.py').write_text(Path('/run/forge-input/proxy-privacy.py').read_text())
+Path('/work/repository/namespace.json').write_text(json.dumps({'pid_namespace':os.readlink('/proc/self/ns/pid')}))
+# Positive control: the harness can read this private fixture before Bash's
+# sandbox masks the home. The shell check must fail if that file remains visible.
+private=Path('/work/home/proxy-private');private.write_text(credentials['ANTHROPIC_AUTH_TOKEN'])
+assert private.read_text()==credentials['ANTHROPIC_AUTH_TOKEN']
 env={**os.environ,'HOME':'/work/home','PATH':'/opt/forge/claude-tools:'+os.environ['PATH'],
- 'ANTHROPIC_BASE_URL':'http://forge-provider:8082','ANTHROPIC_AUTH_TOKEN':config['capability'],
+ **credentials,
  'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB':'1','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1','DISABLE_AUTOUPDATER':'1'}
 schema=json.dumps({'type':'object','properties':{'ready':{'type':'boolean'}},'required':['ready'],'additionalProperties':False})
 args=['claude','-p','Run the requested shell privacy check, then return ready true.',
@@ -91,6 +142,7 @@ events=[json.loads(line) for line in run.stdout.splitlines() if line.startswith(
 result=next((event for event in reversed(events) if event.get('type')=='result'),{})
 assert run.returncode==0 and result.get('structured_output')=={'ready':True}, 'native tool loop failed'
 print(json.dumps(dict(pinned_claude_tool_loop=True,shell_credentials_absent=True,
+                     private_files_inaccessible=True,parent_processes_inaccessible=True,consumed_credential_envelope=True,
                      direct_provider_routes_denied=True,other_job_capability_denied=True)))
 '''
 
@@ -99,7 +151,7 @@ def qualify(image, *, docker=None):
     if platform.system() != 'Linux':
         raise BoundaryError('Native provider qualification requires the Linux Docker host')
     def call(args, **kwargs):
-        return subprocess.run(['docker','--host','unix:///var/run/docker.sock',*args],capture_output=True,text=True,
+        return subprocess.run(['docker','--host','unix:///var/run/docker.sock',*args],capture_output=True,text=not isinstance(kwargs.get('input'), bytes),
             check=kwargs.pop('check',True),timeout=kwargs.pop('timeout',90),**kwargs)
     docker = docker or call
     boundary = WorkerBoundary(docker, image=image, work_bytes=256*1024**2)
@@ -116,7 +168,8 @@ def qualify(image, *, docker=None):
                   engine=docker(['version','--format','{{.Server.Version}}']).stdout.strip())
     with tempfile.TemporaryDirectory(prefix='fp-',dir='/tmp') as temporary:
         root = Path(temporary); inputs = root/'inputs'; inputs.mkdir(mode=0o755)
-        target = inputs/'assignment.json'; target.write_text(json.dumps(dict(model=MODEL,capability=CAPABILITY))); target.chmod(0o444)
+        target = inputs/'assignment.json'; target.write_text(json.dumps(dict(model=MODEL))); target.chmod(0o444)
+        check = inputs/'proxy-privacy.py'; check.write_text(SHELL_CHECK); check.chmod(0o444)
         upstream = ThreadingHTTPServer(('127.0.0.1',0),Upstream)
         upstream.requests, upstream.failed = [], False
         alive = threading.Event(); alive.set()
@@ -139,6 +192,7 @@ def qualify(image, *, docker=None):
                 '--tmpfs','/tmp:rw,nosuid,nodev,size=128m',*spec.worker_args,
                 *[item for key,value in spec.environment.items() for item in ('--env',key+'='+value)],
                 '--entrypoint','/usr/local/bin/python3',image,'-I','-c',WORKER])
+            handoff(docker, worker)
             docker(['start',worker]); code=docker(['wait',worker],timeout=150).stdout.strip()
             if code != '0' or upstream.failed or len(upstream.requests) < 2:
                 raise BoundaryError('Native Claude proxy/tool privacy qualification failed')
