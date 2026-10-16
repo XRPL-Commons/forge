@@ -149,9 +149,9 @@ class HarnessTests(unittest.TestCase):
 
     def test_claude_probe_reports_fixed_failure_reasons(self):
         reason = adapter('claude')['probe_failure_reason']
-        self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')
-        self.assertEqual(reason(None, 'Provider usage limit reached', None, 'n'), 'provider_usage_limit')
-        self.assertEqual(reason(None, 'Claude Code did not return a usable result', None, 'n'), 'provider_connection_failed')
+        self.assertEqual(reason(None, 'auth', None, 'n'), 'provider_login_expired')
+        self.assertEqual(reason(None, 'rate_limit', None, 'n'), 'provider_usage_limit')
+        self.assertEqual(reason(None, 'unknown', None, 'n'), 'provider_connection_failed')
         self.assertEqual(reason(None, 'canary', None, 'n'), 'native_sandbox_failed')
         self.assertEqual(reason({'ready': True}, None, 'other', 'n'), 'native_sandbox_failed')
         self.assertEqual(reason({'ready': True}, None, None, 'n'), 'native_sandbox_failed')
@@ -167,13 +167,9 @@ class HarnessTests(unittest.TestCase):
 
     def test_grok_probe_reports_fixed_failure_reasons(self):
         module = adapter('grok')
-        self.assertEqual(module['error_message']('Error: Not signed in. To authenticate without a browser, run: grok login --device-auth'),
-                         'Provider authentication_error; reconnect the account')
-        self.assertEqual(module['error_message']('{"type":"error","message":"insufficient_quota"}'), 'Provider usage limit reached')
-        self.assertEqual(module['error_message']('bwrap: setting up uid map: Permission denied'), 'Grok Build did not return a usable result')
         reason = module['probe_failure_reason']
-        self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')
-        self.assertEqual(reason(None, 'Grok Build did not return a usable result', None, 'n'), 'provider_connection_failed')
+        self.assertEqual(reason(None, 'auth', None, 'n'), 'provider_login_expired')
+        self.assertEqual(reason(None, 'unknown', None, 'n'), 'provider_connection_failed')
         self.assertEqual(reason(None, 'canary', None, 'n'), 'native_sandbox_failed')
         self.assertEqual(reason({'ready': True}, None, 'other', 'n'), 'native_sandbox_failed')
         self.assertIsNone(reason({'ready': True}, None, 'n', 'n'))

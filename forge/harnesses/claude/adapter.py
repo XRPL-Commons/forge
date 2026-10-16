@@ -13,15 +13,6 @@ RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.p
 EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
 
 
-def error_message(text):
-    text = text.lower()
-    if any(s in text for s in ('rate_limit', 'rate limit', 'usage limit', 'credit balance', 'out of credits', 'hit your limit', '429')):
-        return 'Provider usage limit reached'
-    if any(s in text for s in ('authentication_error', 'invalid_api_key', 'not logged in', 'token expired', 'unauthorized', 'login required', '401')):
-        return 'Provider authentication_error; reconnect the account'
-    return 'Claude Code did not return a usable result'
-
-
 # Claude Code terminal result messages share the documented Agent SDK shape.
 # Keep provider diagnostics separate from the authoritative Forge result file.
 RESULT_SUBTYPES = frozenset(('success', 'error_during_execution', 'error_max_turns',
@@ -93,8 +84,9 @@ def failure_diagnostic(code, response, raw, events=()):
     return diagnostic
 
 
-FAILURE_REASONS = {'Provider authentication_error; reconnect the account': 'provider_login_expired',
-                   'Provider usage limit reached': 'provider_usage_limit'}
+FAILURE_REASONS = {'auth': 'provider_login_expired', 'rate_limit': 'provider_usage_limit'}
+FAILURE_MESSAGES = {'auth': 'Provider authentication_error; reconnect the account',
+                    'rate_limit': 'Provider usage limit reached'}
 
 
 def probe_failure_reason(answer, failure, proof, nonce):
@@ -247,10 +239,11 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
         provider = EXECUTION['provider_error'](response)
         if provider is not None and canary is None:
             EXECUTION['write_receipt'](note, 'provider_error', provider_error=provider)
-        message = error_message(raw)
+        failure = (provider or {}).get('code', 'unknown')
+        message = FAILURE_MESSAGES.get(failure, 'Claude Code did not return a usable result')
         print(json.dumps({'type': 'error', 'message': message,
                           'provider_failure': failure_diagnostic(code, response, raw, events)}), flush=True)
-        return None, message
+        return None, failure
     if canary and not canary_completed(events, *canary):
         print(json.dumps(canary_report(events, canary[0])), flush=True)
         raise RuntimeError('Native sandbox canary execution was not verified')

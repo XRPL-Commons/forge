@@ -1,4 +1,4 @@
-"""Local effective-rule inspection and narrow, verified bypass repair."""
+"""Local effective-rule inspection and narrow, verified protection repair."""
 from copy import deepcopy
 from urllib.parse import quote
 
@@ -67,6 +67,64 @@ def amended(value, app_id, slug=None):
     return {'bypass_actors': result}
 
 
+def baseline_rules_writable(rows):
+    # PUT replaces the rule array. Preserve supported parameters exactly and
+    # refuse unfamiliar rule shapes instead of silently dropping protections.
+    parameters = {
+        'pull_request': {'allowed_merge_methods', 'dismiss_stale_reviews_on_push', 'dismissal_restriction',
+                         'require_code_owner_review', 'require_last_push_approval',
+                         'required_approving_review_count', 'required_review_thread_resolution',
+                         'required_reviewers', 'require_extra_approval_for_unattributed_changes'},
+        'required_status_checks': {'required_status_checks', 'strict_required_status_checks_policy',
+                                   'do_not_enforce_on_create'},
+        'required_signatures': set(), 'non_fast_forward': set(), 'required_linear_history': set(),
+        'creation': set(), 'deletion': set(),
+    }
+    for row in rows:
+        fields = row.get('parameters', {})
+        require(set(row) <= {'type', 'parameters'} and row.get('type') in parameters
+                and isinstance(fields, dict) and set(fields) <= parameters[row['type']],
+                'merge_check_source_repair_refused', 'The Forge baseline has unfamiliar rule parameters; inspect it on GitHub before rebinding its App.')
+        # GitHub returns this extension on existing baselines. Never omit it:
+        # a true value is a protection even when an API version omits its docs.
+        if 'require_extra_approval_for_unattributed_changes' in fields:
+            require(type(fields['require_extra_approval_for_unattributed_changes']) is bool,
+                    'merge_check_source_repair_refused')
+
+
+def baseline_amended(value, target, app_id, source_type):
+    """Rebind only a recognized Forge baseline after an App reinstall.
+
+    A named, repository-local baseline and its old App bypass establish the
+    previous Forge binding. Arbitrary or special check sources need an operator.
+    """
+    checks = [check for row in value['rules'] if row.get('type') == 'required_status_checks'
+              for check in (row.get('parameters') or {}).get('required_status_checks', [])
+              if check.get('context') == 'forge/merge-policy']
+    if not checks or all(check.get('integration_id') == app_id for check in checks):
+        return None
+    require(source_type == 'Repository' and value['name'] == 'Forge review baseline'
+            and value['enforcement'] == 'active'
+            and value['conditions'] in (
+                {'ref_name': {'include': [f"refs/heads/{target['branch']}"], 'exclude': []}},
+                {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}}),
+            'merge_check_source_repair_refused', 'Only the repository Forge review baseline can be rebound automatically.')
+    require(len(checks) == 1 and positive(checks[0].get('integration_id'))
+            and any(actor.get('actor_type') == 'Integration'
+                    and actor.get('actor_id') == checks[0]['integration_id']
+                    and actor.get('bypass_mode') == 'pull_request' for actor in value['bypass_actors']),
+            'merge_check_source_repair_refused', 'The previous Forge App source could not be established; inspect the required check on GitHub.')
+    baseline_rules_writable(value['rules'])
+    desired = deepcopy(value)
+    for row in desired['rules']:
+        if row.get('type') == 'required_status_checks':
+            for check in row['parameters']['required_status_checks']:
+                if check.get('context') == 'forge/merge-policy':
+                    check['integration_id'] = app_id
+    desired.update(amended(value, app_id))
+    return desired
+
+
 def app_slug(github, app_id):
     for page in range(1, 11):
         value = github._request('GET', f'/user/installations?per_page=100&page={page}')
@@ -104,7 +162,11 @@ def inspect(github, target, app_id):
                     result['blockers'].append({'code': 'github_admin_required', 'source': 'classic'})
     seen = set()
     for rule in effective:
-        if rule['type'] != 'pull_request' or (rule.get('parameters') or {}).get('required_approving_review_count', 0) <= 0:
+        reviews = rule['type'] == 'pull_request' and (rule.get('parameters') or {}).get('required_approving_review_count', 0) > 0
+        merge_check = rule['type'] == 'required_status_checks' and any(
+            check.get('context') == 'forge/merge-policy'
+            for check in (rule.get('parameters') or {}).get('required_status_checks', []))
+        if not reviews and not merge_check:
             continue
         identifier, kind = rule.get('ruleset_id'), rule.get('ruleset_source_type')
         if (kind, identifier) in seen:
@@ -116,10 +178,20 @@ def inspect(github, target, app_id):
             continue
         step = {'kind': 'github.ruleset.repair_bypass', 'ruleset_id': identifier, 'source_type': kind}
         value = snapshot(github, target, step)
-        desired = amended(value, app_id)
-        if desired['bypass_actors'] == value['bypass_actors']:
+        try:
+            desired = baseline_amended(value, target, app_id, kind)
+        except SetupError as error:
+            result['blockers'].append({'code': error.code, 'ruleset_id': identifier, 'reason': str(error)})
             continue
-        if any(row.get('type') == 'required_signatures' for row in value['rules']):
+        if desired is not None:
+            step['kind'] = 'github.ruleset.repair_baseline'
+        else:
+            if not any(row.get('type') == 'pull_request' and (row.get('parameters') or {}).get('required_approving_review_count', 0) > 0 for row in value['rules']):
+                continue
+            desired = amended(value, app_id)
+            if desired['bypass_actors'] == value['bypass_actors']:
+                continue
+        if desired['bypass_actors'] != value['bypass_actors'] and any(row.get('type') == 'required_signatures' for row in value['rules']):
             result['blockers'].append({'code': 'signing_bypass_refused', 'ruleset_id': identifier,
                                       'reason': 'Separate review bypass from required signatures on GitHub; Forge preserves signing rules.'})
             continue
@@ -141,12 +213,15 @@ def confirmed(github, target, step):
 
 def apply(github, target, step, app_id):
     current = snapshot(github, target, step)
-    require(digest(current) == step['before'], 'plan_stale', 'The bypass list or branch rules changed; create a new plan.')
-    expected = amended(current, app_id, step.get('app_slug'))
+    require(digest(current) == step['before'], 'plan_stale', 'The branch rules changed; create a new plan.')
+    expected = (baseline_amended(current, target, app_id, step['source_type'])
+                if step['kind'] == 'github.ruleset.repair_baseline'
+                else amended(current, app_id, step.get('app_slug')))
     require(expected == step['after'], 'plan_changed')
-    if step['kind'] == 'github.ruleset.repair_bypass':
-        require(not any(row.get('type') == 'required_signatures' for row in current['rules']), 'signing_bypass_refused')
+    if step['kind'] in ('github.ruleset.repair_bypass', 'github.ruleset.repair_baseline'):
+        require(expected['bypass_actors'] == current['bypass_actors'] or not any(
+            row.get('type') == 'required_signatures' for row in current['rules']), 'signing_bypass_refused')
         github._request('PUT', ruleset_path(target, step['source_type'], step['ruleset_id']), expected)
     else:
         github._request('PATCH', classic_path(target) + '/required_pull_request_reviews', expected)
-    require(confirmed(github, target, step), 'github_write_unconfirmed', 'The bypass write has not been observed; inspect before resuming.')
+    require(confirmed(github, target, step), 'github_write_unconfirmed', 'The protection write has not been observed; inspect before resuming.')

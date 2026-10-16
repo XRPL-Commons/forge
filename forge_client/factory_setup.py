@@ -95,7 +95,7 @@ class FactorySetup:
         writes = self.state.setdefault('repository_writes', {})
         uncertain = writes.get(str(target['id'])) or (self.state.get('repository_write') if self.state.get('first_repository') == target else None)
         if uncertain:
-            if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass'):
+            if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass', 'github.ruleset.repair_baseline'):
                 from .rules import confirmed
                 ready = confirmed(self.github, resolved, uncertain)
             else:

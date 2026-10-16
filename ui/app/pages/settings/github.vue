@@ -115,7 +115,7 @@ async function refreshAccess() {
         </div>
         <NuxtLink v-if="settingUp" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
       </div>
-      <p class="mt-1 text-sm text-muted">See the four Forge Apps, their verified permissions, and repository access. Refresh after changing access on GitHub.</p>
+      <p class="mt-1 text-sm text-muted">See your Forge App connections, their verified permissions, and repository access. Refresh after changing access on GitHub.</p>
     </div>
 
     <UAlert v-if="notice && noticeError" id="notice" class="mt-4" role="alert" color="error" variant="subtle" :description="notice" />

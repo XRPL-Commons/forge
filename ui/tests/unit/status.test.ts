@@ -28,6 +28,7 @@ function onboarding(over: Record<string, unknown> = {}): any {
 function settings(over: Record<string, unknown> = {}): any {
   return {
     ok: true, controls_token: 'synthetic',
+    config: { connections: { build: { app_id: 1 }, review: { app_id: 2 }, audit: { app_id: 3 }, controller: { app_id: 4 } } },
     roles: {
       build: { status: 'ok' }, review: { status: 'ok' }, audit: { status: 'ok' }, controller: { status: 'ok' },
     },
@@ -143,8 +144,28 @@ describe('statusRows · github', () => {
       roles: { build: { status: 'ok' }, review: { status: 'stale' }, audit: { status: 'ok' }, controller: { status: 'ok' } },
     }), onboarding: null }, now)
     const github = row(rows, 'github')
-    expect(github.value).toBe('3 of 4 Forge Apps connected')
+    expect(github.value).toBe('3 of 4 Forge Apps have verified access')
     expect(github.tone).toBe('warn')
+  })
+})
+
+describe('statusRows · shared App', () => {
+  const connections = { build: { app_id: 5333360 }, review: { app_id: 5333360 }, audit: { app_id: 5333360 }, controller: { app_id: 5333360 } }
+  function github(roles?: Record<string, unknown>) {
+    return row(statusRows({ factory: null, onboarding: null, settings: settings({ config: { connections }, ...(roles ? { roles } : {}) }) }, now), 'github')
+  }
+  it('counts a verified App once across its four roles', () => {
+    expect(github()).toMatchObject({ value: 'Forge App connected', tone: 'ok' })
+  })
+  it('preserves an actual failed sync instead of claiming disconnection', () => {
+    const roles = Object.fromEntries(Object.keys(connections).map(role => [role, { status: 'unknown', reason: 'GitHub access could not be verified; retry the sync' }]))
+    expect(github(roles)).toMatchObject({ value: 'Forge App · Access unknown', tone: 'warn', detail: 'GitHub access could not be verified; retry the sync' })
+  })
+  it('keeps a single role permission failure visible', () => {
+    expect(github({ ...settings().roles, audit: { status: 'missing_permissions' } })).toMatchObject({ value: 'Forge App · Permissions missing', tone: 'warn' })
+  })
+  it('does not turn an unavailable API response into four disconnected Apps', () => {
+    expect(row(statusRows({ factory: null, onboarding: null, settings: { ok: false } }, now), 'github')).toMatchObject({ value: 'Not available', tone: 'muted' })
   })
 })
 

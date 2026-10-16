@@ -8,13 +8,9 @@ import { formatAge } from './format'
 import { maxAge, type FactoryView } from './factory'
 import type { OnboardingView } from './onboarding'
 
-// Named `*Summary` (not `RoleAccess`/`SettingsView`) because those are the
-// contract-level names (operator-api-contracts.md §2's full `RoleAccess` and
-// `SettingsView` types) that another page will import in full; statusRows()
-// only ever reads `roles[*].status`, so it declares its own minimal local
-// shape rather than claim those names for itself.
-interface RoleAccessSummary { status: 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions' | string }
-export interface SettingsSummary { roles?: Record<string, RoleAccessSummary> }
+import { ACCESS_STATUS_NAMES, appConnectionGroups, appAccessRole, type AppAccessSummary } from './repositories'
+
+export type SettingsSummary = AppAccessSummary
 
 interface StatusSources {
   factory: FactoryView | null
@@ -83,13 +79,18 @@ function accountsRow(onboarding: OnboardingView | null): StatusRow {
 }
 
 function githubRow(settings: SettingsSummary | null): StatusRow {
-  if (!settings) return notAvailable('github', 'GitHub access')
-  const roles = Object.values(settings.roles ?? {})
-  const total = roles.length || 4
-  const ok = roles.filter(role => role.status === 'ok').length
+  if (!settings || settings.ok === false || !settings.roles) return notAvailable('github', 'GitHub access')
+  const groups = appConnectionGroups(settings)
+  const ready = groups.filter(roles => roles.every(role => settings.roles?.[role]?.status === 'ok')).length
+  const role = appAccessRole(settings, groups[0]!)
+  const access = settings.roles[role]
+  const value = groups.length === 1
+    ? ready === 1 ? 'Forge App connected' : `Forge App · ${ACCESS_STATUS_NAMES[access?.status ?? 'unknown'] ?? 'Access unknown'}`
+    : ready === groups.length ? 'All Forge Apps connected' : `${ready} of ${groups.length} Forge Apps have verified access`
   return {
-    id: 'github', label: 'GitHub access', value: ok < total ? `${ok} of ${total} Forge Apps connected` : 'All Forge Apps connected',
-    tone: ok < total ? 'warn' : 'ok', to: '/settings/github', linkLabel: 'Manage',
+    id: 'github', label: 'GitHub access', value,
+    tone: ready < groups.length ? 'warn' : 'ok', to: '/settings/github', linkLabel: 'Manage',
+    ...(groups.length === 1 && access?.reason ? { detail: access.reason } : {}),
   }
 }
 

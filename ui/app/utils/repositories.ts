@@ -311,8 +311,31 @@ export interface ConnectionCardModel {
   recommendation: string
 }
 
+// Roles remain independent, but several roles can share one GitHub App.
+export interface AppAccessSummary {
+  ok?: boolean
+  config?: { connections?: Partial<Record<AppRole, { app_id: number }>> }
+  roles?: Partial<Record<AppRole, { status: string; reason?: string | null }>>
+}
+
+export function appConnectionGroups(settings: AppAccessSummary, onboarding?: OnboardingSummary | null): AppRole[][] {
+  const groups = new Map<string, AppRole[]>()
+  for (const role of APP_ROLES) {
+    const id = settings.config?.connections?.[role]?.app_id ?? onboarding?.roles?.[role]?.app_id
+    const key = id ? String(id) : 'unconfigured'
+    groups.set(key, [...(groups.get(key) ?? []), role])
+  }
+  return [...groups.values()]
+}
+
+export function appAccessRole(settings: AppAccessSummary, roles: AppRole[]): AppRole {
+  // Keep every role's requirement: the shared App is ready only when all are.
+  return roles.find(role => settings.roles?.[role]?.status !== 'ok') ?? roles[0]!
+}
+
 export function connectionCards(settings: SettingsView, onboarding: OnboardingSummary | null | undefined, format: DateFormatter = utcTime): ConnectionCardModel[] {
-  return APP_ROLES.map((role) => {
+  return appConnectionGroups(settings, onboarding).map((roles) => {
+    const role = appAccessRole(settings, roles)
     const roleAccess = settings.roles[role]
     const connection = settings.config.connections?.[role]
     const registered = onboarding?.roles?.[role]
@@ -320,7 +343,7 @@ export function connectionCards(settings: SettingsView, onboarding: OnboardingSu
     // Credentials, not registration: an App can exist on GitHub while
     // factory.json holds no app_id for it, which is what "unverified" means.
     const unverified = !connection?.app_id && !!registered?.registered
-    const count = settings.repositories.filter(repo => repo.access?.[role] === 'ready').length
+    const count = settings.repositories.filter(repo => roles.every(role => repo.access?.[role] === 'ready')).length
     const observation = roleAccess.status === 'ok'
       ? `${count} ${count === 1 ? 'repository' : 'repositories'} with verified access`
       : roleAccess.observed_at
@@ -328,18 +351,22 @@ export function connectionCards(settings: SettingsView, onboarding: OnboardingSu
         : 'Access has not been verified.'
     return {
       role,
-      label: ROLE_LABELS_APP[role],
-      purpose: ROLE_PURPOSES[role],
-      identity: slug || 'No App connected',
+      label: roles.length > 1 ? 'Forge App' : ROLE_LABELS_APP[role],
+      purpose: roles.map(role => ROLE_PURPOSES[role]).join(' '),
+      identity: slug || (connection?.app_id ? `App ${connection.app_id}` : 'No App connected'),
       status: unverified ? UNVERIFIED_INSTALLATION : (ACCESS_STATUS_NAMES[roleAccess.status] ?? roleAccess.status),
       ready: !unverified && ['ok', 'ready'].includes(roleAccess.status),
       observation,
       action: connectionAction(role, roleAccess, { ...registered, app_id: connection?.app_id ?? null }),
-      errors: [
-        ...(roleAccess.reason ? [roleAccess.reason] : []),
-        ...(roleAccess.missing_permissions?.length ? ['Missing ' + roleAccess.missing_permissions.join(', ')] : []),
-      ],
-      recommendation: roleAccess.missing_recommended?.length ? 'Recommended ' + roleAccess.missing_recommended.join(', ') : '',
+      errors: [...new Set(roles.flatMap(role => {
+        const access = settings.roles[role]
+        return [
+          ...(access.reason ? [access.reason] : []),
+          ...(access.missing_permissions?.length ? ['Missing ' + access.missing_permissions.join(', ')] : []),
+        ]
+      }))],
+      recommendation: [...new Set(roles.flatMap(role => settings.roles[role].missing_recommended ?? []))]
+        .map(permission => 'Recommended ' + permission).join(', '),
     }
   })
 }

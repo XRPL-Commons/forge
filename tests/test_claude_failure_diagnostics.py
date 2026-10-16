@@ -145,11 +145,11 @@ class ClaudeFailureDiagnosticTests(unittest.TestCase):
         self.assertNotIn('last_api_error', lines[0]['provider_failure'])
         self.assertNotIn('private', raw)
 
-    def test_existing_auth_quota_classifications_and_success_authority_stay_unchanged(self):
-        for reason, expected in [('authentication_error', 'Provider authentication_error; reconnect the account'),
-                                 ('rate_limit', 'Provider usage limit reached')]:
-            result, lines, _ = self.invoke(1, [dict(type='result', subtype='error_during_execution', is_error=True, errors=[reason])])
-            self.assertEqual(result, (None, expected)); self.assertEqual(lines[0]['message'], expected)
+    def test_typed_auth_quota_classifications_and_success_authority(self):
+        for status, code, expected in [(401, 'auth', 'Provider authentication_error; reconnect the account'),
+                                       (429, 'rate_limit', 'Provider usage limit reached')]:
+            result, lines, _ = self.invoke(1, [dict(type='result', subtype='error_during_execution', is_error=True, api_error_status=status)])
+            self.assertEqual(result, (None, code)); self.assertEqual(lines[0]['message'], expected)
         result, lines, _ = self.invoke(0, [dict(type='result', subtype='success', is_error=False, structured_output={'ready': True})])
         self.assertEqual(result, ({'ready': True}, None)); self.assertEqual(lines, [])
         result, lines, _ = self.invoke(2, [dict(type='result', subtype='success', is_error=False, structured_output={'ready': True})])

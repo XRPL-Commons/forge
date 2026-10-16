@@ -167,7 +167,7 @@ function drawAccessory(ctx: CanvasRenderingContext2D, kind: CubeAccessory, c: nu
 }
 
 // How a mood sets the face.
-function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth'> {
+export function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth'> {
   switch (mood) {
     case 'busy': return { eyes: 'open', look: 0, lookY: c * 0.07, mouth: 'flat' }
     case 'worried': return { eyes: 'worried', look: 0, lookY: -c * 0.02, mouth: 'wobble' }
@@ -183,7 +183,7 @@ function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 'look' 
 export interface Motion { dx: number; dy: number; sx: number; sy: number; blink: boolean }
 // Idle motion at time t (ms): a hop that started at `hop`, then a blink every
 // few seconds and a small per-mood bob. `still` gives the resting pose.
-function cubeMotion(t: number, hop: number, seed: number, c: number, mood: CubeMood, still: boolean): Motion {
+export function cubeMotion(t: number, hop: number, seed: number, c: number, mood: CubeMood, still: boolean): Motion {
   let dx = 0, dy = 0, sx = 1, sy = 1
   if (still) return { dx, dy, sx, sy, blink: false }
   const k = (t - hop) / 560
@@ -214,7 +214,7 @@ function drawScorch(ctx: CanvasRenderingContext2D, x: number, y: number, r: numb
   ctx.beginPath(); ctx.ellipse(x, y, r * 0.45, r * 0.3, 0, 0, TAU); ctx.fillStyle = '#3a2c25'; ctx.fill()
 }
 
-function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean, col = '#7d858f') {
+export function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean, col = '#7d858f') {
   for (let i = 0; i < 3; i++) {
     const ph = still ? i / 3 + 0.15 : ((t / 1600) + i / 3) % 1
     ctx.globalAlpha = (1 - ph) * 0.55; ctx.beginPath()
@@ -223,7 +223,7 @@ function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, s: numbe
   ctx.globalAlpha = 1
 }
 
-function drawZzz(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean) {
+export function drawZzz(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean) {
   ctx.fillStyle = '#8b929c'; ctx.textAlign = 'left'
   for (let i = 0; i < 2; i++) {
     const ph = still ? 0.35 + i * 0.4 : ((t / 1900) + i * 0.5) % 1
@@ -478,7 +478,7 @@ type WorkerFace = Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth' | 'blink
 
 // A worker in its S×S square at the origin; callers translate to place it
 // elsewhere (the sign-in scene's shop floor). `lift` raises each foot.
-function drawWorker(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, face: WorkerFace, lift: [number, number] = [0, 0], alpha = 1) {
+export function drawWorker(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, face: WorkerFace, lift: [number, number] = [0, 0], alpha = 1) {
   const shape = workerShape(S)
   // A hop lifts the whole worker; a step lifts one foot and the body a little.
   const bob = face.dy - Math.max(lift[0], lift[1]) * 0.5
