@@ -18,6 +18,10 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
     if not members: return result(reason='no_current_members')
     gates=applicable_gates(db,unit,candidate_id=unit['current_candidate_id'])
     if any(g['member_id'] is None and g.get('job_id') is None for g in gates): return result(reason='unit_blocked')
+    # The owning builder reservation refuses every memberless gate, including
+    # an exact wait on its own previous job such as a Forge problem. Offering
+    # that stage anyway made dispatch retry a rejected reservation each cycle.
+    owner_blocked=next((g['code'] for g in gates if g['member_id'] is None),None)
     active=[dict(row) for row in db.execute('SELECT j.id,j.cleanup,j.outcome,t.task_id,d.executor FROM jobs j '
         'LEFT JOIN job_tasks t ON t.job_id=j.id LEFT JOIN delivery_tasks d ON d.id=t.task_id '
         'WHERE j.unit_id=? AND (j.cleanup=0 OR j.outcome IS NULL)',(unit['id'],))]
@@ -34,6 +38,7 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
             if active: return result(reason='child_cleanup_pending')
             if allowed_members is not None and not set(members)<=allowed_members: return result(reason='member_blocked')
             if scoped_task_gates_in(db,unit,members,candidate_id=unit['current_candidate_id']): return result(reason='member_blocked')
+            if owner_blocked: return result(reason=owner_blocked)
             return result([{'stage':'integration','input_manifest':builder_manifest_in(db,unit,'integration',base_oid,policy_hash)}])
         conflicts=environment_conflicts_in(db,unit,plan_id=plan['id'])
         conflicted={row['task_id'] for row in conflicts}
@@ -63,6 +68,7 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
     if recovery_pending: return result(reason='recovery_pending')
     # Planning is read-only and may propose independent work around scoped blockers.
     if all(scoped_task_gates_in(db,unit,[member]) for member in members): return result(reason='member_blocked')
+    if owner_blocked: return result(reason=owner_blocked)
     return result([{'stage':'planning','input_manifest':builder_manifest_in(db,unit,'planning',base_oid,policy_hash)}])
 
 

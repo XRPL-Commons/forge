@@ -274,6 +274,57 @@ class SmartHTTPTests(StoreTests):
         self.assertIsNotNone(self.store.session(self.session_id)['revoked_at'])
         self.assertTrue(all('source_digest' in r['details'] for r in receipts))
 
+    def test_clone_with_gzip_encoded_upload_request_is_served(self):
+        # Git compresses an upload-pack request above 1 KiB. A repository with
+        # many refs therefore sends a gzip body on its first clone negotiation.
+        env = {**environment(), 'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.test',
+               'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.test'}
+        tree = run_git(['--git-dir', str(self.gitdir), 'rev-parse', self.oid + '^{tree}']).decode().strip()
+        branches = {}
+        for index in range(60):
+            commit = run_git(['--git-dir', str(self.gitdir), 'commit-tree', tree, '-p', self.oid, '-m', f'branch {index}'], env=env).decode().strip()
+            run_git(['--git-dir', str(self.gitdir), 'update-ref', f'refs/heads/topic-{index}', commit])
+            branches[f'topic-{index}'] = commit
+        broker = self.broker(self.cache)
+        socketpath = self.root / 'session.sock'
+        with SessionServer(socketpath, broker) as service:
+            thread = threading.Thread(target=service.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with Frontend(('127.0.0.1', 0), str(socketpath)) as frontend:
+                    front_thread = threading.Thread(target=frontend.serve_forever, daemon=True)
+                    front_thread.start()
+                    try:
+                        url = f'http://127.0.0.1:{frontend.server_port}/github/acme/project.git'
+                        cloned = self.root / 'checkout'
+                        run_git(['clone', '--no-checkout', url, str(cloned)])
+                        self.assertEqual(run_git(['-C', str(cloned), 'rev-parse', 'origin/topic-59']).decode().strip(),
+                                         branches['topic-59'])
+                    finally:
+                        frontend.shutdown()
+                        front_thread.join()
+            finally:
+                service.shutdown()
+                thread.join()
+        uploads = [r['details'] for r in self.store.receipts('aux:triage:1')
+                   if r['details'].get('request_kind') == 'upload' and r['details']['outcome'] != 'started']
+        self.assertTrue(uploads)
+        self.assertTrue(all(r['outcome'] == 'served' for r in uploads), uploads)
+        # The receipt records the decoded wants, not an opaque compressed body.
+        self.assertTrue(set(branches.values()) <= {oid for r in uploads for oid in r['requested_oids']})
+
+    def test_gzip_upload_request_is_bounded_and_must_be_complete(self):
+        import gzip
+        from forge.mirror.service import decode_upload
+        body = ('0032want ' + 'a' * 40 + '\n0000').encode()
+        self.assertEqual(decode_upload(gzip.compress(body)), body)
+        self.assertEqual(decode_upload(body), body)
+        for hostile in (gzip.compress(body)[:-3], gzip.compress(body) + b'trailing', b'\x1f\x8bnot-gzip',
+                        gzip.compress(b'0' * (8 * 1024 * 1024 + 1))):
+            with self.assertRaises(MirrorError) as raised:
+                decode_upload(hostile)
+            self.assertEqual(raised.exception.reason, 'request_invalid')
+
     def test_base_object_handle_pins_exact_commit_and_reader_never_checks_out(self):
         repository = Repository(1, 'acme/project', 10, 'Organization', 20, actual_access=True)
         with self.cache.base_objects(repository, [self.oid], digest(self.source)) as handle:

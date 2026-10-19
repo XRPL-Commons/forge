@@ -80,6 +80,10 @@ class HumanPullRunner(Runner):
     def capture(self,job):
         result=super().capture(job)
         result['result']['outcome']=self.outcomes.get(job['role'],'pass')
+        if result['result']['outcome']=='blocked_environment':
+            result['result'].update(blocker='dependency_access',required_services=[],
+                summary='Forge could not prepare the disposable checkout before work started.',
+                operator_summary='Checkout preparation failed.')
         return result
 
 
@@ -206,6 +210,65 @@ class ReviewPullPipelineTests(unittest.TestCase):
         self.runner.outcomes.clear();self.github.pull['head']['sha']='d'*40
         self.complete()
         self.assertEqual(self.runner.launched,['review','review','audit'])
+        self.assert_no_builder_or_merge()
+
+    def test_environment_blocked_review_waits_for_bounded_retest_without_errors(self):
+        # Production 2026-10-15: a memberless review reporting blocked_environment
+        # raised TransitionError in every results cycle for ten hours.
+        self.runner.outcomes['review']='blocked_environment';self.discover()
+        reports=[self.cycle() for _ in range(4)]
+        self.assertEqual([r['stages'].get('results') for r in reports
+            if any(isinstance(row,dict) and row.get('error') for row in r['stages'].get('results',{}).get('items',[]))],[])
+        self.assertEqual(self.runner.launched,['review'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual([row[0] for row in db.execute("SELECT outcome FROM jobs")],['deferred'])
+            self.assertEqual(db.execute("SELECT count(*) FROM events WHERE kind='decision_rejected'").fetchone()[0],0)
+            gate=json.loads(db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND code='review_source' "
+                                       "AND resolved_at IS NULL",(self.unit,)).fetchone()[0])
+            self.assertEqual((gate['reason'],gate['cause'],gate['attempt']),('review_unavailable','dependency_access',1))
+            self.assertEqual(db.execute('SELECT count(*) FROM attempt_failures').fetchone()[0],0)
+        self.assertEqual(self.successes(),[])
+        # The same revision is retested after its bounded delay.
+        self.runner.outcomes.clear()
+        self.complete()
+        self.assertEqual(self.runner.launched,['review','review','audit'])
+        self.assert_no_builder_or_merge()
+
+    def test_drain_cycle_with_dispatch_disabled_does_not_fence_running_review(self):
+        # An account check drains with enabled=False. Production fenced every
+        # running human-PR review on each check and recorded stale_failure.
+        self.runner.hold=True;self.discover()
+        self.cycle();self.cycle()
+        self.assertEqual(self.runner.launched,['review'])
+        running=self.runner.assignments[-1]['id']
+        self.config['enabled']=False
+        try:
+            for _ in range(2):self.cycle()
+        finally:
+            self.config['enabled']=True
+        with self.store.read_snapshot() as db:
+            self.assertFalse(db.execute('SELECT fenced FROM jobs WHERE id=?',(running,)).fetchone()[0])
+            self.assertIsNone(db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='review_source' AND resolved_at IS NULL",(self.unit,)).fetchone())
+        self.runner.hold=False
+        self.runner.containers[running].update(status='exited',running=False)
+        self.complete()
+        self.assertEqual(self.runner.launched,['review','audit'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT outcome FROM jobs WHERE id=?",(running,)).fetchone()[0],'success')
+        self.assert_no_builder_or_merge()
+
+    def test_repeated_environment_blocks_stop_retesting_until_a_new_revision(self):
+        self.runner.outcomes['review']='blocked_environment';self.discover()
+        for _ in range(40):
+            self.now+=540;self.cycle()
+        self.assertEqual(self.runner.launched,['review']*4)
+        with self.store.read_snapshot() as db:
+            gate=json.loads(db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND code='review_source' "
+                                       "AND resolved_at IS NULL",(self.unit,)).fetchone()[0])
+        self.assertEqual((gate['attempt'],gate['retry_at']),(4,None))
+        self.runner.outcomes.clear();self.github.pull['head']['sha']='d'*40
+        self.complete()
+        self.assertEqual(self.runner.launched,['review']*5+['audit'])
         self.assert_no_builder_or_merge()
 
     def test_forge_only_scope_excludes_human_pr(self):

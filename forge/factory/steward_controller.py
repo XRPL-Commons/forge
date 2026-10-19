@@ -98,12 +98,12 @@ class StewardController:
             raise
         if result.get('reserved'):
             schedules.clear(unit_id, owner='steward')
-        elif result.get('pending') in {'cycle_limit','physical_retry_limit'}:
+        elif result.get('pending') in {'cycle_limit','physical_retry_limit','retry_unauthorized'}:
             with self.store.read_snapshot() as db:
                 exists = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='decision_required' AND subject_key='unit' AND resolved_at IS NULL", (unit_id,)).fetchone()
             if not exists:
                 self.commands.limit_wait(self._command(unit_id), trigger_key=result['trigger_key'], reason=result['pending'])
-        elif result.get('pending') not in {'active', 'decision_required', 'cycle_limit', 'physical_retry_limit'}:
+        elif result.get('pending') not in {'active', 'decision_required', 'cycle_limit', 'physical_retry_limit', 'retry_unauthorized'}:
             schedules.record(unit_id, owner='steward', reason=result['pending'])
         return result
 
@@ -129,6 +129,11 @@ class StewardController:
             cycles = db.execute('SELECT count(DISTINCT cycle) FROM steward_turns WHERE unit_id=?', (unit_id,)).fetchone()[0]
             if retry_of and prior['physical_attempt'] >= 3:
                 return {'unit_id':unit_id,'pending':'physical_retry_limit','trigger_key':key}
+            from ..store.steward import reusable_deferral_in
+            if retry_of and not reusable_deferral_in(db, retry_of, self.clock()):
+                # The reservation would refuse this physical retry. Ask the
+                # operator once instead of launching and rejecting every cycle.
+                return {'unit_id':unit_id,'pending':'retry_unauthorized','trigger_key':key}
             if not retry_of and cycles >= 3:
                 return {'unit_id':unit_id,'pending':'cycle_limit','trigger_key':key}
         slot = next((f'steward-{i+1}' for i in range(self.config['slots']['steward'])

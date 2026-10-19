@@ -10,6 +10,7 @@ import socketserver
 import struct
 import threading
 import time
+import zlib
 
 from .git_store import MAX_REQUEST, HttpBody
 from .policy import MirrorError, authorize, canonical_name
@@ -50,6 +51,26 @@ def send(stream, metadata, body):
     chunks = body.chunks() if isinstance(body, HttpBody) else (body, )
     for chunk in chunks:
         stream.sendall(chunk)
+
+
+def decode_upload(body):
+    """Return the pkt-line request that Git compresses above 1 KiB.
+
+    Git sends `Content-Encoding: gzip` for larger upload-pack requests, such as
+    the first clone negotiation of a repository with many refs. The frontend
+    forwards only bounded framing, so the broker recognizes the gzip magic: a
+    pkt-line request always starts with four hex digits instead.
+    """
+    if body[:2] != b'\x1f\x8b':
+        return body
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        data = decoder.decompress(body, MAX_REQUEST + 1)
+    except zlib.error:
+        raise MirrorError('request_invalid') from None
+    if len(data) > MAX_REQUEST or decoder.unconsumed_tail or not decoder.eof or decoder.unused_data:
+        raise MirrorError('request_invalid')
+    return data
 
 
 def wants(body):
@@ -118,6 +139,8 @@ class Broker:
                     or kind == 'advertisement' and body
                     or kind == 'upload' and metadata['content_type'] != 'application/x-git-upload-pack-request'):
                 raise MirrorError('request_invalid')
+            if kind == 'upload':
+                body = decode_upload(body)
             details.update(repository=name, request_kind=kind, **wants(body))
             session = self._session()
             repository = self.resolve(name)

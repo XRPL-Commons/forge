@@ -8,6 +8,11 @@ from .models import Command, TransitionError
 from .runtime import writable
 from .transitions import Lifecycle, _id, _json, _unit, applicable_gates, manifest_hash
 
+# A review-only job has no issue members, so member-scoped worker claims and
+# Forge-problem holds cannot pin it. Its wait belongs to the exact PR revision:
+# bounded timed retests, then the next human revision or an operator choice.
+REVIEW_RETRY_SECONDS = (300, 1800, 7200)
+
 SHA = re.compile(r'[0-9a-f]{40}')
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 
@@ -123,6 +128,36 @@ class ReviewPullRequests(Lifecycle):
         self._event(db, command, 'phase_changed', {'before': unit['state'], 'after': 'closed', 'reason': reason})
         return self._save(db, command, 'retire_review_pull', {'reason': reason}, {'admitted': False, 'reason': reason})
 
+    def defer_review(self, command, job_id, *, execution_fence, input_manifest, evidence, reason):
+        """Hold a review-only revision whose Review or Audit could not run.
+
+        The job records a noncharged deferral. A unit-level review_source wait
+        retests the same revision after a bounded delay; a changed revision
+        releases it at once through the ordinary observation path.
+        """
+        if not isinstance(evidence, dict) or not evidence or not isinstance(reason, str) or not reason:
+            raise TransitionError('review deferral requires structured evidence and a reason')
+        payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest,
+                       evidence=evidence, reason=reason)
+        def change(db, unit):
+            if not review_only_in(db, unit['id']):
+                raise TransitionError('review deferral requires a review-only pull request')
+            job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
+            if job['role'] not in {'review', 'audit'}:
+                raise TransitionError('Review-only pull requests cannot run implementation work')
+            self._result(db, command, job, evidence, 'deferred' if current else 'stale_deferred')
+            if not current:
+                return {'accepted': False, 'charged': False}
+            prior = db.execute("SELECT count(*) FROM unit_gates WHERE unit_id=? AND code='review_source' "
+                "AND json_extract(details_json,'$.reason')='review_unavailable' "
+                "AND json_extract(details_json,'$.candidate_id')=?", (unit['id'], job['candidate_id'])).fetchone()[0]
+            retry_at = self.clock() + REVIEW_RETRY_SECONDS[prior] if prior < len(REVIEW_RETRY_SECONDS) else None
+            gate_id = self._open_gate(db, command, 'review_source', {
+                'source': 'review_pull', 'reason': 'review_unavailable', 'cause': reason,
+                'candidate_id': job['candidate_id'], 'job_id': job_id, 'retry_at': retry_at, 'attempt': prior + 1})
+            return {'accepted': True, 'charged': False, 'gate_id': gate_id, 'retry_at': retry_at}
+        return self._apply(command, 'defer_review_pull', payload, change)
+
     def observe(self, source, *, policy_hash, scope='all', enabled=True, hold_labels=('hold', 'blocked'), expected_version=None):
         """Admit/refresh one complete PR observation. Performs no remote writes."""
         if scope not in {'all', 'forge'} or type(enabled) is not bool:
@@ -154,6 +189,11 @@ class ReviewPullRequests(Lifecycle):
             carry = []
             if existing and (source['state'] == 'closed' or source['merged']):
                 return self._retire_in(db, dict(existing), reason='pull_request_closed')
+            if blocked == 'runtime_disabled':
+                # A maintenance drain or account check runs cycles with dispatch
+                # disabled. That stops new work; it says nothing about this PR
+                # revision, so it must not fence a running Review or Audit.
+                return {'unit_id': existing['id'], 'admitted': False, 'reason': blocked}
             if existing and existing['base_branch'] != source['base']['ref']:
                 # A new target branch is a new unit identity. Carry independent
                 # unit holds to the successor; old worker/receipt histories stay.
@@ -188,7 +228,12 @@ class ReviewPullRequests(Lifecycle):
             unchanged = current_source == source and current is not None and current['policy_hash'] == policy_hash
             # A rejection is released by a new source, not by the next poll.
             admission_reasons = {'scope_excluded', 'runtime_disabled', 'repository_disabled', 'pull_closed', 'pull_draft', 'label_hold'}
-            release = [g for g in own_gates if not unchanged or json.loads(g['details_json']).get('reason') in admission_reasons]
+            now = self.clock()
+            def due(details):
+                return (details.get('reason') == 'review_unavailable' and type(details.get('retry_at')) in (int, float)
+                        and details['retry_at'] <= now)
+            release = [g for g in own_gates if not unchanged or json.loads(g['details_json']).get('reason') in admission_reasons
+                       or due(json.loads(g['details_json']))]
             policy_wait = db.execute("SELECT g.id,e.status,c.fencing_generation,c.membership_generation FROM unit_gates g "
                 "JOIN external_effects e ON e.id=json_extract(g.details_json,'$.effect_id') "
                 "JOIN candidate_effects c ON c.effect_id=e.id WHERE g.unit_id=? AND g.candidate_id=? "

@@ -45,6 +45,13 @@ class ResultController:
     def _defer(self, job, evidence, code, details):
         return self.commands.defer_job(self._command(job), job['id'], **self._args(job, evidence), code=code, details=details)
 
+    def _review_wait(self, job, evidence, reason):
+        # Member-scoped claims and Forge-problem holds cannot pin a memberless
+        # human PR review; its wait is bound to the exact revision instead.
+        from ..store.review_pulls import ReviewPullRequests
+        return ReviewPullRequests(self.store, clock=self.clock).defer_review(self._command(job), job['id'],
+            **self._args(job, evidence), reason=reason)
+
     @staticmethod
     def _current_pr(pr, job):
         if job.get('review_source'):
@@ -131,9 +138,14 @@ class ResultController:
         from .preparation_problems import problem as preparation_problem
         preparation = preparation_problem(self.store, job)
         if preparation is not None:
+            if review_only:
+                return {'job_id': job_id, **self._review_wait(job, preparation, preparation['gate'])}
             return {'job_id': job_id, **self._defer(job, preparation, preparation['gate'], preparation)}
         from .startup_problems import problem
         startup = problem(job, capture)
+        if startup is not None and review_only:
+            return {'job_id': job_id, **self._review_wait(job,
+                {'reason': 'forge_problem', 'capture_job_id': job_id, 'startup': startup}, 'forge_problem')}
         if startup is not None:
             return {'job_id': job_id, **self._defer(job,
                 {'reason': 'forge_problem', 'capture_job_id': job_id, 'startup': startup}, 'forge_problem', startup)}
@@ -142,6 +154,9 @@ class ResultController:
         execution = classify(job, capture, self.clock())
         if execution is not None:
             kind, details = execution['kind'], execution['details']
+            if kind == 'forge_problem' and review_only:
+                return {'job_id': job_id, **self._review_wait(job,
+                    {'reason': 'forge_problem', 'capture_job_id': job_id, 'execution': details}, 'forge_problem')}
             if kind == 'forge_problem':
                 return {'job_id': job_id, **ExecutionProblems(self.store, clock=self.clock).defer(
                     self._command(job), job_id, execution_fence=job['execution_fence'],
@@ -151,6 +166,8 @@ class ResultController:
             if kind == 'provider_error':
                 return {'job_id': job_id, **self._defer(job, details, 'provider_unavailable',
                     {**details, 'provider_id': job['provider_id'], 'provider': job['provider']})}
+            if kind == 'oom' and review_only:
+                return {'job_id': job_id, **self._review_wait(job, details, 'resources')}
             if kind == 'oom':
                 retry = self.requirements.classify(job, capture, None) if self.requirements is not None else None
                 return {'job_id': job_id, **(retry if retry is not None else
@@ -161,6 +178,9 @@ class ResultController:
             report = None
         if report is None:
             fault = contract_problem(job, capture)
+            if fault is not None and review_only:
+                return {'job_id': job_id, **self._review_wait(job,
+                    {'reason': 'forge_problem', 'capture_job_id': job_id, 'execution': fault}, 'forge_problem')}
             if fault is not None:
                 return {'job_id': job_id, **ExecutionProblems(self.store, clock=self.clock).defer(
                     self._command(job), job_id, execution_fence=job['execution_fence'],
@@ -219,6 +239,8 @@ class ResultController:
         if (capture.get('execution') or {}).get('oom_killed'):
             return {'job_id': job_id, **self._defer(job, evidence, 'environment',
                 {'reason': 'resources', 'job_id': job_id, 'oom_killed': True})}
+        if report and report['outcome'] == 'blocked_environment' and review_only:
+            return {'job_id': job_id, **self._review_wait(job, evidence, report['blocker'] or 'environment')}
         if report and report['outcome'] == 'blocked_environment':
             from ..store.worker_claims import WorkerClaims
             return {'job_id': job_id, **WorkerClaims(self.store, clock=self.clock).defer_claim(
