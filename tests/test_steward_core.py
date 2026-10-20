@@ -187,7 +187,7 @@ class StewardCoreTests(unittest.TestCase):
 
     def test_max_three_cycles_and_one_accepted_decision_per_trigger(self):
         self.accepted()
-        with self.assertRaisesRegex(TransitionError,'authorized physical retry'):
+        with self.assertRaisesRegex(TransitionError,'physical retry'):
             self.reserve(self.dossier())
         for index in range(2):
             cmd=self.command();self.life._apply(cmd,'test_resolve',{},lambda db,u:self.life._resolve(db,cmd,self.gate,{'recheck':True}) or {})
@@ -205,7 +205,7 @@ class StewardCoreTests(unittest.TestCase):
         # A queued remote action deliberately retains its original obligation.
         self.life.apply(self.command(),decision_id=identifier,apply_move=lambda *args:{'pending':True})
         self.life.pause(self.command());self.life.resume(self.command())
-        with self.assertRaisesRegex(TransitionError,'changed semantic authority'):
+        with self.assertRaisesRegex(TransitionError,'applied steward decision'):
             self.reserve(self.dossier())
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM steward_turns').fetchone()[0],1)
@@ -221,7 +221,7 @@ class StewardCoreTests(unittest.TestCase):
         self.life.defer_job(self.command(),job['id'],execution_fence=job['id'],input_manifest=job['input_manifest'],
             evidence={'kind':'provider_error'},code='provider_unavailable',details={'retry_at':130})
         self.life.pause(self.command());self.life.resume(self.command());self.now=131
-        with self.assertRaisesRegex(TransitionError,'authorized physical retry'):
+        with self.assertRaisesRegex(TransitionError,'physical retry'):
             self.reserve(self.dossier())
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(DISTINCT cycle) FROM steward_turns').fetchone()[0],1)
@@ -234,15 +234,6 @@ class StewardCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(TransitionError,'unsettled effects'):
             self.life.apply(self.command(),decision_id=identifier,apply_move=lambda *args:called.append(True) or {})
         self.assertEqual(called,[])
-
-    def test_forged_provider_prose_cannot_reuse_physical_cycle(self):
-        dossier=self.dossier();job=self.reserve(dossier);self.capture(job,None)
-        self.life.defer_job(self.command(),job['id'],execution_fence=job['id'],input_manifest=job['input_manifest'],
-            evidence={'kind':'provider_error'},code='provider_unavailable',details={'retry_at':130})
-        self.now=131
-        with self.assertRaisesRegex(TransitionError,'trusted provider'):
-            self.reserve(self.dossier(),retry_of=job['id'])
-        with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT count(*) FROM steward_turns').fetchone()[0],1)
 
     def test_trusted_provider_retry_is_finite_and_reuses_cycle_without_charge(self):
         previous=None

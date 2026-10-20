@@ -189,6 +189,10 @@ class ReviewPullRequests(Lifecycle):
             carry = []
             if existing and (source['state'] == 'closed' or source['merged']):
                 return self._retire_in(db, dict(existing), reason='pull_request_closed')
+            if existing and blocked == 'scope_excluded':
+                # The operator's review scope no longer covers this PR; a held
+                # gate would never release. Reuse the operator close code.
+                return self._retire_in(db, dict(existing), reason='operator_closed')
             if blocked == 'runtime_disabled':
                 # A maintenance drain or account check runs cycles with dispatch
                 # disabled. That stops new work; it says nothing about this PR

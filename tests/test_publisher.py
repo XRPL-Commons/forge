@@ -163,6 +163,13 @@ class PublisherTests(unittest.TestCase):
             'base':{'sha':ledger.BASE,'ref':'main','repo':{'id':1}},'user':{'id':99,'login':'builder[bot]','type':'Bot'}}
         if graphql:self.fixture.target['strategy']='graphql';self.capability['strategy']='graphql'
 
+    def test_pr_body_closes_same_repository_members(self):
+        result=self.finish();self.assertEqual(result['status'],'confirmed',result)
+        job=self.publisher.jobs.job(self.fixture.job)
+        self.assertIn('Closes #'+str(job['members'][0]['issue_number']),self.github.pull['body'])
+        job={'repo_id':1,'members':[{'issue_number':5,'repository_id':1},{'issue_number':6,'repository_id':2}]}
+        self.assertEqual(Publisher._body({'report':{'pr_body':'Body'}},job),'Body\nCloses #5')
+
     def test_rest_rework_preserves_pr_author_and_human_body(self):
         self.rework();result=self.finish()
         self.assertEqual(result['status'],'confirmed',result)

@@ -252,6 +252,19 @@ class InventoryRuntimeTests(RuntimeFixture):
         with self.database.read_snapshot() as db:
             self.assertIsNotNone(db.execute("SELECT value FROM store_metadata WHERE key='supervisor:heartbeat'").fetchone())
 
+    def test_discovery_skips_unready_repository_before_github_reads(self):
+        from forge.factory.store_inventory import DiscoveryController
+        self.prepare()
+        RepositorySetup(self.settings).save_observation(10, {'repositories': {'10': {
+            **RepositorySetup(self.settings).read()['repositories']['10'], 'status': 'needs_setup'}}})
+        config = validate({'enabled': True, 'image': 'sha256:' + 'a' * 64})
+        github = Mock(); github.deadline = float('inf')
+        discovery = DiscoveryController(self.database, self.settings, github, config=config, clock=lambda: self.now)
+        discovery.inventory.refresh = Mock()
+        discovery.inventory.record({'id': 10, 'name': 'example/project', 'enabled': True}, self.remote())
+        self.assertEqual(discovery.cycle()['items'], [])
+        github.issue.assert_not_called(); github.pulls.assert_not_called(); github.protections.assert_not_called()
+
     def test_discovery_does_not_admit_hold_or_external_human_ownership(self):
         from forge.factory.store_inventory import DiscoveryController
         self.prepare()

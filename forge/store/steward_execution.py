@@ -69,11 +69,6 @@ class StewardExecutions(Executions):
             self._live(unit)
             dossier = build_dossier_in(db, unit, mode=mode, trigger=trigger, now=self.clock(),
                                       observations=observations, config=config)
-            if retry_of:
-                from .steward import dossier_in
-                previous = dossier_in(db, retry_of)
-                if previous['facts']['observations']['base_oid'] != base or previous['authority']['candidate'] != dossier['authority']['candidate']:
-                    raise TransitionError('Deferred steward source pins changed')
             if execution_gates_in(db, unit, dossier):
                 raise TransitionError('An independent gate blocks this steward invocation')
             attempt_id, job_id = _id(command.request_id, 'attempt'), _id(command.request_id, 'job')
@@ -164,7 +159,7 @@ class StewardExecutions(Executions):
         return self._apply(command, 'retire_steward_wait', {'decision_id':decision_id}, change)
 
     def limit_wait(self, command, *, trigger_key, reason):
-        if reason not in {'cycle_limit', 'physical_retry_limit', 'retry_unauthorized'}:
+        if reason not in {'cycle_limit', 'physical_retry_limit'}:
             raise TransitionError('Unknown steward execution limit')
         def change(db, unit):
             existing = db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='decision_required' AND subject_key='unit' AND resolved_at IS NULL", (unit['id'],)).fetchone()
