@@ -289,12 +289,24 @@ class StewardControllerTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(DISTINCT cycle) FROM steward_turns').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT max(physical_attempt) FROM steward_turns').fetchone()[0],2)
 
-    def test_unrepaired_forge_fault_blocks_replacement_steward(self):
+    def test_decision_required_clears_stale_steward_schedule(self):
+        from forge.store.scheduling import Scheduling
+        driver=self.driver();self.accept(self.reserve())
+        Scheduling(self.store,clock=lambda:self.f.now).record('u',owner='steward',reason='runtime_disabled')
+        self.f.now+=31
+        self.assertEqual(driver.schedule('u',mode='stall',trigger={'gate_id':self.f.gate})['pending'],'decision_required')
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM next_actions WHERE unit_id='u' AND owner='steward'").fetchone())
+
+    def test_forge_fault_waits_for_its_gate_then_retries_within_its_cycle(self):
         driver=self.driver();job=self.reserve();self.completed(job,kind='harness_error')
         result=driver.finish(job['id']);self.assertFalse(result['charged'])
-        with self.assertRaisesRegex(TransitionError,'independent'):
-            driver.schedule('u',mode='stall',trigger={'gate_id':self.f.gate})
-        with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT count(*) FROM steward_turns').fetchone()[0],1)
+        self.assertEqual(driver.schedule('u',mode='stall',trigger={'gate_id':self.f.gate})['pending'],'deferred')
+        with self.store.write() as db:
+            db.execute("UPDATE unit_gates SET resolved_at=?,resolution='superseded' WHERE code='forge_problem' AND job_id=? AND resolved_at IS NULL",(self.f.now,job['id']))
+        self.assertTrue(driver.schedule('u',mode='stall',trigger={'gate_id':self.f.gate})['reserved'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT cycle,physical_attempt FROM steward_turns ORDER BY physical_attempt')],[(1,1),(1,2)])
 
     def test_stale_choice_does_not_starve_new_current_stall(self):
         driver=self.driver();identifier,output=self.accept(self.reserve())
@@ -413,32 +425,6 @@ class StewardControllerTests(unittest.TestCase):
         self.assertEqual(result['outcome'],'stale_investigation')
         self.assertEqual(self.f.view()['charged_failures'],0)
         with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT count(*) FROM steward_decisions').fetchone()[0],0)
-
-    def test_unreusable_deferral_asks_operator_once_instead_of_rejecting_each_cycle(self):
-        # Production 2026-10-15: a checkout failure wrote a worker-shaped
-        # blocked report, the steward contract rejected it, and every cycle then
-        # launched a retry that reserve_steward refused.
-        driver=self.driver();job=self.reserve()
-        self.exec.progress(self.f.command(),job['id'],execution_fence=job['execution_fence'],phase='running',container_id='container')
-        execution={'id':'container','image_id':self.config['image'],'exit_protocol':'1','running':False,'exit_code':125,'oom_killed':False}
-        blocked={'version':1,'attempt':job['id'],'role':'steward','outcome':'blocked_environment','blocker':'dependency_access',
-                 'summary':'Forge could not prepare the disposable checkout before work started.','headline':'Stopped','plain':'Stopped'}
-        self.exec.collect(self.f.command(),job['id'],execution_fence=job['execution_fence'],capture={'result':blocked,'logs':'',
-            'execution':execution,'execution_envelope':{'version':1,'attempt':job['id'],'harness_status':'ok','exit_code':125}})
-        self.exec.verify_cleanup(self.f.command(),job['id'],execution_fence=job['execution_fence'],
-                                 evidence={'process_stopped':True,'resources_released':True})
-        driver.finish(job['id'])
-        with self.store.write() as db:
-            # The Forge problem itself is released elsewhere; the stall remains.
-            db.execute("UPDATE unit_gates SET resolved_at=?,resolution='superseded' WHERE code='forge_problem' AND resolved_at IS NULL",(self.f.now,))
-        for _ in range(3):
-            answer=driver.schedule('u',mode='stall',trigger={'gate_id':self.f.gate})
-            self.assertEqual(answer['pending'],'retry_unauthorized')
-        with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM jobs WHERE role='steward'").fetchone()[0],1)
-            self.assertEqual(db.execute("SELECT count(*) FROM events WHERE kind='decision_rejected'").fetchone()[0],0)
-            waits=[json.loads(row[0]) for row in db.execute("SELECT details_json FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL")]
-        self.assertEqual([(w['source'],w['reason']) for w in waits],[('steward_execution','retry_unauthorized')])
 
     def test_three_physical_provider_failures_leave_owned_wait_without_fourth_job(self):
         from forge.factory.wait_controller import WaitController

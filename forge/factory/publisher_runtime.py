@@ -40,7 +40,7 @@ def publication_authorization(job,github):
             or type(pr.get('draft')) is not bool or (pr.get('head') or {}).get('sha')!=expected
             or (pr.get('head') or {}).get('ref')!=branch or ((pr.get('head') or {}).get('repo') or {}).get('id')!=job['repo_id']
             or (pr.get('base') or {}).get('ref')!=job['target_branch'] or ((pr.get('base') or {}).get('repo') or {}).get('id')!=job['repo_id']
-            or (pr.get('base') or {}).get('sha')!=manifest['base_oid'] or pinned_author is not None and pinned_author!=author):
+            or pinned_author is not None and pinned_author!=author):
         raise PublicationClaim('publication_target_changed')
     transfer=target.get('kind')=='existing' and target.get('ownership_transfer') is True and target.get('author')==author
     from .github import bot_logins

@@ -1,13 +1,14 @@
 """Implementation readiness from the same revision-bound report shown in Settings.
 
 Access-only planning and diagnostics keep Settings.admission. This adapter adds
-protection freshness and branch identity for delivery work, and projects that
-observation into the existing repository_setup lifecycle gate.
+the stored protection report and branch identity for delivery work, and projects
+that observation into the existing repository_setup lifecycle gate. Protection
+age is not projected: dispatch re-reads protection before every reservation.
 """
 import uuid
 
 from ..repository_policy import protection_ready
-from ..repository_setup import CHECK_TIMEOUT, MAX_AGE, RepositorySetup, SetupObservationChanged, observation_key, scope_matches
+from ..repository_setup import CHECK_TIMEOUT, RepositorySetup, SetupObservationChanged, observation_key, scope_matches
 from ..settings import ROLES, digest
 from ..store.models import Command, VersionConflict
 from ..store.repository_readiness import read_revision
@@ -58,8 +59,6 @@ class RepositoryReadiness:
                       and 0 <= self.clock() - saved.get('started_at', 0) < CHECK_TIMEOUT)
         if saved.get('revision') != revision or saved.get('name') != row['name'] or not scope_current:
             result['reason'] = 'protection_unchecked'
-        elif not 0 <= self.clock() - report.get('observed_at', 0) < MAX_AGE:
-            result['reason'] = 'protection_stale'
         elif (not report.get('available') or not report.get('branch')
               or saved.get('status') not in {'ready', 'needs_setup'} and not refreshing):
             result['reason'] = 'protection_unavailable'
@@ -70,7 +69,7 @@ class RepositoryReadiness:
         elif saved.get('status') != 'ready' and not refreshing or not protection_ready(report):
             result['reason'] = 'protection_needs_setup'
         else:
-            result.update(allowed=True, reason='implementation_ready', valid_until=min(result['valid_until'], report['observed_at'] + MAX_AGE))
+            result.update(allowed=True, reason='implementation_ready')
             if refreshing:
                 result['valid_until'] = min(result['valid_until'], saved['started_at'] + CHECK_TIMEOUT)
         return result

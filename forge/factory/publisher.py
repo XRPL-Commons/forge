@@ -173,9 +173,15 @@ class Publisher:
             return pr
         return None
 
+    @staticmethod
+    def _body(intent,job):
+        # GitHub closes only same-repository issues from a PR body.
+        numbers=sorted({m['issue_number'] for m in job.get('members') or [] if m.get('repository_id')==job['repo_id']})
+        return intent['report']['pr_body']+''.join('\nCloses #'+str(n) for n in numbers)
+
     def _update_body(self,intent,job,pr,marker):
         start='<!-- forge-publication:start -->';end='<!-- forge-publication:end -->'
-        block=start+'\n'+intent['report']['pr_body']+'\n<!-- '+marker.replace('\n','; ')+' -->\n'+end
+        block=start+'\n'+self._body(intent,job)+'\n<!-- '+marker.replace('\n','; ')+' -->\n'+end
         body=pr.get('body') or ''
         if body.count(start)>1 or body.count(end)>1 or body.count(start)!=body.count(end):
             raise PublicationClaim('publication_pr_body_ambiguous')
@@ -271,7 +277,7 @@ class Publisher:
                     head=result['sha']
                 self._commit_proof(job,head,output,parent,marker,bot)
             pr=self._pull(intent,job,head,bot)
-            payload={'title':intent['report']['pr_title'],'body':intent['report']['pr_body']+'\n\n<!-- '+marker.replace('\n','; ')+' -->',
+            payload={'title':intent['report']['pr_title'],'body':self._body(intent,job)+'\n\n<!-- '+marker.replace('\n','; ')+' -->',
                      'head':target['branch'],'base':target['base_branch'],'draft':False}
             if target['pull_number'] is None:
                 self.commands.prepare_step(identifier,'pr',payload)

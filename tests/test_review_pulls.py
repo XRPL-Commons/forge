@@ -126,13 +126,15 @@ class ReviewPullTests(unittest.TestCase):
             record=dict(db.execute('SELECT * FROM jobs WHERE id=?',(job['job_id'],)).fetchone())
             self.assertIn('operator_pause',[gate['code'] for gate in task_execution_gates_in(db,unit,record)])
 
-    def test_forge_scope_excludes_new_human_pr_and_fences_existing(self):
+    def test_forge_scope_excludes_new_human_pr_and_retires_existing(self):
         self.assertFalse(self.observe(scope='forge')['admitted'])
         admitted=self.observe(); job,_=self.reserve(admitted)
-        self.assertEqual(self.observe(scope='forge')['reason'],'scope_excluded')
+        self.assertEqual(self.observe(scope='forge')['reason'],'operator_closed')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT fenced FROM jobs WHERE id=?',(job['job_id'],)).fetchone()[0],1)
-        self.assertEqual(self.observe()['candidate_id'],admitted['candidate_id'])
+            self.assertEqual(tuple(db.execute('SELECT state,close_code FROM units WHERE id=?',(admitted['unit_id'],)).fetchone()),('closed','operator_closed'))
+            self.assertIsNone(db.execute('SELECT 1 FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL',(admitted['unit_id'],)).fetchone())
+        self.assertNotEqual(self.observe()['unit_id'],admitted['unit_id'])
 
     def test_source_match_checks_author_base_head_fork_and_intent(self):
         source=normalize_source(self.remote,**self.item)

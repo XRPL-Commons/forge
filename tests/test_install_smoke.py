@@ -451,7 +451,9 @@ class SmokeAdmissionTests(unittest.TestCase):
         self.github.issue.return_value = (issue, requirements)
         self.github.pulls.return_value = []
         self.github.target.return_value = 'main'; self.github.protections.return_value = True
-        result = discovery.cycle()
+        with patch('forge.factory.store_inventory.RepositorySetup') as setup:
+            setup.return_value.read.return_value = {'repositories': {str(self.target['id']): {'status': 'ready'}}}
+            result = discovery.cycle()
         self.assertEqual(len(result['items']), 1)
         self.assertEqual(result['items'][0]['issue_id'], '1:10')
         with self.store.read_snapshot() as db:
