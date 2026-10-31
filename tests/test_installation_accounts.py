@@ -153,6 +153,10 @@ class DeviceLoginTests(unittest.TestCase):
             'Config': {'max-size': '64k', 'max-file': '1', 'compress': 'false'}})
 
     def test_survives_client_restart_and_imports_renewable_login_privately(self):
+        # Account consent needs the qualified standard image, not repository
+        # selection, rules repair or a full database environment.
+        self.assertIsNone(self.setup.read().get('selected'))
+        self.assertEqual(self.setup.settings().load()['repositories'], [])
         self.assertEqual(self.call()['status'], 'account_login_required')
         self.assertEqual(self.call(apply=True)['status'], 'account_login_pending')
         prompt = self.call()
@@ -174,6 +178,8 @@ class DeviceLoginTests(unittest.TestCase):
         self.assertNotIn('synthetic-refresh', json.dumps(self.setup.read()))
         self.assertNotIn('synthetic-refresh', json.dumps(result))
         self.assertEqual(sum(call[1] == 'create' for call in self.calls), 1)
+        self.assertIsNone(self.setup.read().get('selected'))
+        self.assertIsNone(self.setup.read().get('operation'))
 
     def test_rejects_access_only_login_and_reset_generation(self):
         self.call(apply=True)

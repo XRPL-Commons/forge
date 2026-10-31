@@ -43,6 +43,13 @@ for diagnosis after handover, with automation disabled. Choosing a real reposito
 instead creates a small documentation smoke issue there; its merge policy and
 any independent operator holds still apply.
 
+After preflight passes, the CLI prepares these GitHub targets before installing
+the host. Provider sign-in runs immediately after App and operator identity setup,
+before repository repair, database-image provisioning and publication checks.
+Pending sign-in pauses that later work; resume observes the same login session.
+The browser steps still require the full host installation and Tailscale setup.
+This ordering does not yet provide a single consent batch before installation.
+
 ### Browser steps
 
 The CLI prints the exact browser actions as they become available:
@@ -149,11 +156,24 @@ requires the App's workflow permission.
 - An atomic handover applying selected merge/workflow policies and enabling the
   selected repositories. Independent human approval holds remain authoritative.
 
-The local report includes stage receipts and times, installation/source identities,
-App and repository results, the smoke receipt and time to first merge. The CLI
-prints its location and the Forge URL. A passing synthetic test suite does not
-count as this live acceptance. Touch counts and elapsed times must be measured in
-an actual run.
+The CLI prints a handover summary and saves a separate private JSON report with
+stage timings, App and installation IDs, repository policies and observed rules,
+provider status, the exact smoke merge evidence and time to first merge. It also
+prints the Forge URL and `forge connect` command. The original installation
+journal remains available; JSON output keeps `report_path` for that journal and
+adds `handover_report` and `handover_report_path` for the summary.
+
+The report records the client and server revisions observed after handover
+separately from the requested installation revision, so an installation repaired
+with a newer release does not appear to have run entirely on its original pin.
+Missing version, worker image, harness or historical rule-change evidence is
+explicit. `forge install --status` reads local evidence without contacting the
+server. Resuming an older completed installation creates its report once without
+repeating setup. A failed final version read leaves the server revision unknown.
+
+Stage durations and time to first merge include interruptions. Completion does
+not certify a clean installation, a human-touch count or early consent; those
+still require measurement in an actual run.
 
 ## Clean reinstall on a test VM
 
