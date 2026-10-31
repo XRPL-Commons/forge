@@ -5,15 +5,24 @@ organization identity; it does not itself authorize reading a repository.
 """
 from contextlib import contextmanager
 
-from .app_access import AccessError, REPO_PATTERN
+from .app_access import AccessError, AppClient, REPO_PATTERN
+from .credentials import Credentials
 
 
 class MirrorAccess:
     def __init__(self, settings, *, client=None):
         self.settings = settings
-        self.client = client or settings.client
+        self._client = client
+
+    @property
+    def client(self):
+        # The mirror daemon starts before App onboarding and survives key
+        # rotation. Resolve credentials for this operation, not at daemon startup.
+        return self._client if self._client is not None else AppClient(
+            environ=Credentials(self.settings.authority.root).environment())
 
     def installations(self):
+        client = self.client
         connections = self.settings.load()['connections']
         found = {}
         for connection in connections.values():
@@ -30,7 +39,7 @@ class MirrorAccess:
                     continue
                 selected = {key: connection[key] for key in ('app_id', 'private_key_env')}
                 selected['installation_id'] = installation_id
-                value = self.client.request('GET', '/app/installations/' + str(installation_id), self.client.jwt(selected))
+                value = client.request('GET', '/app/installations/' + str(installation_id), client.jwt(selected))
                 if (value.get('id') != installation_id or value.get('app_id') != selected['app_id']
                         or value.get('suspended_at') is not None):
                     raise AccessError('Mirror installation identity or access changed')
@@ -49,11 +58,12 @@ class MirrorAccess:
 
     @contextmanager
     def _token(self, connection, repository_id=None):
+        client = self.client
         payload = {'permissions': {'contents': 'read', 'metadata': 'read'}}
         if repository_id is not None:
             payload['repository_ids'] = [repository_id]
-        value = self.client.request('POST', '/app/installations/' + str(connection['installation_id']) + '/access_tokens',
-                                    self.client.jwt(connection), payload)
+        value = client.request('POST', '/app/installations/' + str(connection['installation_id']) + '/access_tokens',
+                               client.jwt(connection), payload)
         token = value.get('token')
         if not isinstance(token, str) or not token:
             raise AccessError('Mirror read credential was not issued')
@@ -63,7 +73,7 @@ class MirrorAccess:
                 raise AccessError('Mirror credential did not retain its read-only scope')
             yield token
         finally:
-            self.client.request('DELETE', '/installation/token', token)
+            client.request('DELETE', '/installation/token', token)
 
     @staticmethod
     def _repository(value, installation_id):
@@ -81,13 +91,14 @@ class MirrorAccess:
     def resolve(self, canonical_name):
         if not isinstance(canonical_name, str) or not REPO_PATTERN.fullmatch(canonical_name):
             raise AccessError('Mirror repository name is invalid')
+        client = self.client
         # Each request revalidates configured installations and actual repository
         # access. A cached Git object never substitutes for current authorization.
         for row in self.installations():
             value = None
             with self._token(row['connection']) as token:
                 try:
-                    value = self.client.request('GET', '/repos/' + canonical_name, token)
+                    value = client.request('GET', '/repos/' + canonical_name, token)
                 except AccessError as error:
                     if error.status not in {403, 404}:
                         raise
@@ -99,7 +110,7 @@ class MirrorAccess:
                 return self._repository(value, row['connection']['installation_id'])
         # Public declarations remain usable without an App credential. The
         # broker still applies pinned dependency/organization policy and denies.
-        value = self.client.request('GET', '/repos/' + canonical_name, None)
+        value = client.request('GET', '/repos/' + canonical_name, None)
         if value.get('private') is not False:
             raise AccessError('Mirror repository is not accessible')
         return self._repository(value, None)
