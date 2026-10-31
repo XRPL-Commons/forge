@@ -6,6 +6,11 @@ unique canary identity. A success receipt is specific to the inspected image.
 import argparse
 from contextlib import contextmanager
 import json
+import hashlib
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
+import tarfile
 import os
 from pathlib import Path
 import platform
@@ -21,7 +26,7 @@ from .factory.worker_boundary import BoundaryError, WorkerBoundary
 from .mirror.git_store import GitStore, environment, run_git
 from .mirror.policy import Repository
 from .mirror.service import Broker, SessionServer
-from .registry_cache import ArchiveCache, Server as RegistryServer
+from .registry_cache import ArchiveCache, Server as RegistryServer, gateway
 
 
 @contextmanager
@@ -69,10 +74,64 @@ class Fixture:
             live_policy=lambda session: dict(organization_installations=self.policy['organization_installations'], denied_repositories=[]))
 
 
-# Runs as UID 1000 in the same image and mounts as an ordinary worker. It performs
-# real network requests; mocked HTTP responses cannot produce a success receipt.
+class RegistryFixtureHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        if self.path != self.server.path:
+            self.send_error(404); return
+        self.server.fetches += 1
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Cache-Control', 'public, max-age=300')
+        self.send_header('Content-Length', str(len(self.server.body)))
+        self.end_headers()
+        self.wfile.write(self.server.body)
+
+
+class RegistryFixture(ThreadingHTTPServer):
+    """Explicitly cacheable archive; real npm/pip traffic still uses public TLS.
+
+    External registries may legitimately set cookies or disable caching. Their
+    current response policy cannot determine whether our shared cache qualifies.
+    """
+    path = '/forge-boundary-qualification/-/fixture.tgz'
+
+    def __init__(self):
+        super().__init__(('127.0.0.1', 0), RegistryFixtureHandler)
+        archive = io.BytesIO()
+        content = b'Forge shared registry cache qualification\n'
+        with tarfile.open(fileobj=archive, mode='w:gz') as output:
+            entry = tarfile.TarInfo('fixture.txt'); entry.size = len(content)
+            output.addfile(entry, io.BytesIO(content))
+        self.body = archive.getvalue()
+        self.digest = hashlib.sha256(self.body).hexdigest()
+        self.fetches = 0
+        self.url = 'http://forge-registry:8081/registry.npmjs.org' + self.path
+
+    def upstream(self, host, *, timeout):
+        fixture = self
+        class Connection:
+            connection = None
+            def request(self, method, path, headers):
+                if host == 'registry.npmjs.org' and path == fixture.path:
+                    self.connection = http.client.HTTPConnection(*fixture.server_address, timeout=timeout)
+                else:
+                    self.connection = gateway.PublicHTTPS(host, timeout=timeout)
+                self.connection.request(method, path, headers=headers)
+            def getresponse(self):
+                return self.connection.getresponse()
+            def close(self):
+                if self.connection is not None: self.connection.close()
+        return Connection()
+
+
+# Runs as UID 1000 with ordinary worker mounts and real gateway/cache sockets.
+# Package downloads and provider TLS use public upstreams; cache reuse uses the
+# explicit archive fixture so external cache policy cannot change the assertion.
 WORKER = r'''
-import errno,http.client,json,os,shutil,socket,ssl,subprocess,time,urllib.request
+import errno,hashlib,http.client,json,os,shutil,socket,ssl,subprocess,time,urllib.request
 from pathlib import Path
 cfg=json.loads(Path('/run/forge-input/assignment.json').read_text())
 result={}
@@ -115,6 +174,12 @@ c.request('POST','/registry.npmjs.org/canary',b'{}');r=c.getresponse();assert r.
 run(['npm','pack','is-number@7.0.0','--pack-destination','/work'])
 run(['/usr/local/bin/python3','-m','pip','download','--disable-pip-version-check','--no-deps','--dest','/work','idna==3.10'])
 result['registry_downloads_read_only']=True
+# Warm the explicitly public fixture through this worker's actual gateway.
+# npm's own archive may have Set-Cookie/no-store and legitimately remain uncached.
+with urllib.request.urlopen(cfg['registry_fixture_url'],timeout=30) as response:
+    assert response.status==200
+    assert hashlib.sha256(response.read()).hexdigest()==cfg['registry_fixture_digest']
+result['registry_cache_fixture_download']=True
 try:Path('/run/forge-input/assignment.json').write_text('changed')
 except OSError:pass
 else:raise AssertionError('assignment input was writable')
@@ -168,7 +233,10 @@ def qualify(image, *, docker=None):
         try:
             registry_directory = root / 'registry-socket'
             registry_directory.mkdir(mode=0o700)
-            registry_cache = ArchiveCache(root / 'registry-cache')
+            registry_fixture = RegistryFixture(); servers.append(registry_fixture)
+            thread = threading.Thread(target=registry_fixture.serve_forever, daemon=True)
+            thread.start(); threads.append(thread)
+            registry_cache = ArchiveCache(root / 'registry-cache', upstream=registry_fixture.upstream)
             registry_server = RegistryServer(registry_directory / 'registry.sock', registry_cache)
             servers.append(registry_server)
             thread = threading.Thread(target=registry_server.serve_forever, daemon=True)
@@ -195,7 +263,8 @@ def qualify(image, *, docker=None):
                     docker(['exec',specs[0].gateway,'/usr/local/bin/python3','-I','-c',
                             'import socket,time\nfor i in range(50):\n try: socket.create_connection(("forge-git",80),1).close(); break\n except OSError:\n  if i==49: raise\n  time.sleep(.1)'])
                     note=dict(oid=fixture.oid,github_ips=addresses,host_ip=host_ip,host_port=port,
-                              other_frontend_ip=second,quota=boundary.work_bytes)
+                              other_frontend_ip=second,quota=boundary.work_bytes,
+                              registry_fixture_url=registry_fixture.url,registry_fixture_digest=registry_fixture.digest)
                     target=root/'0/inputs/assignment.json';target.write_text(json.dumps(note));target.chmod(0o444)
                     worker=prefix+'-worker';workers.append((worker,jobs[0]));spec=specs[0]
                     env={**spec.environment,'HOME':'/work','XDG_CACHE_HOME':'/work/.cache','PIP_CACHE_DIR':'/work/.cache/pip'}
@@ -217,17 +286,19 @@ def qualify(image, *, docker=None):
                         raise OSError('qualification cache miss with upstream disabled')
                     registry_cache.upstream = offline
                     hits = registry_cache.hits
+                    if registry_fixture.fetches != 1:
+                        raise BoundaryError('First job did not fetch the cache qualification fixture exactly once')
                     try:
                         docker(['run','--rm','--pull=never','--read-only','--user','1000:1000',
                             '--cap-drop','ALL','--security-opt','no-new-privileges',
                             '--memory','128m','--pids-limit','32',*specs[1].worker_args,
                             '--entrypoint','/usr/local/bin/python3',image,'-I','-c',
-                            'import urllib.request,pathlib; assert not pathlib.Path("/registry").exists(); '
-                            'r=urllib.request.urlopen("http://forge-registry:8081/registry.npmjs.org/is-number/-/is-number-7.0.0.tgz",timeout=30); '
-                            'assert r.status==200 and len(r.read())>100'])
+                            'import urllib.request,pathlib,hashlib; assert not pathlib.Path("/registry").exists(); '
+                            'r=urllib.request.urlopen('+repr(registry_fixture.url)+',timeout=30); '
+                            'assert r.status==200 and hashlib.sha256(r.read()).hexdigest()=='+repr(registry_fixture.digest)])
                     finally:
                         registry_cache.upstream = upstream
-                    if registry_cache.hits != hits + 1:
+                    if registry_cache.hits != hits + 1 or registry_fixture.fetches != 1:
                         raise BoundaryError('Second job did not reuse the shared package archive')
                     result['checks']['registry_cache_cross_job_offline_hit'] = True
                     docker(['cp',worker+':/work/sentinel',str(root/'sentinel')])

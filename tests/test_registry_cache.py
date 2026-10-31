@@ -145,6 +145,32 @@ class RegistryCacheTests(unittest.TestCase):
             sent = self.upstream.calls[0][3]
             self.assertNotIn('Authorization', sent); self.assertNotIn('Cookie', sent)
 
+    def test_qualification_archive_is_reused_by_second_gateway_with_upstream_offline(self):
+        from forge.worker_qualification import RegistryFixture
+        from urllib.parse import urlsplit
+        with self.running(RegistryFixture()) as fixture:
+            self.cache.upstream = fixture.upstream
+            socket_path = self.root / 'registry.sock'
+            with self.running(Server(socket_path, self.cache)):
+                def fetch():
+                    with self.running(gateway.Server(('127.0.0.1', 0), 'registry')) as job:
+                        job.cache_socket = str(socket_path)
+                        connection = http.client.HTTPConnection(*job.server_address, timeout=2)
+                        try:
+                            connection.request('GET', urlsplit(fixture.url).path)
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            return response.read()
+                        finally: connection.close()
+                self.assertEqual(fetch(), fixture.body)
+                self.assertEqual(fixture.fetches, 1)
+                self.assertEqual(self.cache.hits, 0)
+                self.cache.upstream = Mock(side_effect=OSError('upstream deliberately offline'))
+                self.assertEqual(fetch(), fixture.body)
+                self.assertEqual(self.cache.hits, 1)
+                self.assertEqual(fixture.fetches, 1)
+                self.cache.upstream.assert_not_called()
+
     def test_socket_rejects_uploads_and_arbitrary_hosts_before_upstream(self):
         path = self.root / 'registry.sock'
         with self.running(Server(path, self.cache)):
