@@ -39,6 +39,20 @@ class CoordinatorTests(unittest.TestCase):
         self.install = Install('anvil', github=self.github, installation=self.host, journal=self.journal, preflight=self.observe)
         self.install.plan(interview())
 
+    def test_stage_announces_long_running_work_before_applying_and_when_waiting(self):
+        events = []
+        self.install.notify = events.append
+        def apply(observed):
+            self.assertEqual(events[-1]['status'], 'applying')
+            self.assertEqual(events[-1]['instruction'], 'Setting up: host installation.')
+            return {'status': 'installing'}
+        self.install.stage('host', lambda: {'status': 'planned'}, apply,
+                           complete=lambda row: row['status'] == 'installed')
+        self.assertEqual([row['status'] for row in events], ['checking', 'applying', 'pending'])
+        self.install.stage('host', lambda: {'status': 'installed'}, apply,
+                           complete=lambda row: row['status'] == 'installed')
+        self.assertEqual(events[-1]['instruction'], 'Ready: host installation.')
+
     def stages(self, factory):
         stack = ExitStack(); self.addCleanup(stack.close)
         network = Mock(); network.execute.return_value = {'status': 'network_ready'}

@@ -110,6 +110,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('FORGE_BIND_ADDRESS=127.0.0.1', status)
         self.assertIn('FORGE_PORT=8788', status)
         self.assertIn('"HOST=127.0.0.1"', ui)
+        self.assertIn('NUXT_PUBLIC_FORGE_SETUP_PENDING=true', ui)
         self.assertIn('"NITRO_FORGE_API=http://127.0.0.1:8788"', ui)
         self.assertIn(host_update.NODE_IMAGE, ui)
         self.assertIn('service --root', self.host.unit('forge-supervisor'))
@@ -130,6 +131,14 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(runtime['apparmor_profile'], 'forge-runner-private-proc')
         self.assertEqual(self.host.document('host.json')['source'], 'a' * 40)
         self.assertFalse((self.host.root / 'host-runtime.json').exists())
+
+    def test_configured_identity_replaces_setup_screen_without_weakening_host_checks(self):
+        with patch('forge.operator_auth.OperatorAuth.config', return_value={
+                'origin': 'https://factory.example.ts.net'}):
+            ui = host_update.desired_units(self.host.root, '127.0.0.1')['forge-ui']
+        self.assertIn('NUXT_PUBLIC_FORGE_SETUP_PENDING=false', ui)
+        self.assertIn('NITRO_ALLOWED_HOSTS=factory.example.ts.net', ui)
+        self.assertIn('NITRO_FORGE_TAILSCALE_IDENTITY=serve', ui)
 
     def test_an_update_after_a_maintenance_stop_starts_unchanged_services_too(self):
         # The schema upgrade stops every Forge unit, then runs this update.

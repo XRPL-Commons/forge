@@ -12,7 +12,7 @@ export type SignInMood = 'waving' | 'worried' | 'sleepy' | 'hopeful'
 export type SignInTone = 'coral' | 'amber' | 'mint'
 
 export interface SignInNotice {
-  kind: 'unavailable' | 'failed' | 'return'
+  kind: 'setup' | 'unavailable' | 'failed' | 'return'
   mood: SignInMood
   tone: SignInTone
   // Errors are announced; the return hint is a polite status.
@@ -30,9 +30,17 @@ export interface SignInInput {
   returnTo?: unknown
   // `/api/auth/session` did not answer.
   unavailable: boolean
+  setupPending?: boolean
 }
 
-export function signInNotice({ error, returnTo, unavailable }: SignInInput): SignInNotice | null {
+export function signInNotice({ error, returnTo, unavailable, setupPending }: SignInInput): SignInNotice | null {
+  if (setupPending) {
+    return {
+      kind: 'setup', mood: 'hopeful', tone: 'mint', role: 'status',
+      title: 'Setup is still in progress',
+      text: 'The installer will guide you through GitHub approval and account sign-in. Keep it running, then return here when it confirms sign-in is ready.',
+    }
+  }
   if (unavailable) {
     return {
       kind: 'unavailable', mood: 'sleepy', tone: 'amber', role: 'alert',
