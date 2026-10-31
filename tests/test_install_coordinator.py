@@ -25,6 +25,9 @@ def interview():
 
 class CoordinatorTests(unittest.TestCase):
     def setUp(self):
+        version = patch('forge_client.version.report', return_value={
+            'client_revision': REVISION, 'server_revision': REVISION})
+        version.start(); self.addCleanup(version.stop)
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         self.journal = Journal('install', 'anvil', root=Path(directory.name))
         self.github = Mock()

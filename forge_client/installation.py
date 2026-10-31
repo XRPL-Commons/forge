@@ -14,6 +14,7 @@ from .install import Installation, revision
 from .network import Network
 from .preflight import observe
 from .workflow import Journal
+from . import install_report
 
 
 def intent(value, github):
@@ -110,6 +111,7 @@ class Install:
         self.state['stages'][name] = row
         try:
             observed = observe_stage()
+            install_report.remember_rules(row, observed)
             if complete(observed):
                 row.update(status='complete', receipt=observed, uncertain_write=False)
                 row.setdefault('completed_at', self.clock())
@@ -121,6 +123,7 @@ class Install:
             # administrative write before it permits another one.
             row.update(status='applying', receipt=observed, uncertain_write=True); self.save()
             result = apply_stage(observed)
+            install_report.remember_rules(row, result)
             row.update(status='complete' if complete(result) else 'pending', receipt=result,
                        uncertain_write=result.get('status') == 'write_unconfirmed')
             if row['status'] == 'complete': row.setdefault('completed_at', self.clock())
@@ -133,6 +136,7 @@ class Install:
     def apply(self, *, waivers=(), retry_smoke=None):
         selected = self.load()
         if self.state['stages'].get('handover', {}).get('status') == 'complete':
+            self.write_report()
             return self.status()
         report = self.preflight()  # Never trust a previously passing snapshot.
         known = {row['id']: row for row in report['items']}
@@ -216,7 +220,23 @@ class Install:
         if self.state['stages']['handover']['status'] == 'complete':
             self.state.setdefault('completed_at', self.clock())
             self.save()
+            self.write_report()
         return self.status()
+
+    def write_report(self):
+        """Observe versions once after handover; status itself stays offline."""
+        saved = install_report.storage(self.journal, self.state)
+        if saved.read() is not None:
+            return
+        from .version import report, client_revision
+        try:
+            versions = report(self.ssh)
+        except (SetupError, OSError, ValueError):
+            # A completed factory must remain usable when the final read-only
+            # version probe cannot reach the host. Never retain its error text.
+            versions = {'client_revision': client_revision(), 'server_revision': None}
+        versions['observed_at'] = self.clock()
+        saved.save(install_report.build(self.state, versions=versions))
 
     def repository(self, factory, target, *, apply=False):
         if factory.call('status')['phase'] != 'active':
@@ -261,6 +281,14 @@ class Install:
         self.load()
         stages = deepcopy(self.state['stages'])
         complete = stages.get('handover', {}).get('status') == 'complete'
+        report, report_path = None, None
+        if complete:
+            saved = install_report.storage(self.journal, self.state)
+            report = saved.read()
+            if report is not None:
+                report_path = str(saved.path)
+            else:
+                report = install_report.build(self.state)
         pending = [{'stage': name, **(row.get('receipt') or {})}
                    for name, row in stages.items() if row['status'] != 'complete']
         for row in pending:
@@ -275,7 +303,8 @@ class Install:
                 'next_action': None if complete else ['forge', 'install', '--ssh', self.ssh, '--resume'],
                 'handover_complete': complete,
                 'origin': (stages.get('identity', {}).get('receipt') or {}).get('origin'),
-                'report_path': str(self.journal.path) if complete else None}
+                'report_path': str(self.journal.path) if complete else None,
+                'handover_report': report, 'handover_report_path': report_path}
 
 
 def interview(ssh, github, *, ask=input, tell=print):
@@ -408,8 +437,13 @@ def display(result, *, tell=print):
                 if action.get('command'): tell(shlex.join(action['command']))
             if row.get('url'): tell(row['url'])
             if row.get('code'): tell('One-time code: ' + row['code'])
-        if result.get('origin'): tell('Forge: ' + result['origin'])
-        if result.get('report_path'): tell('Report: ' + result['report_path'])
+        if result.get('handover_report'):
+            install_report.display(result['handover_report'], tell=tell)
+        elif result.get('origin'):
+            tell('Forge: ' + result['origin'])
+        if result.get('handover_report_path'):
+            tell('Private report: ' + result['handover_report_path'])
+        if result.get('report_path'): tell('Installation journal: ' + result['report_path'])
     if result.get('next_action'): tell(shlex.join(result['next_action']))
 
 

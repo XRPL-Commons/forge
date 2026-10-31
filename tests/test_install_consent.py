@@ -89,6 +89,7 @@ class FreshConsentTests(unittest.TestCase):
         self.installed = True
         result = self.client.apply()
         self.assertEqual(result['status'], 'consent_ready')
+        self.assertEqual(result['installation_id'], 55)
         connections = self.setup.settings().load()['connections']
         self.assertEqual({c['app_id'] for c in connections.values()}, {44})
         for file in self.local.root.glob('*.json'):

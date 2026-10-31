@@ -165,6 +165,7 @@ class FreshAppConsent:
             installed = installed and not missing
             result.update(status='consent_ready' if ready and installed else 'app_installation_required',
                           app_id=app['connection']['app_id'], install_url=app['install_url'], identity_ready=ready,
+                          installation_id=connections.get('controller', {}).get('installation_id'),
                           missing_repositories=missing)
         elif saved and registration:
             result['registration'] = deepcopy(saved['registration'])
