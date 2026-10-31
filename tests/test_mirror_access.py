@@ -1,8 +1,14 @@
 from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from forge.app_access import AccessError
+from forge.app_access import AccessError, AppClient
+from forge.credentials import Credentials
+from forge.mirror_daemon import MirrorDaemon
+from forge.mirror.policy import MirrorError
 from forge.mirror_access import MirrorAccess
 from forge.mirror.policy import Repository
 
@@ -33,6 +39,58 @@ class MirrorAppAccessTests(unittest.TestCase):
         if path == '/repos/example/project':
             return self.repository
         raise AssertionError((method, path))
+
+    def daemon(self, root):
+        self.credentials = Credentials(root)
+        self.settings.load.return_value['connections']['controller']['private_key_env'] = 'FORGE_SETUP_APP_KEY'
+        def sign(argv, **kwargs):
+            # Exercise real AppClient.jwt key lookup without creating real keys.
+            self.assertEqual(Path(argv[-1]).read_text(), self.expected_key)
+            return SimpleNamespace(returncode=0, stdout=b'fixture-signature')
+        def client(*, environ=None):
+            return AppClient(environ=self.credentials.environment() if environ is None else environ,
+                             run=sign, request=self.request)
+        # Settings.client is cached in production. Retain this startup snapshot
+        # so the test reproduces a daemon created before onboarding/rotation.
+        settings = SimpleNamespace(authority=SimpleNamespace(root=root),
+                                   load=self.settings.load, client=client())
+        patched = patch('forge.mirror_access.AppClient', side_effect=client)
+        patched.start(); self.addCleanup(patched.stop)
+        return MirrorDaemon(root, Mock(), settings=settings, git_store=Mock())
+
+    def test_daemon_constructed_before_onboarding_uses_new_app_key(self):
+        with TemporaryDirectory() as directory:
+            daemon = self.daemon(Path(directory))
+            with self.assertRaisesRegex(MirrorError, 'mirror_unavailable'):
+                daemon.resolve('example/project')
+            self.expected_key = 'synthetic-initial-private-key'
+            self.credentials.put('FORGE_SETUP_APP_KEY', self.expected_key, file=True)
+            self.assertEqual(daemon.resolve('example/project').repository_id, 12)
+            self.assertEqual(len([c for c in self.calls if c[0]=='POST']),
+                             len([c for c in self.calls if c[0]=='DELETE']))
+
+    def test_daemon_survives_key_rotation_and_still_refuses_revoked_installation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.expected_key = 'synthetic-original-private-key'
+            Credentials(root).put('FORGE_SETUP_APP_KEY', self.expected_key, file=True)
+            daemon = self.daemon(root)
+            repo = daemon.resolve('example/project')
+            self.expected_key = 'synthetic-replacement-private-key'
+            self.credentials.put('FORGE_SETUP_APP_KEY', self.expected_key, file=True)
+            self.assertEqual(daemon.resolve('example/project'), repo)
+            with daemon.credentials(repo) as token:
+                self.assertEqual(token, 'synthetic-read-token')
+            self.assertEqual(len([c for c in self.calls if c[0]=='POST']),
+                             len([c for c in self.calls if c[0]=='DELETE']))
+            self.installation['suspended_at'] = 'now'
+            count = len(self.calls)
+            with self.assertRaises(MirrorError): daemon.resolve('example/project')
+            self.assertFalse(any(c[0]=='POST' for c in self.calls[count:]))
+            self.installation['suspended_at'] = None
+            self.settings.load.return_value['connections'] = {}
+            self.repository['private'] = True
+            with self.assertRaises(MirrorError): daemon.resolve('example/project')
 
     def test_fetch_credential_is_repo_scoped_read_only_and_revoked_on_failure(self):
         repo = self.access.resolve('example/project')
