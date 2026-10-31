@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "@nuxt/ui": "^4.11.1",
-    "markdown-it": "^15.0.2",
+    "markdown-it": "^15.0.3",
     "mermaid": "11.17.2",
-    "nuxt": "^4.5.2",
-    "sanitize-html": "^2.17.7",
+    "nuxt": "^4.6.3",
+    "sanitize-html": "^2.18.1",
     "vue": "^3.5.43"
   },
   "devDependencies": {
@@ -24,10 +24,10 @@
     "@nuxt/test-utils": "^4.3.2",
     "@types/sanitize-html": "^2.16.1",
     "@vue/test-utils": "^2.5.1",
-    "happy-dom": "^20.14.5",
+    "happy-dom": "^20.14.6",
     "playwright-core": "1.55.0",
     "typescript": "5.9.3",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "vue-tsc": "2.2.12"
   }
 }
