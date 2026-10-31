@@ -331,11 +331,12 @@ def qualify(image, *, docker=None):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--image',required=True)
     parser.add_argument('--provider-proxy', action='store_true')
+    parser.add_argument('--seccomp', help='Installed runner policy for provider qualification')
     args=parser.parse_args()
     try:
         if args.provider_proxy:
             from .provider_qualification import qualify as provider_qualify
-            result=provider_qualify(args.image)
+            result=provider_qualify(args.image, seccomp=args.seccomp)
         else:
             result=qualify(args.image)
     except (BoundaryError,OSError,ValueError,subprocess.SubprocessError) as error:

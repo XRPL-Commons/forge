@@ -40,6 +40,29 @@ class ProviderQualificationTests(unittest.TestCase):
         report = execute(args)
         self.assertIn('shell credential isolation', report['checks'])
 
+    def test_missing_or_relative_seccomp_is_refused_before_resource_creation(self):
+        image = 'sha256:'+'a'*64
+        def docker(args, **kwargs):
+            return SimpleNamespace(stdout=json.dumps([{'Id':image,
+                'Config':{'Labels':{'org.forge.worker-boundary':'2'}}}]))
+        for policy in (None, 'relative.json', '/does-not-exist/runner-seccomp.json'):
+            engine = Mock(side_effect=docker)
+            with self.subTest(policy=policy), \
+                    patch('forge.provider_qualification.platform.system', return_value='Linux'), \
+                    patch('forge.provider_qualification.WorkerBoundary'):
+                with self.assertRaisesRegex(BoundaryError, 'installed runner seccomp'):
+                    qualify(image, docker=engine, seccomp=policy)
+            self.assertEqual([call.args[0] for call in engine.call_args_list], [['image','inspect',image]])
+
+    def test_native_entrypoint_forwards_exact_policy(self):
+        from forge.worker_qualification import main
+        with patch('sys.argv', ['qualification','--image','sha256:'+'a'*64,
+                '--provider-proxy','--seccomp','/installed/runner-seccomp.json']), \
+                patch('forge.provider_qualification.qualify', return_value={}) as probe, \
+                patch('builtins.print'):
+            self.assertEqual(main(), 0)
+        probe.assert_called_once_with('sha256:'+'a'*64, seccomp='/installed/runner-seccomp.json')
+
     def test_real_envelope_handoff_is_private_and_has_no_host_key(self):
         docker = Mock()
         handoff(docker, 'fixture-worker')
@@ -208,9 +231,10 @@ class ProviderQualificationTests(unittest.TestCase):
         boundary.labels.return_value = []
         boundary.prepare.return_value = SimpleNamespace(gateway='gateway', worker_args=[], environment={})
         boundary.inspect.return_value = None
-        actions = []
+        actions, launches = [], []
         boundary.cleanup.side_effect = lambda job: actions.append('cleanup')
         def docker(args, **kwargs):
+            if args[0] == 'create': launches.append(args)
             if args[:2] == ['image', 'inspect']:
                 value = json.dumps([{'Id':image, 'Config':{'Labels':{'org.forge.worker-boundary':'2'}}}])
             elif args[0] == 'version': value = '29.0.0'
@@ -227,10 +251,15 @@ class ProviderQualificationTests(unittest.TestCase):
         with patch('forge.provider_qualification.platform.system', return_value='Linux'), \
                 patch('forge.provider_qualification.WorkerBoundary', return_value=boundary) as cls, \
                 patch('forge.provider_qualification.ThreadingHTTPServer', return_value=upstream), \
-                patch('forge.provider_qualification.SessionServer', return_value=session):
+                patch('forge.provider_qualification.SessionServer', return_value=session), \
+                tempfile.TemporaryDirectory() as directory:
+            policy = Path(directory)/'runner-seccomp.json'; policy.write_text('{}')
             cls.identity.return_value = ('owned', {})
             with self.assertRaises(BoundaryError) as raised:
-                qualify(image, docker=docker)
+                qualify(image, docker=docker, seccomp=policy)
+            self.assertEqual(launches[0].count('seccomp='+str(policy)), 1)
+            self.assertNotIn('seccomp=unconfined', launches[0])
+            self.assertIn('apparmor=forge-runner-private-proc', launches[0])
         report = json.loads(str(raised.exception).split(': ', 1)[1])
         self.assertEqual(report['worker_phase'], 'tool_result')
         self.assertEqual(report['upstream_requests'], 2)

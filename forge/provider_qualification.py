@@ -291,7 +291,7 @@ except Exception as error:
 '''
 
 
-def qualify(image, *, docker=None):
+def qualify(image, *, docker=None, seccomp=None):
     if platform.system() != 'Linux':
         raise BoundaryError('Native provider qualification requires the Linux Docker host')
     def call(args, **kwargs):
@@ -303,6 +303,9 @@ def qualify(image, *, docker=None):
     observed = json.loads(docker(['image','inspect',image]).stdout)[0]
     if observed['Id'] != image or observed.get('Config',{}).get('Labels',{}).get('org.forge.worker-boundary') != '2':
         raise BoundaryError('Qualification requires the exact worker-boundary v2 image ID')
+    policy = Path(seccomp or '')
+    if not policy.is_absolute() or not policy.is_file():
+        raise BoundaryError('Provider qualification requires the installed runner seccomp policy')
     prefix = 'forge-provider-qualification-' + uuid.uuid4().hex
     job = dict(id=prefix, execution_fence=prefix)
     labels = {'forge.qualification':prefix}
@@ -335,6 +338,7 @@ def qualify(image, *, docker=None):
             docker(['create','--pull=never','--name',worker,*boundary.labels(WorkerBoundary.identity(job)[1]),
                 '--read-only','--user','1000:1000','--cap-drop','ALL','--security-opt','no-new-privileges',
                 *process_isolation(dict(provider='claude',apparmor_profile='forge-runner-private-proc')),
+                '--security-opt','seccomp='+str(policy),
                 '--pids-limit','256','--memory','1g','--memory-swap','1g','--cpus','1',
                 '--tmpfs','/tmp:rw,nosuid,nodev,size=128m',*spec.worker_args,
                 *[item for key,value in spec.environment.items() for item in ('--env',key+'='+value)],

@@ -19,7 +19,7 @@ with sqlite3.connect(pathlib.Path(marker[1],'state/forge.sqlite3').as_uri()+'?mo
     image=json.loads(row[0])['image'] if row else None
 revision=subprocess.run(['git','-C','/home/forge/forge','rev-parse','HEAD'],capture_output=True,text=True,check=True,timeout=10).stdout.strip()
 engine=subprocess.run(['docker','--host','unix:///var/run/docker.sock','version','--format','{{.Server.Version}}'],capture_output=True,text=True,check=True,timeout=20).stdout.strip()
-print(json.dumps(dict(image=image,source_revision=revision,engine_version=engine)))
+print(json.dumps(dict(image=image,source_revision=revision,engine_version=engine,seccomp=str(root/'runner-seccomp.json'))))
 '''
 
 HOST = '''import json,pwd,re,subprocess,sys
@@ -45,7 +45,7 @@ def main(payload):
     if not value['apply']:
         print(json.dumps({'ok':True,'result':dict(status='planned',**identity)}));return 0
     args=prefix+['/usr/bin/python3','-m','forge.worker_qualification','--image',image]
-    if value['provider_proxy']:args+=['--provider-proxy']
+    if value['provider_proxy']:args+=['--provider-proxy','--seccomp',observed['seccomp']]
     result=subprocess.run(args,cwd=source,capture_output=True,timeout=360,env=environment)
     if result.returncode not in (0,1) or len(result.stdout)>65536:
         print(json.dumps({'ok':False,'error':'factory_setup_failed'}));return 1
