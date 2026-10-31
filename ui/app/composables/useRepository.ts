@@ -109,7 +109,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
 
   const failed = computed(() => requirements(report.value).filter(requirement => !requirement.passed))
   const editUrl = computed(() => report.value?.edit_url ?? '')
-  const canDownload = computed(() => ['ready', 'needs_setup'].includes(row.value?.protection_status ?? '') && !busy.value)
+  const canDownload = computed(() => row.value?.github_protection !== 'optional' && ['ready', 'needs_setup'].includes(row.value?.protection_status ?? '') && !busy.value)
   const downloadHref = computed(() => row.value && view.value && canDownload.value ? rulesetHref(row.value, view.value.revision) : undefined)
   const checking = computed(() => row.value?.protection_status === 'checking')
   const syncing = computed(() => refreshing.value || view.value?.sync.status === 'running')
@@ -296,6 +296,23 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
+  async function updateGithubProtection(mode: 'required' | 'optional') {
+    const current = row.value
+    if (!current || !view.value || busy.value) return
+    busy.value = true; error.value = ''
+    try {
+      const next = await api.act<RepositoriesView>('/api/repositories/github-protection', {
+        repo_id: current.id, revision: view.value.revision, mode,
+      })
+      if (repoId.value === current.id) poll.replace(next)
+    } catch (failure: unknown) {
+      if (repoId.value === current.id) error.value = actionMessage(failure, 'Could not save the GitHub protection requirement. Refresh before trying again.')
+    } finally {
+      busy.value = false
+    }
+    if (repoId.value === current.id && !error.value) await check()
+  }
+
   async function updateReviewScope(scope: 'all' | 'forge') {
     const current = row.value
     if (!current?.merge_check_revision || busy.value) return
@@ -310,5 +327,5 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     } finally { busy.value = false }
   }
 
-  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, refreshAccess }
+  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, updateGithubProtection, refreshAccess }
 }

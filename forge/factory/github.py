@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from ..app_access import AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
 from .contracts import SHA, candidate, digest, submission
-from ..repository_policy import protection_ready
+from ..repository_policy import protection_ready, github_protection, plan_unavailable
 from ..request_metrics import RequestBudgetExhausted, deadline as request_deadline
 
 # Ancestry between two recorded commits never changes; one process asks once.
@@ -68,10 +68,11 @@ def verdict_comment(job, report, marker):
 
 
 class GitHubUnavailable(RuntimeError):
-    def __init__(self, message, *, status=None, error_types=()):
+    def __init__(self, message, *, status=None, error_types=(), plan_required=False):
         super().__init__(message)
         self.status = status
         self.error_types = error_types
+        self.plan_required = plan_required
 
 
 class GitHubBudgetExhausted(RequestBudgetExhausted):
@@ -150,7 +151,7 @@ class GitHub:
         except RequestBudgetExhausted:
             raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
         except AccessError as error:
-            raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
+            raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status, plan_required=error.plan_required) from None
 
     def graphql(self, role, repo, query, variables, *, extra=None):
         """Host-owned GraphQL operation; HTTP 200 alone is not success."""
@@ -165,7 +166,7 @@ class GitHub:
         except RequestBudgetExhausted:
             raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
         except AccessError as error:
-            raise GitHubUnavailable('GitHub publication is unconfirmed', status=error.status) from None
+            raise GitHubUnavailable('GitHub publication is unconfirmed', status=error.status, plan_required=error.plan_required) from None
         if not isinstance(value, dict) or value.get('errors') or not isinstance(value.get('data'), dict):
             errors = value.get('errors', []) if isinstance(value, dict) else []
             types = tuple(sorted({row['type'] for row in errors if isinstance(row, dict)
@@ -237,7 +238,7 @@ class GitHub:
         except RequestBudgetExhausted:
             raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
         except AccessError as error:
-            raise GitHubUnavailable('Publisher identity is unconfirmed', status=error.status) from None
+            raise GitHubUnavailable('Publisher identity is unconfirmed', status=error.status, plan_required=error.plan_required) from None
         if (not isinstance(value, dict) or type(value.get('id')) is not int or value['id'] <= 0
                 or value.get('login') != login or value.get('type') != 'Bot'):
             raise GitHubUnavailable('Publisher identity is unconfirmed')
@@ -629,14 +630,27 @@ class GitHub:
 
     def protections(self, item, candidate_value):
         report = self.protection_report(item, candidate_value)
-        return protection_ready(report)
+        if not protection_ready(report):
+            return False
+        if report.get('github_protection') == 'optional' and report['sources'] and candidate_value.get('merge_request'):
+            # Existing actor bypasses are not permission to skip real rules.
+            # GitHub's clean state includes its applicable checks and approvals;
+            # an unprotected repository need not pass unrelated optional CI.
+            pr = self.pr(item, candidate_value['pr'])
+            return (pr.get('mergeable_state') == 'clean' and pr.get('mergeable') is True
+                    and (pr.get('head') or {}).get('sha') == candidate_value['head']
+                    and (pr.get('base') or {}).get('sha') == candidate_value['base']
+                    and (pr.get('base') or {}).get('ref') == candidate_value['base_ref'])
+        return True
 
     def protection_report(self, item, candidate_value):
         """Read effective GitHub rules; never confuse the baseline with a bypass audit."""
         branch = candidate_value['base_ref']
+        mode = github_protection(self.settings.load(), item['repo_id'])
+        optional = mode == 'optional'
         repo = item.get('repo', '')
         report = {'repo_id': item.get('repo_id'), 'branch': branch, 'observed_at': self.clock(),
-                  'available': True, 'requirements': [], 'sources': [], 'errors': [],
+                  'available': True, 'github_protection': mode, 'plan_unavailable_sources': [], 'requirements': [], 'sources': [], 'errors': [],
                   'additional_rules': [], 'code_owner_reviews': False,
                   'bypass': {'status': 'operator_review', 'detail':
                       'GitHub may hide bypass permissions. Review who can bypass these rules on GitHub.'}}
@@ -661,7 +675,9 @@ class GitHub:
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable as error:
-            if error.status != 404:
+            if optional and plan_unavailable(error):
+                report['plan_unavailable_sources'].append('classic')
+            elif error.status != 404:
                 report['errors'].append({'source': 'classic', 'detail':
                     'Branch protection could not be read. Check Controller access and try again.'})
         try:
@@ -690,13 +706,18 @@ class GitHub:
                         required_checks.extend((check,source,'integration_id') for check in checks)
         except GitHubBudgetExhausted:
             raise
-        except GitHubUnavailable:
-            report['errors'].append({'source': 'rulesets', 'detail':
-                'Repository rules could not be checked. Check GitHub access and try again.'})
+        except GitHubUnavailable as error:
+            if optional and plan_unavailable(error):
+                report['plan_unavailable_sources'].append('rulesets')
+            else:
+                report['errors'].append({'source': 'rulesets', 'detail':
+                    'Repository rules could not be checked. Check GitHub access and try again.'})
         valid = all(type(r.get('required_approving_review_count', 0)) is int
                     and 0 <= r.get('required_approving_review_count', 0) <= 100
                     and type(r.get('dismiss_stale_reviews', r.get('dismiss_stale_reviews_on_push', False))) is bool
                     and type(r.get('require_code_owner_reviews', False)) is bool for r, _ in reviews)
+        valid = valid and all(isinstance(check, dict) and isinstance(check.get('context'), str)
+                              and bool(check['context']) for check, _, _ in required_checks)
         if not valid:
             report['errors'].append({'source': 'reviews', 'detail': 'GitHub returned incomplete review settings. Check again.'})
         report['available'] = not report['errors']
@@ -728,7 +749,15 @@ class GitHub:
             report['requirements'].append({'id':'merge_policy','label':'Forge merge policy from the Forge App',
                 'passed':bool(sources),'detail':f'Require forge/merge-policy from Forge App {app_id} on the target branch.',
                 'sources':sources})
-        report['bypass'] = self.controller_bypass(item, reviews)
+        if optional:
+            report['requirements'] = [{'id': 'readable', 'label': 'Observe existing GitHub rules',
+                'passed': True, 'detail': ('GitHub reports these protections are unavailable on this plan. Forge still enforces Review and Audit.'
+                    if report['plan_unavailable_sources'] else
+                    'Forge enforces Review and Audit. Existing GitHub rules remain in force.'),
+                'sources': report['sources']}]
+            report['bypass'] = {'status': 'not_required', 'detail': 'Forge does not require a GitHub bypass.'}
+        else:
+            report['bypass'] = self.controller_bypass(item, reviews)
         return report
 
     def controller_bypass(self, item, reviews):
@@ -830,7 +859,7 @@ class GitHub:
             # generic observation message.
             why = self.MERGE_REFUSALS.get(error.status, f'GitHub returned HTTP {error.status}')
             raise GitHubUnavailable(f"GitHub refused to merge {item['repo']}#{candidate_value['pr']}: {why}",
-                                    status=error.status) from None
+                                    status=error.status, plan_required=error.plan_required) from None
         return value.get('merged') is True
 
     def labels(self, item):

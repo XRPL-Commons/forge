@@ -16,7 +16,7 @@ def finding(identifier, status, detail, *, command=None, repository=None, waivab
             'repository': repository, 'waivable': waivable}
 
 
-def repository(github, target, *, allow_workflow_edits=False):
+def repository(github, target, *, allow_workflow_edits=False, github_protection='required'):
     """Pin source evidence while reusing Forge's non-executing dependency scan."""
     from forge.factory.environments import probe
     current = github.repository(target['name'])
@@ -28,8 +28,16 @@ def repository(github, target, *, allow_workflow_edits=False):
             require(method == 'GET')
             return github._request('GET', '/repos/' + current['name'] + suffix)
     environment = probe(LocalSource(), {'repo_id': current['id'], 'repo': current['name']})
-    effective = branch_rules(github, current)
-    classic = optional(github, '/repos/' + current['name'] + '/branches/' + quote(current['branch'], safe='') + '/protection')
+    require(github_protection in ('required', 'optional'))
+    def protection_read(operation, absent):
+        try:
+            return operation()
+        except SetupError as error:
+            if github_protection != 'optional' or error.code != 'github_plan_required':
+                raise
+            return absent
+    effective = protection_read(lambda: branch_rules(github, current), [])
+    classic = protection_read(lambda: optional(github, '/repos/' + current['name'] + '/branches/' + quote(current['branch'], safe='') + '/protection'), None)
     require(classic is None or isinstance(classic, dict), 'github_invalid_response')
     signatures = optional(github, '/repos/' + current['name'] + '/branches/' + quote(current['branch'], safe='') + '/protection/required_signatures') if classic else None
     workflows = optional(github, '/repos/' + current['name'] + '/contents/.github/workflows?ref=' + environment['head'])
@@ -99,7 +107,7 @@ def observe(intent, installation, github, *, run=run_bounded):
     for selected in intent['repositories']:
         name = selected['target']['name']
         try:
-            row = repository(github, selected['target'], allow_workflow_edits=selected['allow_workflow_edits'])
+            row = repository(github, selected['target'], allow_workflow_edits=selected['allow_workflow_edits'], github_protection=selected.get('github_protection', 'required'))
             repos.append(row)
             items.append(finding('repository.' + str(row['target']['id']), 'pass' if row['target']['admin'] else 'needs_you',
                                  'Repository administration is required for preparation.', repository=name))

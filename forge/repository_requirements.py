@@ -5,6 +5,7 @@ expose an HTTP route. The authenticated caller must authorize the target before
 calling it. Activation continues through RepositorySetup's existing gates.
 """
 from forge_client.contracts import repository, requirements
+from .repository_policy import github_protection
 
 
 def describe(settings, target, *, initial_setup=False):
@@ -35,6 +36,6 @@ def describe(settings, target, *, initial_setup=False):
                       'access_ready': bool(row and row['access_ready']),
                       'protection_ready': bool(row and row['protection_ready']),
                       'protection_status': row['protection_status'] if row else 'undiscovered'},
-        'baseline': {'branch': (row.get('protection') or {}).get('branch') if row and row['protection_status'] in ('ready', 'needs_setup') else None,
+        'baseline': {'github_protection': github_protection(view['config'], target['id']), 'branch': (row.get('protection') or {}).get('branch') if row and row['protection_status'] in ('ready', 'needs_setup') else None,
                      'required_approvals': 2, 'dismiss_stale_reviews': True, 'merge_check_scope':check_scope},
     })

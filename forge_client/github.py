@@ -66,7 +66,10 @@ def run_bounded(argv, *, payload=None, input_bytes=None, input_limit=65536, outp
             except (ValueError, UnicodeError):
                 failure = None
             if (isinstance(failure, dict) and failure.get('status') in (403, '403')
-                    and failure.get('message') == 'Upgrade to GitHub Pro or make this repository public to enable this feature.'):
+                    and failure.get('message') in (
+                        'Upgrade to GitHub Pro or make this repository public to enable this feature.',
+                        'Upgrade to GitHub Pro or make this repository public to enable this feature',
+                        'Upgrade to GitHub Team or make this repository public to enable this feature.')):
                 raise SetupError('github_plan_required',
                                  'GitHub reports that this repository\'s plan does not support the requested feature.')
             if isinstance(failure, dict) and failure.get('status') in (404, '404'):

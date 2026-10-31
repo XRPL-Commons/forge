@@ -27,10 +27,14 @@ class ClientMergePolicy:
         need(isinstance(value,dict))
         action=value.get('action')
         need(action in {'read','set'})
-        common={'repository','instance','generation','action'}
+        selector=value.get('policy', 'merge')
+        need(isinstance(selector, str) and selector in {'merge', 'github_protection'})
+        common={'repository','instance','generation','action'} | ({'policy'} if 'policy' in value else set())
         fields(value,common if action=='read' else common|{'mode','revision','request_id'})
         capability='repositories:read' if action=='read' else 'repositories:policy'
         grant=self.clients.authorize(token,value['repository'],capability,value['instance'],value['generation'])
+        if selector == 'github_protection':
+            return self._protection(token, value, grant)
         if action=='read':
             config=load(self.settings.authority.root,scope=self.settings.scope)
             with self.store.read_snapshot() as db:
@@ -67,6 +71,58 @@ class ClientMergePolicy:
                 json.dumps(binding,sort_keys=True),json.dumps(answer,sort_keys=True),self.settings.clock(),self.settings.clock(),self.settings.clock()))
             audit.details['command_request_id']=value['request_id']
             audit.finish_in(db,'accepted','policy_saved')
+            return answer
+
+    def _protection(self, token, value, grant):
+        from .repository_setup import RepositorySetup
+        from .settings import validate as settings_validate, DEFAULT
+        from .repository_policy import github_protection
+        target = value['repository']
+        if value['action'] == 'read':
+            answer = RepositorySetup(self.settings).protection_policy(target)
+            self.clients.authorize(token, target, 'repositories:read', value['instance'], value['generation'])
+            return answer
+        need(isinstance(value['mode'], str) and value['mode'] in {'required', 'optional'})
+        need(isinstance(value['revision'], str) and re.fullmatch(r'[a-f0-9]{64}', value['revision']))
+        need(isinstance(value['request_id'], str) and re.fullmatch(r'[a-f0-9]{32}', value['request_id']))
+        binding = {**deepcopy(value), 'client': grant['id'], 'operator': grant['operator']}
+        from .mutation_audit import current, MutationAudit, request_context
+        audit = current() or MutationAudit(self.store, '/api/client/policy', clock=self.settings.clock, request_id=value['request_id'])
+        audit.bind(grant=grant); audit.describe(value)
+        from .factory.effect_controller import effect_lock
+        # The fresh grant binds immutable target identity even before its App is
+        # installed. Saving a disabled intent never grants access or dispatch.
+        with request_context(audit), self.clients.effect_guard(token, value['instance'], value['generation']), effect_lock(self.store), self.store.write() as db:
+            writable(db)
+            receipt = db.execute('SELECT payload_json,result_json FROM client_operations WHERE id=?', (value['request_id'],)).fetchone()
+            if receipt:
+                need(json.loads(receipt['payload_json']) == binding, 'operation_conflict', 'This request ID belongs to another policy decision.', 409)
+                return json.loads(receipt['result_json'])
+            domain = self.settings.domain
+            stored = db.execute("SELECT * FROM configuration WHERE domain=? AND subject='instance' AND active=1", (domain,)).fetchone()
+            config = settings_validate(json.loads(stored['settings_json']) if stored else deepcopy(DEFAULT))
+            need(digest(config) == value['revision'], 'revision_changed', 'Repository settings changed. Read the current policy before setting it.', 409)
+            row = next((r for r in config['repositories'] if r['id'] == target['id']), None)
+            existing = db.execute('SELECT full_name FROM repositories WHERE id=?', (target['id'],)).fetchone()
+            need((row is None or row['name'].lower() == target['name'].lower()) and
+                 (existing is None or existing[0].lower() == target['name'].lower()), 'scope_changed', 'Repository identity changed.', 409)
+            if row is None:
+                row = dict(target, enabled=False)
+                config['repositories'].append(row)
+            row['github_protection'] = value['mode']
+            settings_validate(config)
+            from .install_scope import check_repositories_in
+            check_repositories_in(db, config['repositories'])
+            Configuration(self.store, clock=self.settings.clock).replace_in(db, domain, config,
+                expected_revision=stored['revision'] if stored else 0, credential_ref=stored['credential_ref'] if stored else None)
+            db.execute('INSERT INTO repositories(id,full_name,enabled) VALUES(?,?,0) ON CONFLICT(id) DO NOTHING', (target['id'], target['name']))
+            answer = {'repository': target, 'mode': github_protection(config, target['id']),
+                      'revision': digest(config), 'source': 'explicit'}
+            db.execute("INSERT INTO client_operations(id,request_id,connection_id,repository_id,kind,status,payload_json,result_json,created_at,updated_at,finished_at) "
+                "VALUES(?,?,?,?,'merge_policy','completed',?,?,?,?,?)", (value['request_id'],value['request_id'],grant['id'],target['id'],
+                json.dumps(binding,sort_keys=True),json.dumps(answer,sort_keys=True),self.settings.clock(),self.settings.clock(),self.settings.clock()))
+            audit.details['command_request_id'] = value['request_id']
+            audit.finish_in(db, 'accepted', 'policy_saved')
             return answer
 
     def _repository(self,db,target):

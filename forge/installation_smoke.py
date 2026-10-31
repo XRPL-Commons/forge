@@ -117,7 +117,8 @@ class InstallationSmoke:
                 and binding['smoke_policy'] in ('auto', 'human'), 'invalid_smoke_binding')
         require(isinstance(binding['repositories'], list) and 1 <= len(binding['repositories']) <= 20, 'invalid_smoke_binding')
         for row in binding['repositories']:
-            fields(row, ('target', 'merge_policy', 'allow_workflow_edits'))
+            fields(row, {'target', 'merge_policy', 'allow_workflow_edits'} | ({'github_protection'} if 'github_protection' in row else set()))
+            require(row.get('github_protection', 'required') in ('required', 'optional'), 'invalid_smoke_binding')
             repository(row['target'])
             require(row['merge_policy'] in ('auto', 'human') and type(row['allow_workflow_edits']) is bool, 'invalid_smoke_binding')
         require(len({r['target']['id'] for r in binding['repositories']}) == len(binding['repositories']), 'invalid_smoke_binding')
@@ -377,6 +378,8 @@ class InstallationSmoke:
             row['enabled'] = False
         for selected in binding['repositories']:
             target = selected['target']
+            require(configured.get(target['id'], {}).get('github_protection', 'required') == selected.get('github_protection', 'required'),
+                    'repository_policy_changed', 'GitHub protection policy changed before handover.')
             configured[target['id']] = {**configured.get(target['id'], {}), **target, 'enabled': True}
         config['repositories'] = list(configured.values())
         validate_settings(config)

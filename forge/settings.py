@@ -4,7 +4,7 @@ Configuration is operator intent; the access observation is replaceable. An
 unknown/failed observation never silently removes configured repositories.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 from functools import cached_property
@@ -100,11 +100,13 @@ def validate(config):
         raise ValueError('repositories must be a bounded list')
     ids, names = set(), set()
     for row in config['repositories']:
-        if (not isinstance(row, dict) or set(row) - {'deployment', 'mirror_denied_repositories'} != {'id', 'name', 'enabled'}
+        if (not isinstance(row, dict) or set(row) - {'deployment', 'mirror_denied_repositories', 'github_protection'} != {'id', 'name', 'enabled'}
                 or type(row['id']) is not int or row['id'] <= 0
                 or type(row['enabled']) is not bool or not isinstance(row['name'], str)
                 or not REPO_PATTERN.fullmatch(row['name'])):
             raise ValueError('Each repository needs a GitHub numeric id, owner/name, and enabled boolean')
+        if row.get('github_protection', 'required') not in ('required', 'optional'):
+            raise ValueError('GitHub protection must be required or optional')
         if 'deployment' in row:
             deployment(row['deployment'])
         if 'mirror_denied_repositories' in row:
@@ -330,7 +332,14 @@ class Settings:
                 # directory; its activation step has its own readiness gate.
                 if newly_enabled and self.scope != 'setup' and not rows[row['id']]['protection_ready']:
                     raise ValueError(row['name'] + ': finish repository setup and check again before enabling')
-            self.save_config(config, expected_generation=generation, expected_revision=storage_revision)
+            from .repository_policy import github_protection
+            from .factory.effect_controller import effect_lock
+            identities = {r['id'] for r in config['repositories'] + previous_config['repositories']}
+            policy_changed = any(github_protection(config, identifier) != github_protection(previous_config, identifier)
+                                 for identifier in identities)
+            # A mode decision cannot race the final observed merge and its PUT.
+            with effect_lock(self.database) if policy_changed else nullcontext():
+                self.save_config(config, expected_generation=generation, expected_revision=storage_revision)
         return self.view()
 
     def refresh(self):

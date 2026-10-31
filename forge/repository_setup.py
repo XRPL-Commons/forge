@@ -5,7 +5,7 @@ import json
 
 from .settings import digest
 from .factory.github import GitHub, GitHubUnavailable
-from .repository_policy import protection_ready
+from .repository_policy import protection_ready, github_protection
 
 MAX_AGE = 300
 CHECK_TIMEOUT = 120
@@ -32,7 +32,8 @@ def ruleset(branch, controller_app_id, merge_check_scope=None):
 
 
 def observation_key(config, row):
-    return digest({'connections': config['connections'], 'repo_id': row['id'], 'name': row['name']})
+    return digest({'connections': config['connections'], 'repo_id': row['id'], 'name': row['name'],
+                   'github_protection': github_protection(config, row['id'])})
 
 
 class RepositorySetup:
@@ -119,7 +120,7 @@ class RepositorySetup:
             if not row.get('access_ready'):
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
-            result.append({**row, 'mirror_denied_repositories': denied.get(row['id'], []), 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
+            result.append({**row, 'github_protection': github_protection(config, row['id']), 'mirror_denied_repositories': denied.get(row['id'], []), 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
                            'merge_check_scope': merge_check_scope(runtime, row['id']), 'merge_check_revision': digest(runtime),
                            'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
@@ -151,6 +152,41 @@ class RepositorySetup:
                 'connections': connections, 'sync': settings['sync'],
                 'activation_available': self.settings.scope != 'setup',
                 'continue_url': '/onboarding' if self.settings.scope == 'setup' else '/factory'}
+
+    def protection_policy(self, target):
+        from forge_client.contracts import repository
+        repository(target)
+        config = self.settings.load()
+        row = next((r for r in config['repositories'] if r['id'] == target['id']), None)
+        if row and row['name'].lower() != target['name'].lower():
+            raise ValueError('Repository identity changed')
+        return {'repository': target, 'mode': github_protection(config, target['id']),
+                'revision': digest(config),
+                'source': 'explicit' if row and 'github_protection' in row else 'default'}
+
+    def set_github_protection(self, target, revision, mode):
+        # Trusted callers bind target identity before invoking this local helper.
+        from forge_client.contracts import repository
+        repository(target)
+        if mode not in ('required', 'optional'):
+            raise ValueError('GitHub protection must be required or optional')
+        config = self.settings.load()
+        if revision != digest(config):
+            raise ValueError('Repository settings changed. Reload before saving.')
+        row = next((r for r in config['repositories'] if r['id'] == target['id']), None)
+        if row is None:
+            row = dict(target, enabled=False)
+            config['repositories'].append(row)
+        elif row['name'].lower() != target['name'].lower():
+            raise ValueError('Repository identity changed')
+        row['github_protection'] = mode
+        self.settings.save(config, revision)
+        return self.protection_policy(target)
+
+    def github_protection(self, repo_id, revision, mode):
+        row = self.view(repo_id)['repositories'][0]
+        self.set_github_protection({'id': row['id'], 'name': row['name']}, revision, mode)
+        return self.view(repo_id)
 
     def review_scope(self, repo_id, revision, scope):
         from .factory.config import load, save

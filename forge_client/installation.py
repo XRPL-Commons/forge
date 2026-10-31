@@ -38,10 +38,12 @@ def intent(value, github):
         operators.append({key: resolved[key] for key in ('id', 'login')})
     repositories = []
     for row in value['repositories']:
-        fields(row, ('name', 'merge_policy', 'allow_workflow_edits'))
+        fields(row, ('name', 'merge_policy', 'allow_workflow_edits', *(['github_protection'] if 'github_protection' in row else [])))
+        require(row.get('github_protection', 'required') in ('required', 'optional'), 'invalid_intent')
         require(row['merge_policy'] in ('human', 'auto') and type(row['allow_workflow_edits']) is bool, 'invalid_intent')
         repositories.append({'target': github.repository(row['name']), 'merge_policy': row['merge_policy'],
-                             'allow_workflow_edits': row['allow_workflow_edits']})
+                             'allow_workflow_edits': row['allow_workflow_edits'],
+                             **({'github_protection': row['github_protection']} if 'github_protection' in row else {})})
     require(len({row['target']['id'] for row in repositories}) == len(repositories), 'duplicate_repository')
     require(all(row['target']['owner_id'] == owner['id'] for row in repositories),
             'repository_owner_mismatch', 'Choose repositories under the selected GitHub owner for this installation.')
@@ -246,17 +248,29 @@ class Install:
         saved.save(install_report.build(self.state, versions=versions))
 
     def repository(self, factory, target, *, apply=False):
+        selected = next((row for row in self.load()['repositories'] if row['target']['id'] == target['id']), None)
+        mode = selected.get('github_protection') if selected else ('optional' if all(row.get('github_protection') == 'optional' for row in self.load()['repositories']) else None)
         if factory.call('status')['phase'] != 'active':
             result = factory.prepare_repository(target['name'], initial=False, apply=apply,
-                                                 repair=self.load()['rules_repair'])
+                                                 repair=self.load()['rules_repair'], github_protection=mode)
             if result.get('status') == 'planned' and not result['plan']['steps'] and not result['plan']['blockers']:
                 return {'status': 'repository_ready', 'repository': target}
             return result
-        result = factory.call('requirements', repository={key: target[key] for key in ('id', 'name')})
+        identity = {key: target[key] for key in ('id', 'name')}
+        result = factory.call('requirements', repository=identity)
+        policy_matches = mode is None or result['baseline'].get('github_protection', 'required') == mode
         if apply:
-            result = factory.call('verify_repository', repository={key: target[key] for key in ('id', 'name')},
-                                  revision=result['revision'])
-        ready = result['readiness']['access_ready'] and result['readiness']['protection_ready']
+            if not policy_matches:
+                current = factory.call('github_protection', repository=identity, operation='read')
+                factory.call('github_protection', repository=identity, operation='set', mode=mode,
+                             revision=current['revision'], request_id=digest({
+                                 'intent': self.state['inputs_digest'], 'repository': identity,
+                                 'mode': mode, 'revision': current['revision']})[:32])
+                result = factory.call('requirements', repository=identity)
+                policy_matches = result['baseline'].get('github_protection', 'required') == mode
+            result = factory.call('verify_repository', repository=identity, revision=result['revision'])
+            policy_matches = mode is None or result['baseline'].get('github_protection', 'required') == mode
+        ready = policy_matches and result['readiness']['access_ready'] and result['readiness']['protection_ready']
         return {'status': 'repository_ready' if ready else 'repository_changed', 'repository': target,
                 'readiness': result['readiness']}
 
@@ -326,7 +340,9 @@ def interview(ssh, github, *, ask=input, tell=print):
     for name_in_repo in repos:
         mode = ask(name_in_repo + ' merge policy [human/auto; human]: ').strip() or 'human'
         workflows = ask(name_in_repo + ' allow workflow edits? [y/N]: ').strip().lower() in ('y', 'yes')
-        rows.append({'name': name_in_repo, 'merge_policy': mode, 'allow_workflow_edits': workflows})
+        protection = ask(name_in_repo + ' GitHub branch protection [required/optional; required]: ').strip() or 'required'
+        tell('Optional keeps Forge Review and Audit, while GitHub does not enforce Forge checks for other writers. Existing branch rules stay in place.')
+        rows.append({'name': name_in_repo, 'merge_policy': mode, 'allow_workflow_edits': workflows, 'github_protection': protection})
     providers = ask('Providers (codex, claude, grok; space-separated) [codex]: ').strip().split() or ['codex']
     accounts = []
     for provider in providers:
@@ -484,7 +500,8 @@ def schemas():
                     'type': 'object', 'additionalProperties': False,
                     'required': ['name', 'merge_policy', 'allow_workflow_edits'],
                     'properties': {'name': {'type': 'string'}, 'merge_policy': {'enum': ['human', 'auto']},
-                                   'allow_workflow_edits': {'type': 'boolean'}}}},
+                                   'allow_workflow_edits': {'type': 'boolean'},
+                                   'github_protection': {'enum': ['required', 'optional'], 'default': 'required'}}}},
                 'providers': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'items': {
                     'type': 'object', 'additionalProperties': False, 'required': ['id', 'kind'],
                     'properties': {'id': {'enum': ['codex', 'claude', 'grok']},

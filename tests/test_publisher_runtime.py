@@ -194,7 +194,7 @@ class SigningCapabilityTests(unittest.TestCase):
         directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
         self.store=Store.create(directory.name);self.configuration=Configuration(self.store)
         self.connection={'app_id':42,'installation_id':43}
-        self.reader=SigningCapabilities(self.store,SimpleNamespace(connection=lambda *args:self.connection))
+        self.reader=SigningCapabilities(self.store,SimpleNamespace(settings=SimpleNamespace(load=lambda: {'repositories': []}), connection=lambda *args:self.connection))
         self.patch_context=patch('forge.publication_qualification.signing_context',return_value=[])
         self.patch_context.start();self.addCleanup(self.patch_context.stop)
         self.job={'repo_id':1,'target_branch':'main'}

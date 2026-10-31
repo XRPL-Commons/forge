@@ -216,3 +216,30 @@ The work volume is bounded tmpfs. Its pages count against the writing worker's
 memory limit; the quota is a ceiling, not a memory reservation. The trusted
 frontend keeps it mounted through stopped-worker capture. A full host restart
 loses these temporary bytes, so recovery must retry the physical job.
+
+### Optional GitHub branch protection
+
+Private personal repositories can use Forge without GitHub Pro. Choose
+`optional` for that repository. Forge still runs Review and Audit and enforces
+its merge policy before its own merges. GitHub does not enforce Forge's checks
+for other writers. Existing GitHub rules remain in effect and are never removed
+or repaired by optional setup.
+
+A connection needs the separately approved `--policy` grant to change this
+setting. Preview and apply a repository setup with:
+
+```sh
+forge repo plan OWNER/REPO --server https://forge.example --github-protection optional
+forge repo setup OWNER/REPO --server https://forge.example --github-protection optional --apply --enable
+```
+
+To change only the setting, use `forge repo policy OWNER/REPO --server URL --github-protection optional`. Use `forge repo inspect OWNER/REPO --server URL`
+to read the effective setting. Pass `required` to restore the requirement;
+repository checks must then confirm GitHub protection before work resumes.
+
+For `forge install --intent-file`, each repository accepts
+`"github_protection": "optional"`. Omission keeps the existing `required`
+default and existing saved intent identity. The human interview offers the same
+choice. An installation-owned smoke repository uses optional protection when
+all selected repositories explicitly choose optional; otherwise it requires
+protection. A selected smoke repository uses its own setting.
