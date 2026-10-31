@@ -51,9 +51,8 @@ const pullUrl = computed(() => githubLink(view.value?.smoke?.pull_url))
       <section v-if="view.smoke" class="mt-6 rounded-xl border border-line bg-panel p-5" aria-label="First merge test">
         <h2 class="text-lg font-semibold">First merge test</h2>
         <p class="mt-2 text-sm text-muted">Forge completes a test issue through Build, Review, Audit and Merge before enabling your selected repositories.</p>
-        <p v-if="!view.smoke.operator_status" class="mt-3 font-medium">{{ view.smoke.status === 'smoke_triage_failed' ? 'Test planning needs attention' : stageStatus(view.smoke.phase || view.smoke.status) }}</p>
-        <p v-if="view.smoke.reason" class="mt-2 break-words text-sm">{{ view.smoke.reason }}</p>
-        <p v-if="view.smoke.operator_status" class="mt-2 text-sm text-muted">{{ view.smoke.operator_status.reason }}</p>
+        <p class="mt-3 font-medium" data-testid="installation-smoke-phase">{{ view.smoke.status === 'smoke_triage_failed' ? 'Test planning needs attention' : stageStatus(view.smoke.phase || view.smoke.status) }}</p>
+        <p v-if="view.smoke.reason || view.smoke.operator_status?.reason" class="mt-2 break-words text-sm">{{ view.smoke.reason || view.smoke.operator_status?.reason }}</p>
         <div class="mt-4 flex flex-wrap gap-3">
           <UButton v-if="issueUrl" :to="issueUrl" target="_blank" color="neutral" variant="outline">View test issue</UButton>
           <UButton v-if="pullUrl" :to="pullUrl" target="_blank" color="neutral" variant="outline">View pull request</UButton>

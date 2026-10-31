@@ -41,6 +41,28 @@ class FirstMergeProofTests(unittest.TestCase):
         self.assertIsNotNone(proof(self.root, **self.pilot)['candidate'])
         self.assertEqual(proof(self.root, **self.pilot)['status'], 'waiting')
 
+    def test_live_review_lease_does_not_look_like_unassigned_work(self):
+        candidate = Candidate(1,'forge/issue-1','head','base','policy',manifest_hash(self.requirements),'input')
+        evidence = {key:getattr(candidate,key) for key in ('pull_number','head_oid','base_oid','policy_hash','input_manifest_hash')}
+        self.life.adopt_candidate(self.command('adopt'), candidate,
+                                 evidence={**evidence, 'approved': True, 'verified': True})
+        with self.store.read_snapshot() as db:
+            current = dict(db.execute('SELECT * FROM candidates').fetchone())
+        manifest = {key:current[key] for key in ('head_oid','base_oid','policy_hash','requirements_hash','input_manifest_hash')}
+        manifest['candidate_id'] = current['id']
+        unassigned = proof(self.root, **self.pilot)
+        self.assertEqual(unassigned['operator_status']['code'], 'waiting')
+        self.assertIn('scheduler', unassigned['operator_status']['reason'])
+        self.assertEqual(unassigned['status'], 'waiting')
+        from forge.store.executions import Executions
+        Executions(self.store, clock=lambda:105).reserve_job(self.command('review'), 'review',
+            slot='review-1', execution_fence='review-fence', input_manifest=manifest, candidate_id=current['id'])
+        observed = proof(self.root, **self.pilot)
+        self.assertEqual(observed['operator_status']['code'], 'working')
+        self.assertEqual(observed['operator_status']['reason'], 'In review')
+        self.assertEqual(observed['status'], 'waiting')
+        self.assertIsNone(observed['evidence'])
+
     def test_repository_identity_and_timer_are_bound_to_the_pilot(self):
         with self.assertRaises(ValueError):
             proof(self.root, **{**self.pilot,'repository':{'id':1,'name':'different/repo'}})
