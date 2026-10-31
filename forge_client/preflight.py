@@ -68,7 +68,11 @@ def repository(github, target, *, allow_workflow_edits=False, github_protection=
             'ready_issues': [row['number'] for row in ready if not row.get('pull_request')]}
 
 
-def observe(intent, installation, github, *, run=run_bounded):
+def observe(intent, installation, github, *, run=run_bounded, progress=None):
+    def announce(instruction, **details):
+        if progress:
+            progress({'event': 'preflight_progress', 'instruction': instruction, **details})
+    announce('Checking local tools, GitHub sign-in and Tailscale…')
     items, repos = [], []
     for name in ('git', 'ssh', 'gh'):
         available = bool(shutil.which(name))
@@ -106,6 +110,7 @@ def observe(intent, installation, github, *, run=run_bounded):
                              command=['open', 'https://github.com/organizations/' + owner['login'] + '/settings/apps'], waivable=True))
     for selected in intent['repositories']:
         name = selected['target']['name']
+        announce('Checking ' + name + ': access, branch rules and test dependencies…', repository=name)
         try:
             row = repository(github, selected['target'], allow_workflow_edits=selected['allow_workflow_edits'], github_protection=selected.get('github_protection', 'required'))
             repos.append(row)
@@ -122,14 +127,19 @@ def observe(intent, installation, github, *, run=run_bounded):
         except (SetupError, ValueError) as error:
             items.append(finding('repository.' + str(selected['target']['id']), 'needs_you',
                                  str(error) if isinstance(error, SetupError) else 'Repository dependency evidence was incomplete.', repository=name))
+    announce('Checking the SSH host and available resources…')
     host = installation.execute('plan', name=intent['name'], commit=intent['revision'], fingerprint=intent['host_key'])
     facts = host['host']
     full = any(row['env_tier'] == 'full' for row in repos)
-    minimum = {'cpus': 2, 'memory_mib': 11264 if full else 7680, 'free_disk_mib': 40960 if full else 20480}
+    # Both fresh worker tiers use one 4 GiB cgroup: databases share that limit.
+    # Keep the existing 7.5 GiB installation floor (worker, 512 MiB gateway,
+    # 2 GiB host reserve and 1 GiB setup headroom). Only image disk usage grows.
+    minimum = {'cpus': 2, 'memory_mib': 7680, 'free_disk_mib': 40960 if full else 20480}
     for key, needed in minimum.items():
         items.append(finding('host.' + key, 'pass' if facts[key] >= needed else 'needs_you',
                              f'{facts[key]} available; {needed} required for one worker slot and the selected environment tiers.'))
     items.append(finding('host.platform', 'pass', 'Verified Ubuntu 24.04, AppArmor, systemd, SSH identity and root/noninteractive sudo.'))
+    announce('Checking server network access and private HTTPS prerequisites…')
     remote = installation.host.rpc(files('forge_client').joinpath('_preflight_host.py').read_text(), {'version': 1}, timeout=45)
     require(set(remote) == {'ok', 'userns_restricted', 'egress', 'tailnet'}, 'invalid_host_response')
     items.append(finding('host.userns', 'will_fix_automatically' if remote['userns_restricted'] == '1' else 'pass',
@@ -152,4 +162,5 @@ def observe(intent, installation, github, *, run=run_bounded):
     for provider in intent['providers']:
         items.append(finding('account.' + provider['id'], 'will_fix_automatically',
                              'The account login step validates the provider credential; no secret is stored in this intent.'))
+    announce('Preflight checks finished.')
     return {'status': 'preflight', 'items': items, 'repositories': repos, 'minimum_resources': minimum, 'host': host}

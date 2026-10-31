@@ -60,13 +60,14 @@ def intent(value, github):
 
 
 class Install:
-    def __init__(self, ssh, *, github=None, installation=None, journal=None, preflight=observe, clock=time.time,
+    def __init__(self, ssh, *, github=None, installation=None, journal=None, preflight=None, clock=time.time,
                  interactive=False, notify=None):
         self.ssh = ssh
         self.github = github or GitHub()
         self.installation = installation or Installation(ssh)
         self.journal = journal or Journal('installation', ssh)
-        self.preflight_observer, self.clock = preflight, clock
+        self.preflight_observer, self.clock = preflight or observe, clock
+        self.preflight_progress = preflight is None
         self.state = self.journal.read()
         self.key = 'install-' + digest({'ssh': ssh})
         self.interactive = interactive
@@ -81,12 +82,29 @@ class Install:
     def save(self):
         self.journal.save(self.state)
 
-    def plan(self, supplied):
+    def plan(self, supplied, *, replace=False):
         require(supplied.get('ssh') == self.ssh, 'installation_conflict')
-        if self.state:
-            require(self.state['request_digest'] == digest(supplied), 'installation_conflict', 'The saved installation has different inputs; resume it or choose a new host.')
+        require(type(replace) is bool, 'invalid_replace_plan')
+        if replace:
+            require(self.state is not None, 'setup_not_found', 'There is no saved installation plan to replace.')
+            self.load()
+            preflight_fields = {'version', 'request_digest', 'intent', 'inputs_digest', 'started_at', 'stages', 'preflight', 'waivers'}
+            require(not self.state['stages'] and set(self.state) <= preflight_fields,
+                    'installation_started', 'Only a plan with no started installation stages can be replaced. Resume this installation instead.')
+        if self.state and not replace:
+            require(self.state['request_digest'] == digest(supplied), 'installation_conflict', 'The saved installation has different inputs. Use --replace-plan before installation starts, or resume the saved installation.')
             return self.status()
         resolved = intent(supplied, self.github)
+        if replace:
+            # Preflight pins a second, host-installation journal. The supported
+            # new-run path archives it only after observing an untouched host.
+            host = self.installation.execute('plan', name=resolved['name'], commit=resolved['revision'],
+                                             fingerprint=resolved['host_key'], new_run=True)
+            require(host['status'] == 'planned', 'installation_started',
+                    'The host has installation state. Resume the saved installation instead.')
+            archive = Journal('archived-installation', digest({
+                'intent': self.state['inputs_digest'], 'started_at': self.state['started_at']}), root=self.journal.root)
+            archive.save(self.state)
         self.state = {'version': 1, 'request_digest': digest(supplied), 'intent': resolved,
                       'inputs_digest': digest(resolved), 'started_at': self.clock(), 'stages': {}, 'preflight': None}
         self.save()
@@ -98,7 +116,8 @@ class Install:
         return self.state['intent']
 
     def preflight(self):
-        value = self.preflight_observer(self.load(), self.installation, self.github)
+        options = {'progress': self.notify} if self.preflight_progress else {}
+        value = self.preflight_observer(self.load(), self.installation, self.github, **options)
         self.state['preflight'] = {'inputs_digest': self.state['inputs_digest'], 'observed_at': self.clock(), 'report': value}
         self.save()
         return value
@@ -328,20 +347,23 @@ class Install:
                 'handover_report': report, 'handover_report_path': report_path}
 
 
-def interview(ssh, github, *, ask=input, tell=print):
+def interview(ssh, github, *, ask=input, tell=None):
+    tell = tell or (lambda line: print(line, flush=True))
     actor = github.identity()
     ssh = ssh or ask('SSH destination (configured alias or user@host): ').strip()
     suggested = ssh.split('@')[-1]
     name = ask('Factory name [' + suggested + ']: ').strip() or suggested
+    tell('Forge creates one private GitHub App. Its owner must be the same personal account or organization that owns all repositories selected here.')
     owner = ask('GitHub App owner [' + actor['login'] + ']: ').strip() or actor['login']
     operators = ask('Operator logins [' + actor['login'] + ']: ').strip().split() or [actor['login']]
     repos = ask('Repositories (OWNER/REPO, separated by spaces): ').strip().split()
     rows = []
+    tell('Human merge policy waits for your approval after Forge Review and Audit. Auto merges when Forge checks and existing GitHub rules pass.')
+    tell('Required protection installs GitHub branch rules; private personal repositories need GitHub Pro for this. Optional keeps Forge Review and Audit without requiring GitHub enforcement for other writers. Existing rules remain in force.')
     for name_in_repo in repos:
         mode = ask(name_in_repo + ' merge policy [human/auto; human]: ').strip() or 'human'
         workflows = ask(name_in_repo + ' allow workflow edits? [y/N]: ').strip().lower() in ('y', 'yes')
         protection = ask(name_in_repo + ' GitHub branch protection [required/optional; required]: ').strip() or 'required'
-        tell('Optional keeps Forge Review and Audit, while GitHub does not enforce Forge checks for other writers. Existing branch rules stay in place.')
         rows.append({'name': name_in_repo, 'merge_policy': mode, 'allow_workflow_edits': workflows, 'github_protection': protection})
     providers = ask('Providers (codex, claude, grok; space-separated) [codex]: ').strip().split() or ['codex']
     accounts = []
@@ -351,7 +373,9 @@ def interview(ssh, github, *, ask=input, tell=print):
         accounts.append({'id': provider, 'kind': kind})
     hostname = re.sub('[^a-z0-9-]+', '-', name.lower()).strip('-')[:63]
     hostname = ask('Tailnet hostname [' + hostname + ']: ').strip() or hostname
-    repair = ask('Rules repair [apply-if-admin/print-commands/skip; apply-if-admin]: ').strip() or 'apply-if-admin'
+    repair = 'skip' if rows and all(row['github_protection'] == 'optional' for row in rows) else (
+        ask('Rules repair [apply-if-admin/print-commands/skip; apply-if-admin]: ').strip() or 'apply-if-admin')
+    tell('The first-merge test runs a small issue through Build, Review, Audit and merge. Scratch creates a private test repository; choosing a project runs the test there. A separate private repository tests signed publication.')
     smoke = ask('Smoke target [scratch or chosen OWNER/REPO; scratch]: ').strip() or 'scratch'
     tell('Known SSH host keys are required. For a new VM, use forge setup host-key and verify its fingerprint with the provider.')
     fingerprint = ask('Verified ED25519 fingerprint (leave empty to use known_hosts): ').strip() or None
@@ -363,6 +387,9 @@ def interview(ssh, github, *, ask=input, tell=print):
 def execute(args):
     import sys
     require(type(args.wait) is int and 0 <= args.wait <= 3600, 'invalid_wait', 'Use --wait between 0 and 3600 seconds.')
+    replace = getattr(args, 'replace_plan', False)
+    require(not replace or not (args.apply or args.resume or args.status or getattr(args, 'reset', False)),
+            'invalid_replace_plan', '--replace-plan only replaces an unstarted plan and runs preflight; do not combine it with --apply, --resume, --status or --reset.')
     retry_smoke = getattr(args, 'retry_smoke', None)
     require(not retry_smoke or args.resume and not getattr(args, 'reset', False), 'invalid_retry',
             'Use --retry-smoke FAILED_PROPOSAL_ID with --resume after fixing the planner failure.')
@@ -372,7 +399,7 @@ def execute(args):
         path = Path(args.intent_file)
         require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536, 'invalid_intent')
         supplied = json.loads(path.read_text())
-    elif not (args.status or args.resume or args.preflight or args.apply):
+    elif replace or not (args.status or args.resume or args.preflight or args.apply):
         require(not args.json and sys.stdin.isatty(), 'intent_required', 'Use --intent-file for a deterministic installation plan.')
         supplied = interview(args.ssh, github)
     ssh = args.ssh or (supplied or {}).get('ssh')
@@ -393,13 +420,16 @@ def execute(args):
             print('\n'.join(lines) if lines else encoded, file=sys.stderr, flush=True)
     workflow = Install(ssh, github=github, interactive=interactive, notify=event)
     with connection_lock(workflow.key, workflow.journal.root):
-        if supplied is not None: workflow.plan(supplied)
+        if supplied is not None: workflow.plan(supplied, replace=replace)
         if args.status: return workflow.status()
-        if interactive and supplied is not None and not (args.resume or args.apply or args.preflight):
+        if interactive and supplied is not None and not (args.resume or args.apply or args.preflight or replace):
             report = workflow.preflight()
-            display(report, tell=lambda line: print(line, file=sys.stderr))
             blocked = [row for row in report['items'] if row['status'] == 'needs_you' and row['id'] not in args.waive]
-            if blocked or input('Apply this installation, including its smoke issue and configured handover? [y/N] ').strip().lower() not in ('y', 'yes'):
+            if blocked:
+                return report
+            display(report, tell=lambda line: print(line, file=sys.stderr, flush=True))
+            if input('Apply this installation, including its smoke issue and configured handover? [y/N] ').strip().lower() not in ('y', 'yes'):
+                args._installation_report_displayed = True
                 return report
             args.apply = True
             args.wait = args.wait or 3600
@@ -427,14 +457,19 @@ def execute(args):
         return workflow.preflight()
 
 
-def display(result, *, tell=print):
+def display(result, *, tell=None):
     """Human presentation of the same structured results used by agents."""
     import shlex
+    tell = tell or (lambda line: print(line, flush=True))
     if result['status'] == 'preflight':
         for row in result['items']:
-            tell(row['status'].replace('_', ' ').ljust(23) + row['id'] + ': ' + row['detail'])
-            if row.get('command'): tell('  ' + shlex.join(row['command']))
-        tell('Plan saved. Apply with: forge install --ssh ' + result['host']['ssh'] + ' --apply --wait 3600')
+            label = row['id'].split('.')[0] + ' ' + row['repository'] if row.get('repository') else row['id']
+            tell(row['status'].replace('_', ' ').ljust(23) + label + ': ' + row['detail'])
+            if row['status'] == 'needs_you' and row.get('command'): tell('  ' + shlex.join(row['command']))
+        if any(row['status'] == 'needs_you' for row in result['items']):
+            tell('Plan saved. Resolve the prerequisites above, then rerun: forge install --ssh ' + result['host']['ssh'] + ' --preflight')
+        else:
+            tell('Plan saved. Apply with: forge install --ssh ' + result['host']['ssh'] + ' --apply --wait 3600')
         return
     if result['status'] == 'preflight_blocked':
         tell('Installation is waiting for these prerequisites:')
@@ -478,6 +513,8 @@ def schemas():
                         'effect': 'After repair, explicitly requests one new smoke proposal for the current cleaned terminal failure. Replays reuse the same successor; prior attempts and receipts remain intact.'},
         'status': 'forge install --ssh HOST --status --json',
         'preflight': 'forge install --ssh HOST --preflight --json',
+        'replace_plan': {'command': 'forge install --ssh HOST --replace-plan --intent-file FILE --preflight --json',
+                         'effect': 'Archives an unstarted saved plan and its host plan after confirming the host is untouched; resolves the replacement inputs and reruns preflight without applying installation.'},
         'apply': 'forge install --ssh HOST --apply --json',
         'reset': {'plan': 'forge install --ssh HOST --reset --json',
                   'apply': 'forge install --ssh HOST --reset --apply --reset-revision DIGEST --json',

@@ -15,6 +15,18 @@ login and repository qualification. The CLI performs remote commands and file
 transfers. The same App supports GitHub sign-in fallback. Database requirements
 trigger qualification of the [full job environment](job-environments.md).
 
+Choose the GitHub App owner to match your repositories: personal repositories
+need an App owned by your personal account. The wizard creates a private App,
+which can only be installed on its owner's account. Private repositories on
+GitHub Free can select Optional GitHub protection while retaining Forge's own
+Review, Audit and merge checks.
+
+Preflight reports progress while checking each repository and the host. If it
+finds a prerequisite to fix, it stops before installation starts. To change the
+saved choices or select a newer Forge release at this point, run
+`forge install --ssh anvil --replace-plan`. Once an installation stage has
+started, continue it with `--resume`.
+
 The first smoke issue must complete Triage, Build, Review, Audit and a verified
 merge before the CLI enables the selected repositories. A successful host build
 alone is not installation completion. Resume with:

@@ -174,16 +174,29 @@ prerequisites, resources, TLS egress and Tailscale certificate domains. It print
 refuses unresolved prerequisites. Only findings explicitly marked waivable can
 be waived with `--waive ID`; host identity and resource checks cannot be waived.
 For one worker slot, the minimum is 2 CPUs, 7.5 GiB observed RAM and 20 GiB free
-disk; database dependencies raise the RAM/disk floors to 11/40 GiB.
+disk; database dependencies raise the disk floor to 40 GiB. Databases run inside
+the same 4 GiB worker limit, so the RAM minimum stays 7.5 GiB. Runtime memory
+admission still checks available memory before each worker starts.
 
-This first coordinator prepares existing setup stages. **It does not yet complete
-installation:** the single-App consent batch, remote full database environment
-installation, provider-consent automation, smoke verification and final policy
-application/enable remain later stages. Their receipts stay pending. Existing
-identity/App installations can prepare multiple repositories independently;
-an uncertain write on one does not block preparation of another. Real repositories
-are never enabled by this command. Continue to use the existing `forge setup`
-building blocks where available.
+The coordinator installs the host, sets up private HTTPS, guides registration and
+installation of one GitHub App, connects the coding account and qualifies the
+repositories and worker environments. It then runs a test issue through Triage,
+Build, independent Review and Audit, and a verified merge. Only after that test
+passes does it enable the selected repositories with their chosen merge policies.
+GitHub approval and coding-account sign-in are attended browser steps; the CLI
+handles the server commands, file transfers and saved progress.
+
+The private GitHub App must be owned by the account that owns the selected
+repositories. For personal repositories, choose your personal GitHub login as
+the App owner. Choose `optional` protection to use private repositories on
+GitHub Free. A private organization App cannot discover personal repositories.
+
+If only preflight has run, revise the saved plan with
+`forge install --ssh anvil --replace-plan` and answer the interview again, or
+supply `--replace-plan --intent-file install.json --json`. The CLI validates the
+new inputs, confirms that the host is uninstalled, and archives the old plan.
+Once any installation stage has started, use `--resume`; replacing that plan is
+refused because GitHub or host changes may already exist.
 
 ## Native worker boundary qualification
 

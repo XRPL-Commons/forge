@@ -25,7 +25,7 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(host.host.rpc.call_args.args[1], {'version': 1})
         github._request.assert_not_called()
 
-    def test_full_database_tier_increases_resource_thresholds(self):
+    def test_database_dependencies_share_worker_memory_but_need_more_disk(self):
         selected = {'name': 'Anvil', 'hostname': 'anvil', 'revision': 'a'*40, 'host_key': None,
                     'operators': [{'id': 1, 'login': 'operator'}], 'owner': {'id': 1, 'login': 'operator', 'type': 'User'},
                     'repositories': [{'target': {'id': 10, 'name': 'owner/repo'}, 'allow_workflow_edits': False}], 'providers': []}
@@ -35,9 +35,16 @@ class PreflightTests(unittest.TestCase):
         host = Mock(); host.journal.read.return_value = {}
         host.execute.return_value = {'host': {'cpus': 2, 'memory_mib': 8000, 'free_disk_mib': 50000}}
         host.host.rpc.return_value = {'ok': True, 'userns_restricted': '0', 'egress': {}, 'tailnet': None}
+        events = []
         with patch('forge_client.preflight.repository', return_value=row), patch('forge_client.preflight.shutil.which', return_value='/bin/tool'), patch('forge_client.preflight.client_revision', return_value='a'*40):
-            result = observe(selected, host, github, run=lambda *a, **k: b'{"BackendState":"Running"}')
-        self.assertGreater(result['minimum_resources']['memory_mib'], 8000)
+            result = observe(selected, host, github, run=lambda *a, **k: b'{"BackendState":"Running"}', progress=events.append)
+            host.execute.return_value['host']['memory_mib'] = 7000
+            smaller = observe(selected, host, github, run=lambda *a, **k: b'{"BackendState":"Running"}')
+        self.assertEqual(result['minimum_resources'], {'cpus': 2, 'memory_mib': 7680, 'free_disk_mib': 40960})
+        self.assertEqual(next(r['status'] for r in result['items'] if r['id'] == 'host.memory_mib'), 'pass')
+        self.assertEqual(next(r['status'] for r in smaller['items'] if r['id'] == 'host.memory_mib'), 'needs_you')
+        self.assertEqual([event['repository'] for event in events if 'repository' in event], ['owner/repo'])
+        self.assertEqual(events[-1]['instruction'], 'Preflight checks finished.')
         signing = next(value for value in result['items'] if value['id'] == 'signing.10')
         self.assertIn('No signing bypass', signing['detail'])
 
