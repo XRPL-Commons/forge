@@ -75,6 +75,7 @@ def parser():
     install = sub.add_parser('install', help='Save a multi-repository interview, preflight, and resume installation')
     install.add_argument('--ssh', help='Saved SSH destination')
     install.add_argument('--intent-file', help='JSON interview inputs; contains no secrets')
+    install.add_argument('--replace-plan', action='store_true', help='Replace an unstarted saved plan, archive its journals and rerun preflight on a fresh host')
     action = install.add_mutually_exclusive_group()
     action.add_argument('--preflight', action='store_true', help='Re-observe prerequisites without remote writes')
     action.add_argument('--apply', action='store_true', help='Apply the saved intent after a fresh successful preflight')
@@ -261,7 +262,7 @@ def parser():
 def execute(args):
     if args.command == 'install':
         if args.reset:
-            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file or getattr(args, 'retry_smoke', None)),
+            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file or getattr(args, 'replace_plan', False) or getattr(args, 'retry_smoke', None)),
                     'invalid_reset', 'Use --reset --ssh HOST, then --reset --apply --reset-revision DIGEST.')
             from .installer_reset import execute as reset
             return reset(args)
@@ -342,7 +343,7 @@ def execute(args):
         from forge.planning_contract import commands as planning_commands
         from .install import schemas
         from .installation import schemas as installation_schemas
-        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup qualify-roles', 'setup qualification-diagnostic', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume', 'server identity plan', 'server identity apps', 'server identity sign-in', 'server identity tailscale'],
+        return {'commands': ['install', 'install --replace-plan', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup qualify-roles', 'setup qualification-diagnostic', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume', 'server identity plan', 'server identity apps', 'server identity sign-in', 'server identity tailscale'],
                 'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),
@@ -428,7 +429,8 @@ def main(argv=None):
         result = execute(args)
         if args.command == 'install' and not args.json:
             from .installation import display
-            display(result)
+            if not getattr(args, '_installation_report_displayed', False):
+                display(result)
             return 0
         if args.command == 'skill' and not args.json:
             print(result['skill'])
