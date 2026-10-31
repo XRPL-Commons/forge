@@ -28,8 +28,15 @@ def proof(root, *, repository, number, started_at, clock=time.time):
         if issue is None:
             return result
         projected = Queries._issue(db, issue[0], include_body=False)
-        result['operator_status'] = operator_status(projected)
         life = projected['lifecycle']
+        # A reserved worker owns this stage even before it starts its container.
+        # Use the current delivery only: historical leases cannot make a closed
+        # or removed issue look active. This changes display, never merge proof.
+        active = bool(life['unit_id'] and db.execute(
+            'SELECT 1 FROM job_leases l JOIN jobs j ON j.id=l.job_id '
+            'WHERE j.unit_id=? AND j.cleanup=0 AND j.fenced=0 LIMIT 1',
+            (life['unit_id'],)).fetchone())
+        result['operator_status'] = operator_status(projected, active=active)
         unit_id = life['unit_id'] or life['historical_unit_id']
         if not unit_id:
             return result

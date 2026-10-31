@@ -19,6 +19,20 @@ function setup() {
     poll: { error: ref(null), stale: ref(false), refresh: vi.fn() } }
 }
 describe('installation progress', () => {
+  it.each([
+    ['building', 'Building the change'], ['publishing', 'Publishing the pull request'],
+    ['reviewing', 'Reviewing the change'], ['auditing', 'Auditing the change'],
+    ['merging', 'Merging the pull request'], ['merged', 'Pull request merged'],
+  ])('shows the %s phase alongside one operator explanation', async (phase, label) => {
+    setup()
+    const reason = 'The worker is processing this change.'
+    Object.assign(state.current.view.value.smoke, { phase, reason, operator_status: { reason } })
+    const wrapper = await mountSuspended(InstallationPage)
+    const test = wrapper.get('section[aria-label="First merge test"]')
+    expect(test.get('[data-testid="installation-smoke-phase"]').text()).toBe(label)
+    expect(test.text().split(reason)).toHaveLength(2)
+    wrapper.unmount()
+  })
   it('shows real stage, timestamps, issue links and only sends the offered action after a click', async () => {
     setup()
     const wrapper = await mountSuspended(InstallationPage)
