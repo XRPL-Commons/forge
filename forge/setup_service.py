@@ -386,6 +386,8 @@ class Service:
             now = self.setup.clock()
             db.execute("INSERT INTO runtime_controls(name,heartbeat_at,updated_at,details_json) VALUES('setup_service',?,?,'{}') "
                        'ON CONFLICT(name) DO UPDATE SET heartbeat_at=excluded.heartbeat_at,updated_at=excluded.updated_at', (now, now))
+        from .installation_web import InstallationWeb
+        InstallationWeb(self.root, setup=self.setup).tick()
         data = self.setup.read()
         op = data.get('operation')
         scoped = bool(op and op['action'] == 'harness_check' and op.get('providers') and data['phase'] == 'active')

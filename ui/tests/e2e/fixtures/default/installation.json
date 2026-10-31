@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "available": false,
+  "generation": "preview",
+  "complete": false,
+  "observed_at": 1793466913.4901462,
+  "updated_at": null,
+  "source": "cli",
+  "stages": [],
+  "smoke": null,
+  "operation": null,
+  "actions": []
+}
