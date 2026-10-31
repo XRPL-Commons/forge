@@ -1,5 +1,7 @@
 <script setup lang="ts">
 const localTime = useLocalTime()
+const installation = useInstallation()
+const installationBlocked = computed(() => installation.pending.value && !row.value?.enabled)
 import { checkedAtText, repoStage, rowState } from '~/utils/repositories'
 const props = defineProps<{ initialRepoId?: number | null }>()
 const emit = defineEmits<{ close: []; enabled: [number] }>()
@@ -16,7 +18,7 @@ watch(row, value => {
 const blocked = computed(() => step.value === 1 ? !row.value?.access_ready : step.value === 2 ? !ready.value : false)
 const primary = computed(() => step.value === 0 ? 'Continue' : blocked.value ? 'Check again' : step.value < 3 ? 'Continue' : !live.value ? 'Continue to Forge' : row.value?.enabled ? 'Done' : 'Enable automation')
 const waiting = computed(() => busy.value || syncing.value || checking.value)
-const disabled = computed(() => waiting.value || (step.value === 0 ? selectedId.value === null : !row.value) || (step.value === 3 && (!ready.value || !row.value?.access_ready)))
+const disabled = computed(() => waiting.value || (step.value === 0 ? selectedId.value === null : !row.value) || (step.value === 3 && (!ready.value || !row.value?.access_ready || installationBlocked.value)))
 function back() {
   step.value = Math.max(0, step.value - 1) as 0 | 1 | 2
   if (step.value === 0) { selectedId.value = repoId.value; repoId.value = null }
@@ -67,7 +69,12 @@ async function next() {
       </template>
       <section v-else-if="row && step === 3" class="mt-4">
         <h2 class="break-all text-lg font-semibold">{{ row.name }}</h2>
-        <p class="mt-3 text-sm">{{ row.enabled ? 'Automation is enabled for this repository.' : 'Repository checks are ready. Enable automation to let Forge pick up eligible issues in this repository.' }}</p>
+        <div v-if="installationBlocked" class="mt-3 rounded-lg border border-line bg-panel p-4">
+          <p class="text-sm">Repository checks are ready. Finish the installation test before enabling automation.</p>
+          <p class="mt-2 text-sm text-muted">{{ installation.headline.value }}</p>
+          <UButton class="mt-3" to="/installation" color="neutral" variant="outline" @click="close">View setup progress</UButton>
+        </div>
+        <p v-else class="mt-3 text-sm">{{ row.enabled ? 'Automation is enabled for this repository.' : 'Repository checks are ready. Enable automation to let Forge pick up eligible issues in this repository.' }}</p>
         <p v-if="!ready || !row.access_ready" role="alert" class="mt-3 text-sm text-amber-200">Repository readiness changed. Go back to check access and review rules.</p>
       </section>
       <p v-else class="mt-4 text-sm text-muted">Loading repository…</p>

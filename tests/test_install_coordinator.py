@@ -86,6 +86,33 @@ class CoordinatorTests(unittest.TestCase):
         self.stages(factory)
         return factory
 
+    def test_poll_only_advances_pending_work_and_resume_revalidates(self):
+        factory = self.factory()
+        self.install.apply()
+        first_preflight_calls = self.observe.call_count
+        first_repository_calls = factory.prepare_repository.call_count
+        first_smoke_calls = self.smoke.run.call_count
+        self.install.apply(poll=True)
+        self.assertEqual(self.observe.call_count, first_preflight_calls)
+        self.assertEqual(factory.prepare_repository.call_count, first_repository_calls)
+        self.assertGreater(self.smoke.run.call_count, first_smoke_calls)
+        # An explicit resume does not reuse this process's validated stages.
+        self.install.apply()
+        self.assertEqual(self.observe.call_count, first_preflight_calls + 1)
+        self.assertGreater(factory.prepare_repository.call_count, first_repository_calls)
+
+    def test_progress_does_not_copy_private_receipts_or_errors(self):
+        from forge_client.install_progress import snapshot
+        self.install.state['stages']['identity'] = {
+            'status': 'needs_user_action', 'started_at': 10,
+            'receipt': {'error': 'identity_unverified', 'reason': 'private-token',
+                        'secret': 'private-token', 'url': 'https://example.test/?secret=private-token'}}
+        view = snapshot(self.install.state, 20, runner_state='stopped')
+        self.assertNotIn('private-token', str(view))
+        self.assertEqual(view['state'], 'stopped')
+        self.assertEqual(view['stages'][0]['status'], 'failed')
+        self.assertIn('sign-in', view['stages'][0]['reason'])
+
     def test_active_resume_applies_explicit_protection_before_verification(self):
         self.install.state['intent']['repositories'][0]['github_protection'] = 'optional'
         self.install.state['inputs_digest'] = digest(self.install.state['intent'])

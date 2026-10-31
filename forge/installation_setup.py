@@ -38,7 +38,7 @@ class InstallationSetup:
         self.handoff.operator(request['actor_id'])
         data = self.setup.read()
         action, params = request['action'], request['parameters']
-        allowed = {'status': (), 'app': ('role', 'owner'), 'refresh': (), 'select': ('repository',),
+        allowed = {'status': (), 'progress': ('snapshot',), 'app': ('role', 'owner'), 'refresh': (), 'select': ('repository',),
                    'authorize': ('instance', 'repository', 'capability'), 'requirements': ('repository',),
                    'verify_repository': ('repository', 'revision'), 'github_protection': ('repository', 'operation'), 'check': ('revision',),
                    'start': ('revision',), 'account': ('provider', 'kind', 'secret'),
@@ -53,6 +53,9 @@ class InstallationSetup:
         fields(params, (*allowed[action], *('mode', 'revision', 'request_id')) if action == 'github_protection' and params.get('operation') == 'set' else allowed[action])
         if action != 'status':
             require(request['generation'] == data['generation'], 'setup_changed', 'Setup changed; inspect before continuing.')
+        if action == 'progress':
+            from .installation_progress import publish
+            return publish(self.root, params['snapshot'], setup_id=request['setup_id'], generation=request['generation'])
         if action == 'pilot':
             from .factory.first_merge import proof
             return proof(self.root, **params)

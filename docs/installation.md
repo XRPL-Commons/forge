@@ -27,8 +27,34 @@ saved choices or select a newer Forge release at this point, run
 `forge install --ssh anvil --replace-plan`. Once an installation stage has
 started, continue it with `--resume`.
 
+Once signed in, open **Installation progress** from the setup banner in Forge.
+The page shows completed steps, the current task, elapsed time, the last progress
+update, and any action needed. It links to the first test issue and its pull
+request. Repository setup links to this page when installation still blocks
+activation, instead of offering an Enable button that cannot succeed.
+
+The CLI publishes a credential-free progress summary after GitHub App approval.
+Its reported state is distinct from the server worker's status: a closed terminal
+or disconnected browser is not evidence that work finished. If the CLI stopped,
+its last reported steps remain visible. Earlier installations without a CLI
+summary show the evidence already stored on the server.
+
+Once the CLI has prepared the first-merge test, **Continue setup** hands that test
+and repository activation to the server. You can close the terminal and browser;
+return to the same page to see progress. A failed planning attempt offers an
+explicit retry. A proposal that needs a decision remains blocked until resolved
+in Issues. The server verifies the exact merged test and selected repository
+policies before enabling automation. The web controls cannot add repositories or
+expand the GitHub permissions approved during bootstrap.
+
+Host installation, private networking and the initial privileged GitHub setup
+still start through the CLI. The web page does not replace those bootstrap steps.
+The CLI remains available for unattended use and recovery. During one running
+installation it polls pending steps without repeating every completed bootstrap
+check; a new invocation revalidates the saved installation.
+
 The first smoke issue must complete Triage, Build, Review, Audit and a verified
-merge before the CLI enables the selected repositories. A successful host build
+merge before Forge enables the selected repositories. A successful host build
 alone is not installation completion. Resume with:
 
 ```sh

@@ -16,6 +16,7 @@ const ACCOUNT_TYPES = [
 ]
 
 const api = useForgeApi()
+const installation = useInstallation()
 const route = useRoute()
 
 const state = ref<OnboardingView | null>(null)
@@ -45,7 +46,10 @@ async function load() {
     repoChoice.value = next.selected ? String(next.selected.id) : undefined
   }
   // The factory came up under a start this page asked for.
-  if (wasStarting && next.phase === 'active') await navigateTo('/')
+  if (wasStarting && next.phase === 'active') {
+    await installation.poll.refresh()
+    await navigateTo(installation.pending.value ? '/installation' : '/')
+  }
   return next
 }
 
@@ -213,6 +217,13 @@ function activityFor(target: string): string | null {
           <span role="status">{{ resetStep(state.operation) }}</span>
         </div>
         <p class="mt-4 text-[13px] text-muted">{{ RESETTING_SCREEN.note }}</p>
+      </template>
+
+      <template v-else-if="phase === 'active' && installation.pending.value">
+        <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">Installation in progress</p>
+        <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Factory checks passed</h1>
+        <p class="mt-2 text-muted">Finish the first merge test to enable your selected repositories.</p>
+        <UButton class="mt-6" to="/installation">View setup progress</UButton>
       </template>
 
       <template v-else-if="phase === 'active'">

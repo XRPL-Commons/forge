@@ -14,7 +14,7 @@ from .install import Installation, revision
 from .network import Network
 from .preflight import observe
 from .workflow import Journal
-from . import install_report
+from . import install_report, install_progress
 
 
 def intent(value, github):
@@ -73,6 +73,11 @@ class Install:
         self.interactive = interactive
         self.notify = notify or (lambda event: None)
         self.opened_browser_urls = set()
+        self.progress_factory = None
+        self.progress_warning = False
+        self.polling = False
+        self.validated_stages = set()
+        self.run_preflight = None
 
     def open_browser(self, url):
         if url not in self.opened_browser_urls:
@@ -81,6 +86,19 @@ class Install:
 
     def save(self):
         self.journal.save(self.state)
+
+    def publish_progress(self, *, runner_state='running', current=None):
+        if self.progress_factory is None:
+            return
+        try:
+            self.progress_factory.call('progress', snapshot=install_progress.snapshot(
+                self.state, self.clock(), runner_state=runner_state, current=current))
+        except (SetupError, OSError, ValueError):
+            # Progress transport is observational; it cannot authorize or undo work.
+            if not self.progress_warning:
+                self.notify({'event': 'progress_unavailable', 'instruction':
+                             'Web progress could not be updated. The installer is still recording progress locally.'})
+                self.progress_warning = True
 
     def plan(self, supplied, *, replace=False):
         require(supplied.get('ssh') == self.ssh, 'installation_conflict')
@@ -130,18 +148,16 @@ class Install:
         row = saved or {'inputs_digest': binding, 'status': 'pending', 'receipt': None, 'uncertain_write': False,
                         'started_at': self.clock()}
         self.state['stages'][name] = row
-        labels = {'targets': 'test repositories', 'host': 'host installation', 'network': 'private HTTPS',
-                  'consent': 'GitHub App approval', 'identity': 'operator sign-in',
-                  'environment': 'database test environment', 'smoke.prepare': 'first-merge test preparation',
-                  'smoke': 'first-merge test', 'handover': 'repository handover'}
-        label = labels.get(name)
-        if label is None:
-            kind, _, key = name.partition('.')
-            target = next((item['target']['name'] for item in value['repositories'] if str(item['target']['id']) == key), key)
-            label = {'account': 'coding account', 'repository': 'repository setup', 'publication': 'signed publication'}.get(kind, kind) + ': ' + target
+        if self.polling and name in self.validated_stages and row['status'] == 'complete':
+            return deepcopy(row['receipt'])
+        label = install_progress.label(name, value)
+        label = label[0].lower() + label[1:]
         def announce(status):
             prefix = {'checking': 'Checking', 'applying': 'Setting up', 'pending': 'Waiting for',
                       'complete': 'Ready', 'needs_user_action': 'Action needed'}[status]
+            if status == 'complete':
+                self.validated_stages.add(name)
+            self.publish_progress(current=name if status in ('checking', 'applying') else None)
             self.notify({'event': 'installation_stage', 'stage': name, 'status': status,
                          'instruction': prefix + ': ' + label + '.'})
         if row['status'] != 'complete': announce('checking')
@@ -171,12 +187,19 @@ class Install:
             announce('needs_user_action')
             return {'status': 'needs_user_action', 'error': error.code, 'reason': str(error)}
 
-    def apply(self, *, waivers=(), retry_smoke=None):
+    def apply(self, *, waivers=(), retry_smoke=None, poll=False):
         selected = self.load()
+        self.polling = poll and self.run_preflight is not None
+        if not self.polling:
+            self.validated_stages.clear()
         if self.state['stages'].get('handover', {}).get('status') == 'complete':
             self.write_report()
             return self.status()
-        report = self.preflight()  # Never trust a previously passing snapshot.
+        # Revalidate at each invocation/resume, but polling pending work in this
+        # process does not restart every completed bootstrap check. Host operations
+        # still enforce current generation, access and readiness before mutation.
+        report = self.run_preflight if self.polling else self.preflight()
+        self.run_preflight = report
         known = {row['id']: row for row in report['items']}
         require(all(name in known and known[name]['waivable'] for name in waivers), 'invalid_waiver', 'Only explicitly waivable findings can be waived.')
         blocked = [row for row in report['items'] if row['status'] == 'needs_you' and row['id'] not in waivers]
@@ -212,6 +235,7 @@ class Install:
                           complete=lambda row: row.get('status') == 'consent_ready')
         if apps.get('status') != 'consent_ready': return self.status()
         factory = FactorySetup(self.installation, github=self.github)
+        self.progress_factory = factory
         identity = self.stage('identity', lambda: configure_identity(factory),
                               lambda _: configure_identity(factory, apply=True),
                               complete=lambda row: row.get('status') == 'identity_ready')
@@ -457,7 +481,7 @@ def execute(args):
             deadline = time.monotonic() + args.wait
             previous = None
             while True:
-                result = workflow.apply(waivers=args.waive, retry_smoke=retry_smoke)
+                result = workflow.apply(waivers=args.waive, retry_smoke=retry_smoke, poll=previous is not None)
                 progress = {key: row['status'] for key, row in result.get('stages', {}).items()}
                 if progress != previous:
                     event({'event': 'installation_progress', 'stages': progress})
@@ -472,7 +496,9 @@ def execute(args):
                 if (result.get('handover_complete') or result['status'] == 'preflight_blocked'
                         or time.monotonic() >= deadline
                         or not pending or any(not can_wait(row) for row in pending)):
+                    workflow.publish_progress(runner_state='complete' if result.get('handover_complete') else 'stopped')
                     return result
+                workflow.publish_progress(runner_state='waiting')
                 time.sleep(min(5, max(0, deadline - time.monotonic())))
         return workflow.preflight()
 

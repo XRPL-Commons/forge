@@ -1,0 +1,92 @@
+{
+  "ok": true,
+  "available": true,
+  "generation": "preview",
+  "complete": false,
+  "observed_at": 1793466913.4901462,
+  "updated_at": 1793466823.490376,
+  "source": "server",
+  "stages": [
+    {
+      "id": "host",
+      "label": "Prepare server",
+      "status": "complete"
+    },
+    {
+      "id": "network",
+      "label": "Connect private network",
+      "status": "complete"
+    },
+    {
+      "id": "identity",
+      "label": "Connect GitHub and operator sign-in",
+      "status": "complete"
+    },
+    {
+      "id": "account.codex",
+      "label": "Connect Codex",
+      "status": "complete"
+    },
+    {
+      "id": "repositories",
+      "label": "Prepare selected repositories",
+      "status": "complete"
+    },
+    {
+      "id": "environment",
+      "label": "Build worker environment",
+      "status": "complete"
+    },
+    {
+      "id": "publication",
+      "label": "Verify signed publication",
+      "status": "complete"
+    },
+    {
+      "id": "smoke",
+      "label": "First merged issue",
+      "status": "failed",
+      "reason": "The smoke planner returned an invalid proposal."
+    },
+    {
+      "id": "handover",
+      "label": "Enable selected repositories",
+      "status": "pending"
+    }
+  ],
+  "smoke": {
+    "status": "smoke_triage_failed",
+    "phase": "planning",
+    "reason": "The smoke planner returned an invalid proposal.",
+    "issue_url": "https://github.com/example/forge-smoke/issues/1",
+    "attempts": {"total": 1, "charged_failures": 1}
+  },
+  "operation": null,
+  "actions": [
+    {
+      "id": "retry",
+      "label": "Retry first-merge test",
+      "proposal_id": "preview-proposal"
+    }
+  ],
+  "started_at": 1793463313.490376,
+  "state": "blocked",
+  "service": {
+    "available": true,
+    "last_seen": 1793466913.490376
+  },
+  "repositories": [
+    {
+      "id": 1,
+      "name": "lucbocahut/anton"
+    },
+    {
+      "id": 2,
+      "name": "lucbocahut/dd-frigate"
+    },
+    {
+      "id": 3,
+      "name": "lucbocahut/mises"
+    }
+  ]
+}
