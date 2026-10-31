@@ -1,11 +1,14 @@
 import io
 import json
+from pathlib import Path
 import tarfile
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.provider_qualification import CAPABILITY, HOST_KEY, SHELL_CHECK, WORKER, handoff, qualify
+from forge.provider_qualification import (CAPABILITY, HOST_KEY, MODEL, SHELL_CHECK, WORKER,
+    DIAGNOSTIC_PREFIX, Upstream, failure_diagnostic, handoff, qualify)
 from forge.factory.worker_boundary import BoundaryError
 from forge_client.boundary_qualification import execute
 from tests.test_worker_boundary import Engine
@@ -89,6 +92,121 @@ class ProviderQualificationTests(unittest.TestCase):
     def test_worker_program_compiles(self):
         compile(WORKER, '<provider-qualification-worker>', 'exec')
         compile(SHELL_CHECK, '<provider-qualification-shell>', 'exec')
+
+    def test_failure_report_retains_only_bounded_fixture_fields(self):
+        secret = 'never-retain-this-provider-output'
+        rows = [secret, DIAGNOSTIC_PREFIX + '{bad json', DIAGNOSTIC_PREFIX + json.dumps({
+            'phase':'tool_result', 'cli_exit':1, 'event_count':2, 'error':'AssertionError',
+            'stderr':secret, 'capability':CAPABILITY}),
+            DIAGNOSTIC_PREFIX + json.dumps({'phase':secret, 'error':secret, 'event_count':1000000})]
+        docker = Mock(return_value=SimpleNamespace(stdout='\n'.join(rows)))
+        upstream = SimpleNamespace(requests=[{}, {}], failure='shell_result_failed', shell_failure='private_file')
+        report = failure_diagnostic(docker, 'worker', 'worker_execution', '1', upstream)
+        self.assertEqual(json.loads(report), dict(phase='worker_execution', worker_exit=1,
+            upstream_requests=2, upstream_failure='shell_result_failed', upstream_shell_failure='private_file',
+            worker_phase='tool_result', cli_exit=1, event_count=2, worker_error='AssertionError'))
+        self.assertNotIn(secret, report)
+        self.assertNotIn(CAPABILITY, report)
+        self.assertEqual(docker.call_args.args[0], ['logs', '--tail', '32', 'worker'])
+        self.assertEqual(docker.call_args.kwargs['timeout'], 10)
+
+    def test_missing_worker_logs_still_report_phase_and_upstream_count(self):
+        docker = Mock(side_effect=OSError('private diagnostic must not escape'))
+        value = json.loads(failure_diagnostic(docker, 'worker', 'gateway_readiness', None,
+            SimpleNamespace(requests=[], failure='arbitrary private data')))
+        self.assertEqual(value, dict(phase='gateway_readiness', worker_exit=None,
+            upstream_requests=0, worker_diagnostics='unavailable'))
+
+    def upstream(self, results):
+        value = object.__new__(Upstream)
+        body = json.dumps({'model':MODEL, 'messages':[{'content':results}]}).encode()
+        value.path = '/v1/messages?beta=true'
+        value.headers = {'x-api-key':HOST_KEY, 'Content-Length':str(len(body))}
+        value.rfile = io.BytesIO(body)
+        value.server = SimpleNamespace(requests=[], failed=False)
+        for name in ('send_response', 'send_header', 'end_headers', 'event'):
+            setattr(value, name, Mock())
+        value.do_POST()
+        return value
+
+    def test_failed_privacy_assertion_preserves_static_reason_without_tool_output(self):
+        value = self.upstream([dict(type='tool_result', is_error=True,
+            content='Traceback private-data: AssertionError: protected credential file is readable')])
+        self.assertTrue(value.server.failed)
+        self.assertEqual(value.server.failure, 'shell_result_failed')
+        self.assertEqual(value.server.shell_failure, 'private_file')
+        value.event.assert_not_called()
+        value = self.upstream([dict(type='tool_result', content='unrecognized private output')])
+        self.assertEqual(value.server.failure, 'shell_proof_missing')
+        self.assertIsNone(value.server.shell_failure)
+
+    def test_worker_launch_matches_production_and_reports_failure_without_raw_cli_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root/'run/forge-input'; inputs.mkdir(parents=True)
+            (inputs/'assignment.json').write_text(json.dumps({'model':MODEL}))
+            (inputs/'proxy-privacy.py').write_text(SHELL_CHECK)
+            (root/'work').mkdir()
+            (root/'work/credentials.json').write_text(json.dumps({
+                'ANTHROPIC_BASE_URL':'http://forge-provider:8082', 'ANTHROPIC_AUTH_TOKEN':CAPABILITY}))
+            output = io.StringIO()
+            run = Mock(return_value=SimpleNamespace(returncode=1,
+                stdout=json.dumps({'type':'result', 'message':'private-cli-stdout'})+'\n', stderr='private-cli-stderr'))
+            connection = Mock(); connection.getresponse.return_value.status = 403
+            with patch('pathlib.Path', side_effect=lambda value: root/str(value).lstrip('/')), \
+                    patch('os.readlink', return_value='pid:[outer]'), patch.dict('os.environ', {'PATH':'/usr/bin'}, clear=True), \
+                    patch('http.client.HTTPConnection', return_value=connection), \
+                    patch('subprocess.check_output', return_value='2.1.273 (Claude Code)'), \
+                    patch('subprocess.run', run), patch('sys.stdout', output), self.assertRaises(SystemExit):
+                exec(WORKER, {})
+            self.assertEqual(run.call_args.kwargs['cwd'], '/opt/forge/claude-control')
+            self.assertFalse((root/'work/credentials.json').exists())
+            value = output.getvalue()
+            self.assertIn('"phase": "tool_result"', value)
+            self.assertIn('"cli_exit": 1', value)
+            self.assertIn('"error": "AssertionError"', value)
+            for private in ('private-cli-stdout', 'private-cli-stderr', CAPABILITY, HOST_KEY):
+                self.assertNotIn(private, value)
+
+    def test_failed_native_worker_reports_diagnostics_before_confirmed_cleanup(self):
+        image = 'sha256:'+'a'*64
+        upstream, session = Mock(), Mock()
+        upstream.server_port = 12345
+        boundary = Mock()
+        boundary.labels.return_value = []
+        boundary.prepare.return_value = SimpleNamespace(gateway='gateway', worker_args=[], environment={})
+        boundary.inspect.return_value = None
+        actions = []
+        boundary.cleanup.side_effect = lambda job: actions.append('cleanup')
+        def docker(args, **kwargs):
+            if args[:2] == ['image', 'inspect']:
+                value = json.dumps([{'Id':image, 'Config':{'Labels':{'org.forge.worker-boundary':'2'}}}])
+            elif args[0] == 'version': value = '29.0.0'
+            elif args[0] == 'wait':
+                upstream.requests = [{}, {}]
+                upstream.failed, upstream.failure = True, 'shell_result_failed'
+                upstream.shell_failure = 'pid_namespace'
+                value = '1'
+            elif args[0] == 'logs':
+                actions.append('logs')
+                value = DIAGNOSTIC_PREFIX + json.dumps({'phase':'tool_result','cli_exit':1,'event_count':3})
+            else: value = ''
+            return SimpleNamespace(stdout=value)
+        with patch('forge.provider_qualification.platform.system', return_value='Linux'), \
+                patch('forge.provider_qualification.WorkerBoundary', return_value=boundary) as cls, \
+                patch('forge.provider_qualification.ThreadingHTTPServer', return_value=upstream), \
+                patch('forge.provider_qualification.SessionServer', return_value=session):
+            cls.identity.return_value = ('owned', {})
+            with self.assertRaises(BoundaryError) as raised:
+                qualify(image, docker=docker)
+        report = json.loads(str(raised.exception).split(': ', 1)[1])
+        self.assertEqual(report['worker_phase'], 'tool_result')
+        self.assertEqual(report['upstream_requests'], 2)
+        self.assertEqual(report['upstream_shell_failure'], 'pid_namespace')
+        self.assertEqual(report['worker_exit'], 1)
+        self.assertEqual(actions, ['logs','cleanup'])
+        session.shutdown.assert_called_once()
+        upstream.shutdown.assert_called_once()
 
 
 if __name__ == '__main__': unittest.main()
