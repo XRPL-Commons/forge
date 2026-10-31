@@ -111,6 +111,14 @@ class HostResetTests(unittest.TestCase):
     def read(self):
         return json.loads((self.state / 'installation.json').read_text()) if self.state.exists() else None
 
+    def test_previous_service_inventory_remains_resettable_but_unowned_cache_unit_is_refused(self):
+        registry = self.units / 'forge-registry.service'
+        self.view['units'].pop(str(registry))
+        with self.assertRaises(host.InstallError):
+            host.unit_inventory(self.view)
+        registry.unlink()
+        host.unit_inventory(self.view)
+
     def getpwnam(self, name):
         if self.owner is None:
             raise KeyError(name)

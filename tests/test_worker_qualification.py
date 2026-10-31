@@ -86,11 +86,11 @@ class QualificationTests(unittest.TestCase):
         installation.host.rpc.return_value={'ok':True,'result':dict(status='planned',image=installed,image_selection='installed',source_revision='a'*40)}
         report=execute(args,installation=installation)
         self.assertEqual(report['image'],installed)
-        self.assertEqual(installation.host.rpc.call_args.args[1],dict(version=1,image=None,apply=False))
+        self.assertEqual(installation.host.rpc.call_args.args[1],dict(version=1,image=None,apply=False,provider_proxy=False))
         args.apply=True
         installation.host.rpc.return_value={'ok':True,'result':dict(status='qualified',image=installed,cleanup='confirmed')}
         self.assertEqual(execute(args,installation=installation)['image'],installed)
-        self.assertEqual(installation.host.rpc.call_args.args[1],dict(version=1,image=None,apply=True))
+        self.assertEqual(installation.host.rpc.call_args.args[1],dict(version=1,image=None,apply=True,provider_proxy=False))
 
     def test_remote_default_plan_only_inspects_and_apply_passes_selected_image(self):
         import io
@@ -98,10 +98,10 @@ class QualificationTests(unittest.TestCase):
         namespace={};exec(HOST,namespace)
         namespace['Path']=Mock(return_value=SimpleNamespace(is_symlink=lambda:False,stat=lambda:SimpleNamespace(st_uid=1000)))
         installed='sha256:'+'b'*64
-        observed=dict(image=installed,source_revision='a'*40,engine_version='29.1.3')
-        for apply in (False,True):
-            with self.subTest(apply=apply), patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000,pw_dir='/home/forge')), \
-                    patch('sys.stdin',SimpleNamespace(buffer=io.BytesIO(json.dumps(dict(version=1,image=None,apply=apply)).encode()))), \
+        observed=dict(image=installed,source_revision='a'*40,engine_version='29.1.3',seccomp='/installed/runner-seccomp.json')
+        for apply, provider in ((False,False),(True,False),(True,True)):
+            with self.subTest(apply=apply,provider=provider), patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000,pw_dir='/home/forge')), \
+                    patch('sys.stdin',SimpleNamespace(buffer=io.BytesIO(json.dumps(dict(version=1,image=None,apply=apply,provider_proxy=provider)).encode()))), \
                     patch('subprocess.run',side_effect=[SimpleNamespace(returncode=0,stdout=json.dumps(observed)),
                         SimpleNamespace(returncode=0,stdout=json.dumps(dict(status='qualified',cleanup='confirmed')))]) as run, \
                     patch('builtins.print') as output:
@@ -111,6 +111,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(result['image_selection'],'installed')
                 self.assertEqual(run.call_count,2 if apply else 1)
                 if apply:
-                    self.assertEqual(run.call_args.args[0][-2:],['--image',installed])
+                    expected=['--image',installed]+(['--provider-proxy','--seccomp',observed['seccomp']] if provider else [])
+                    self.assertEqual(run.call_args.args[0][-len(expected):],expected)
                 else:
                     self.assertEqual(result['status'],'planned')

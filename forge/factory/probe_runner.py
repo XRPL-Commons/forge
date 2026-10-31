@@ -7,6 +7,7 @@ from pathlib import Path
 from .contracts import assignment_note
 from .runner import ContainerRunner, RunnerError
 from .worker_boundary import BoundarySpec, WorkerBoundary
+from ..provider_runtime import enabled, model
 
 PROVIDER = ['/usr/local/bin/python3', '-I', '/opt/forge/probe.py']
 TERMINATION = ['/usr/local/bin/python3', '-c', 'import os,time; p=os.fork(); os.setsid() if p==0 else None; time.sleep(120)']
@@ -40,11 +41,12 @@ class ProbeRunner(ContainerRunner):
 
     def prepare_source(self, job):
         name, labels = self.identity(job)
+        proxied = job['kind'] == 'provider' and enabled(self.config)
         path = self.inputs(job)
         note = assignment_note(job)
         note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
                     proxy='http://forge-egress:3128', provider=self.config.get('provider', 'codex'),
-                    model=self.config.get('model'), boundary_environment={})
+                    model=model(self.config) if proxied else self.config.get('model'), boundary_environment=WorkerBoundary.environment() if proxied else {})
         raw = json.dumps(note, sort_keys=True).encode()
         if path.exists():
             if path.is_symlink() or not path.is_dir() or path.stat().st_uid != os.geteuid():
@@ -59,6 +61,11 @@ class ProbeRunner(ContainerRunner):
                 stream.write(raw); stream.flush(); os.fsync(stream.fileno())
             (path / 'assignment.json').chmod(0o444)
             path.chmod(0o555)
+        if proxied:
+            boundary = self.boundary(job)
+            boundary.work_bytes = 256*1024**2
+            return boundary.prepare({**job, 'execution_fence': job.get('execution_fence', 'setup:' + job['id'])},
+                                    input_directory=path, broker_socket_directory=None)
         boundary = WorkerBoundary(self.call, image=self.config['image'], work_bytes=256*1024**2)
         volume, keeper = name + '-probe-work', name + '-probe-keeper'
         boundary.volume(volume, labels)
@@ -86,6 +93,8 @@ class ProbeRunner(ContainerRunner):
         name, labels = self.identity(job)
         result = super().reset(job)
         boundary = WorkerBoundary(self.call, image=self.config['image'], work_bytes=256*1024**2)
+        if job['kind'] == 'provider' and enabled(self.config):
+            boundary.cleanup({**job, 'execution_fence': job.get('execution_fence', 'setup:' + job['id'])})
         targets = [('container', name+'-probe-keeper'), ('volume', name+'-probe-work')]
         for kind, target in targets:
             observed = boundary.inspect(kind, target)

@@ -154,6 +154,19 @@ class ExecutionDispositionTests(unittest.TestCase):
         self.assertEqual(ExecutionProblems(self.store).report(outcome['report_signature']),report)
         self.assertNotIn('synthetic-secret',report['body'])
 
+    def test_checkout_fault_is_uncharged_without_a_worker_output_receipt(self):
+        identifier = self.launch()
+        value = self.evidence(identifier, 'harness_error', harness_error=fault('PreparationError'))
+        value['execution']['exit_code'] = value['execution_envelope']['exit_code'] = 125
+        value['missing'] = ['valid output receipt']
+        self.capture(identifier, **value)
+        result = self.controller.step(identifier)
+        self.assertFalse(result['charged'])
+        self.assertEqual(self.charges(), 0)
+        report = ExecutionProblems(self.store).report(result['report_signature'])
+        self.assertIn('PreparationError', report['title'])
+        self.assertNotIn('InvalidResultContract', report['title'])
+
     def test_timeout_charges_once_and_records_recovery(self):
         identifier=self.launch();self.capture(identifier,**self.evidence(identifier,'timeout'))
         self.assertTrue(self.controller.step(identifier)['charged'])

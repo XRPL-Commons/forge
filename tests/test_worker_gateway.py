@@ -2,9 +2,13 @@
 import importlib.util
 import io
 import http.client
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import socket
+import socketserver
 import ssl
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch, Mock
@@ -14,8 +18,9 @@ gateway=importlib.util.module_from_spec(spec);spec.loader.exec_module(gateway)
 
 
 class WorkerGatewayTests(unittest.TestCase):
-    def request(self,mode,request):
+    def request(self,mode,request, **configuration):
         with gateway.Server(('127.0.0.1',0),mode) as server:
+            for key, value in configuration.items(): setattr(server, key, value)
             thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':0.01});thread.start()
             try:
                 with socket.create_connection(server.server_address,timeout=2) as peer:
@@ -107,3 +112,86 @@ class WorkerGatewayTests(unittest.TestCase):
         self.assertEqual(gateway.tls_server_name(hello),'api.openai.com')
         for invalid in (b'',b'GET / HTTP/1.1\r\n',hello[:-1],hello[:8]):
             with self.assertRaises(ValueError):gateway.tls_server_name(invalid)
+
+    def test_proxy_mode_refuses_every_direct_provider_tunnel(self):
+        with patch.object(gateway, 'connect_public') as connect:
+            for host in ('api.anthropic.com', 'api.openai.com', 'chatgpt.com', 'auth.x.ai'):
+                result = self.request('provider', f'CONNECT {host}:443 HTTP/1.1\r\n\r\n'.encode(),
+                                      provider_socket='/provider/session.sock')
+                self.assertIn(b'403 Forbidden', result)
+            connect.assert_not_called()
+
+    def test_inference_refuses_arbitrary_routes_and_oversized_or_chunked_bodies(self):
+        with patch.object(gateway, 'CacheConnection') as connect:
+            for method, path, extra in [('GET', '/v1/messages', ''), ('POST', '/v1/models', ''),
+                ('POST', 'https://api.anthropic.com/v1/messages', ''),
+                ('POST', '/v1/messages', 'Transfer-Encoding: chunked\r\n')]:
+                result = self.request('inference',
+                    f'{method} {path} HTTP/1.1\r\nContent-Length: 0\r\n{extra}\r\n'.encode(),
+                    provider_socket='/provider/session.sock')
+                self.assertIn(b'403 Forbidden', result)
+            result = self.request('inference',
+                f'POST /v1/messages HTTP/1.1\r\nContent-Length: {gateway.MAX_INFERENCE_BODY + 1}\r\n\r\n'.encode())
+            self.assertIn(b'403 Forbidden', result)
+            connect.assert_not_called()
+
+
+class InferenceFixture(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    def log_message(self, *_): pass
+    def do_POST(self):
+        self.server.received = (self.path, dict(self.headers), self.rfile.read(int(self.headers['Content-Length'])))
+        self.send_response(200); self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Retry-After', '7'); self.send_header('Connection', 'close'); self.end_headers()
+        try:
+            self.wfile.write(b'event: ping\n\n'); self.wfile.flush()
+            self.server.release.wait(3)
+            self.wfile.write(b'data: done\n\n'); self.wfile.flush()
+        except OSError: pass
+        self.close_connection = True
+
+
+class InferenceServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+class InferenceGatewayTests(unittest.TestCase):
+    @contextmanager
+    def route(self):
+        with tempfile.TemporaryDirectory(prefix='provider-route-') as directory:
+            path = str(Path(directory) / 'session.sock')
+            with InferenceServer(path, InferenceFixture) as broker, gateway.Server(('127.0.0.1', 0), 'inference') as frontend:
+                broker.release = threading.Event(); frontend.provider_socket = path
+                threads = [threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
+                           for server in (broker, frontend)]
+                for thread in threads: thread.start()
+                try: yield broker, frontend
+                finally:
+                    broker.release.set(); broker.shutdown(); frontend.shutdown()
+                    for thread in threads: thread.join()
+
+    def test_incremental_sse_and_capability_transport_without_arbitrary_credentials(self):
+        with self.route() as (broker, frontend):
+            client = http.client.HTTPConnection(*frontend.server_address, timeout=2)
+            client.request('POST', '/v1/messages?beta=true', b'{"model":"pinned"}', headers={
+                'Authorization': 'Bearer job-capability', 'X-Api-Key': 'never-forward', 'Cookie': 'never-forward',
+                'Anthropic-Version': '2023-06-01'})
+            response = client.getresponse()
+            self.assertEqual(response.getheader('Retry-After'), '7')
+            self.assertEqual(response.read1(1024), b'event: ping\n\n')
+            self.assertFalse(broker.release.is_set())
+            broker.release.set()
+            self.assertEqual(response.read(), b'data: done\n\n'); client.close()
+            path, headers, body = broker.received
+            self.assertEqual((path, body), ('/v1/messages?beta=true', b'{"model":"pinned"}'))
+            self.assertEqual(headers['authorization'], 'Bearer job-capability')
+            self.assertNotIn('x-api-key', headers); self.assertNotIn('cookie', headers)
+
+    def test_response_bound_and_total_deadline_truncate_without_success_marker(self):
+        for setting, value in [('MAX_INFERENCE_RESPONSE', 2), ('INFERENCE_SECONDS', .15)]:
+            with self.subTest(setting=setting), patch.object(gateway, setting, value), self.route() as (broker, frontend):
+                client = http.client.HTTPConnection(*frontend.server_address, timeout=2)
+                client.request('POST', '/v1/messages', b'{}')
+                response = client.getresponse()
+                with self.assertRaises(http.client.IncompleteRead): response.read()
+                client.close()

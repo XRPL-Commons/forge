@@ -50,6 +50,36 @@ class WorkerBoundaryTests(unittest.TestCase):
     def prepare(self,job=None):
         return self.boundary.prepare(job or self.job,input_directory=self.path,broker_socket_directory=self.path)
 
+    def test_registry_socket_is_mounted_only_into_trusted_gateway(self):
+        self.boundary.registry_directory = self.path
+        spec = self.prepare()
+        gateway = self.engine.resources['container'][spec.gateway]
+        self.assertIn('--registry-socket', gateway['Config']['Cmd'])
+        self.assertEqual(gateway['Mounts'], [dict(Type='bind', Destination='/registry',
+            Source=str(self.path), Name=str(self.path), RW=False)])
+        self.assertNotIn('/registry', ' '.join(spec.worker_args))
+        self.assertFalse(any(m['Destination'] == '/registry'
+            for m in self.engine.resources['container'][spec.frontend]['Mounts']))
+
+    def test_provider_socket_is_gateway_only_and_fixed_probe_has_no_mirror(self):
+        self.boundary.provider_directory = self.path
+        self.boundary.registry_directory = self.path
+        spec = self.boundary.prepare(self.job, input_directory=self.path, broker_socket_directory=None)
+        endpoint = self.engine.resources['container'][spec.gateway]
+        self.assertIn('--provider-socket', endpoint['Config']['Cmd'])
+        self.assertEqual({mount['Destination'] for mount in endpoint['Mounts']}, {'/provider', '/registry'})
+        self.assertTrue(all(not mount['RW'] for mount in endpoint['Mounts']))
+        self.assertNotIn('/provider', ' '.join(spec.worker_args))
+        self.assertIn('forge-provider', spec.environment['NO_PROXY'].split(','))
+        keeper = self.engine.resources['container'][spec.frontend]
+        self.assertEqual([mount['Destination'] for mount in keeper['Mounts']], ['/retained-work'])
+        self.assertEqual(keeper['Config']['Cmd'], ['-I', '-c', 'import threading; threading.Event().wait()'])
+
+    def test_missing_mirror_without_fixed_provider_probe_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'mirror or fixed provider probe'):
+            self.boundary.prepare(self.job, input_directory=self.path, broker_socket_directory=None)
+        self.assertFalse(any(self.engine.resources.values()))
+
     def test_restart_reuses_exact_boundary_and_stopped_work_keeper(self):
         first=self.prepare();count=len([c for c in self.engine.calls if 'create' in c])
         self.assertEqual(self.prepare(),first)

@@ -105,6 +105,8 @@ of private credentials and agent configuration. A failure stops installation
 before services or the success marker are written.
 
 Each checkout has disposable disk-backed temporary and package-cache directories.
+Public package archives are also reused across jobs through the host-owned
+[read-only package cache](package-cache.md); registry metadata remains live.
 Workers install the repository's locked dependencies inside their native sandbox;
 Forge does not execute repository installation scripts in the credential-bearing
 parent process. Corepack honors a project's declared package-manager version;

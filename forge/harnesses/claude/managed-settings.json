@@ -67,6 +67,10 @@
         {
           "name": "FORGE_PROBE_SECRET",
           "mode": "deny"
+        },
+        {
+          "name": "ANTHROPIC_AUTH_TOKEN",
+          "mode": "deny"
         }
       ]
     }

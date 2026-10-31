@@ -322,7 +322,7 @@ def qualify(root, repository, number, *, apply=False, image=None, roles=None):
                 fixtures=Fixtures(directory/str(index),resolved,issue,requirements,base,config,SECONDS)
                 source=CanarySource(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache,github=github)
                 source.config=config
-                daemon=MirrorDaemon(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache)
+                daemon=MirrorDaemon(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache,credential_root=root)
                 runner=ContainerRunner(config,environ=env,source=source)
                 job=fixtures.reserve(role)
                 try:

@@ -102,6 +102,7 @@ def parser():
     qualification = verb(fresh, 'qualify-boundary', help='Run disposable native worker isolation canaries on the selected host')
     qualification.add_argument('--ssh', required=True)
     qualification.add_argument('--image', help='Exact sha256 image ID; defaults to the installed worker image')
+    qualification.add_argument('--provider-proxy', action='store_true', help='Qualify Claude API-key isolation using a fake upstream and the pinned native CLI; no account credentials')
     qualification.add_argument('--apply', action='store_true', help='Create and remove disposable qualification resources')
     qualification.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     signing = verb(fresh, 'qualify-publication', help='Verify signed publication using an explicitly selected scratch repository')

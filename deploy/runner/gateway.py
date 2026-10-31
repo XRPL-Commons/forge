@@ -4,7 +4,8 @@ No GitHub or arbitrary URL route exists. Registry requests terminate here and
 use GET/HEAD upstream; CONNECT is reserved for approved model providers. Every
 DNS result must be public and the socket uses the validated address directly.
 """
-from contextlib import closing
+from contextlib import closing, ExitStack
+import argparse
 import http.client
 import ipaddress
 import json
@@ -25,6 +26,11 @@ MAX_METADATA = 8*1024**2
 MAX_DOWNLOAD = 128*1024**2
 MAX_TUNNEL = 256*1024**2
 REGISTRY_ORIGIN = 'http://forge-registry:8081'
+INFERENCE_PATHS = frozenset({'/v1/messages', '/v1/messages?beta=true',
+    '/v1/messages/count_tokens', '/v1/messages/count_tokens?beta=true'})
+MAX_INFERENCE_BODY = 8 * 1024**2
+MAX_INFERENCE_RESPONSE = 64 * 1024**2
+INFERENCE_SECONDS = 600
 
 
 def provider(host):
@@ -117,6 +123,16 @@ class PublicHTTPS(http.client.HTTPSConnection):
         self.sock=self._context.wrap_socket(connect_public(self.host),server_hostname=self.host)
 
 
+class CacheConnection(http.client.HTTPConnection):
+    def __init__(self, path, *, timeout=330):
+        super().__init__('localhost', timeout=timeout)
+        self.path = path
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
+
+
 class Handler(socketserver.StreamRequestHandler):
     rbufsize=0  # Never strand TLS bytes in the HTTP parser's buffer.
     def reply(self,status,body=b'',headers=()):
@@ -141,19 +157,38 @@ class Handler(socketserver.StreamRequestHandler):
             name=name.lower();value=value.strip()
             if name in headers or not re.fullmatch('[a-z0-9-]+',name):raise ValueError('invalid header')
             headers[name]=value
-        if headers.get('content-length','0')!='0' or 'transfer-encoding' in headers:
+        if self.server.mode == 'inference':
+            length = headers.get('content-length', '')
+            if not length.isdecimal() or int(length) > MAX_INFERENCE_BODY or 'transfer-encoding' in headers:
+                raise ValueError('invalid inference request length')
+        elif headers.get('content-length','0')!='0' or 'transfer-encoding' in headers:
             raise ValueError('request body is forbidden')
         return method,target,headers
 
     def handle(self):
         self.connection.settimeout(20)
+        timer = None
+        if self.server.mode == 'inference':
+            def expire():
+                peers = [self.connection, getattr(self, 'inference_peer', None)]
+                for peer in peers:
+                    if peer is not None:
+                        try: peer.shutdown(socket.SHUT_RDWR)
+                        except OSError: pass
+            timer = threading.Timer(INFERENCE_SECONDS, expire)
+            timer.daemon = True; timer.start()
         try:
             method,target,headers=self.read_request()
             if self.server.mode=='provider':
+                if getattr(self.server, 'provider_socket', None):self.reply(403);return
                 if method!='CONNECT':self.reply(403);return
                 host,separator,port=target.rpartition(':')
                 if not separator or port!='443' or not provider(host.lower()):self.reply(403);return
                 self.tunnel(host.lower())
+            elif self.server.mode == 'inference':
+                if method != 'POST' or target not in INFERENCE_PATHS:
+                    self.reply(403); return
+                self.inference(target, headers)
             else:
                 if method not in {'GET','HEAD'}:self.reply(403);return
                 host,path=registry_target(target)
@@ -162,6 +197,49 @@ class Handler(socketserver.StreamRequestHandler):
             self.reply(403)
         except (OSError,http.client.HTTPException):
             self.reply(502)
+        finally:
+            if timer: timer.cancel()
+
+    def inference(self, path, headers):
+        """Stream the job's fixed host broker; no provider key enters this process."""
+        self.connection.settimeout(90)
+        remaining = int(headers['content-length'])
+        body = bytearray()
+        while remaining:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk: raise ValueError('incomplete inference request')
+            body.extend(chunk); remaining -= len(chunk)
+        forwarded = {name: value for name, value in headers.items()
+            if name.startswith(('anthropic-', 'x-claude-code-'))
+            or name in {'authorization', 'content-type', 'accept', 'user-agent'}}
+        sent = False
+        with closing(CacheConnection(self.server.provider_socket, timeout=90)) as upstream:
+            try:
+                upstream.connect()
+                self.inference_peer = upstream.sock
+                upstream.request('POST', path, body=body, headers=forwarded)
+                response = upstream.getresponse()
+                selected = [(name, value) for name, value in response.getheaders()
+                    if name.lower() in {'content-type', 'retry-after', 'x-should-retry', 'request-id'}
+                    or name.lower().startswith('anthropic-')]
+                if sum(len(name) + len(value) for name, value in selected) > MAX_HEADERS or any(
+                        '\r' in value or '\n' in value for _, value in selected):
+                    raise ValueError('invalid broker headers')
+                self.wfile.write(f'HTTP/1.1 {response.status} Response\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n'.encode())
+                for name, value in selected:
+                    self.wfile.write(f'{name}: {value}\r\n'.encode())
+                self.wfile.write(b'\r\n'); self.wfile.flush(); sent = True
+                total = 0
+                while chunk := response.read1(65536):
+                    total += len(chunk)
+                    if total > MAX_INFERENCE_RESPONSE:
+                        raise ValueError('inference response exceeds limit')
+                    self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                    self.wfile.flush()
+                self.wfile.write(b'0\r\n\r\n'); self.wfile.flush()
+            except (OSError, ValueError, http.client.HTTPException):
+                if not sent: raise
+                # An interrupted stream never emits a successful terminal chunk.
 
     def tunnel(self,host):
         # Explicit refusal of forbidden CONNECT makes pinned npm use its Git
@@ -190,8 +268,11 @@ class Handler(socketserver.StreamRequestHandler):
                     (upstream if peer is self.connection else self.connection).sendall(data)
 
     def registry(self,method,host,path,headers):
-        with closing(PublicHTTPS(host,timeout=20,context=ssl.create_default_context())) as upstream:
-            upstream.request(method,path,headers={'Accept':headers.get('accept','*/*'),'Accept-Encoding':'identity','User-Agent':'Forge-readonly-registry/1'})
+        cache_socket = getattr(self.server, 'cache_socket', None)
+        connection = CacheConnection(cache_socket) if cache_socket else PublicHTTPS(host,timeout=20,context=ssl.create_default_context())
+        with closing(connection) as upstream:
+            target = '/' + host + path if cache_socket else path
+            upstream.request(method,target,headers={'Accept':headers.get('accept','*/*'),'Accept-Encoding':'identity','User-Agent':'Forge-readonly-registry/1'})
             response=upstream.getresponse()
             content_type=response.getheader('Content-Type','application/octet-stream')
             if '\r' in content_type or '\n' in content_type:raise ValueError('invalid content type')
@@ -245,6 +326,18 @@ class Server(socketserver.ThreadingTCPServer):
 
 
 if __name__=='__main__':
-    with Server(('0.0.0.0',3128),'provider') as provider_server, Server(('0.0.0.0',8081),'registry') as registry_server:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--registry-socket')
+    parser.add_argument('--provider-socket')
+    args = parser.parse_args()
+    with ExitStack() as stack:
+        provider_server = stack.enter_context(Server(('0.0.0.0',3128),'provider'))
+        registry_server = stack.enter_context(Server(('0.0.0.0',8081),'registry'))
+        registry_server.cache_socket = args.registry_socket
+        provider_server.provider_socket = args.provider_socket
         thread=threading.Thread(target=provider_server.serve_forever,daemon=True);thread.start()
+        if args.provider_socket:
+            inference_server = stack.enter_context(Server(('0.0.0.0',8082),'inference'))
+            inference_server.provider_socket = args.provider_socket
+            thread = threading.Thread(target=inference_server.serve_forever, daemon=True); thread.start()
         registry_server.serve_forever()
