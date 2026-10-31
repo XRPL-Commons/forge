@@ -98,7 +98,6 @@ class RepositoryReadinessTests(unittest.TestCase):
         views = PipelineViews(self.store, runtime=self.config, clock=lambda: self.now)
         reasons = {
             'protection_unchecked': 'current setup',
-            'protection_stale': 'out of date',
             'protection_branch_changed': 'target branch',
             'protection_identity_changed': 'different repository',
             'protection_unavailable': 'could not verify',
@@ -138,9 +137,15 @@ class RepositoryReadinessTests(unittest.TestCase):
         self.now += 1; self.life.resume(self.command())
         self.assertTrue(self.dispatch.step('u1')['reserved'])
 
-    def test_stale_unavailable_wrong_revision_and_wrong_branch_fail_closed(self):
+    def test_report_age_alone_does_not_gate_delivery(self):
+        # Dispatch re-reads protection; an old ready report must not flap the gate.
+        self.report['observed_at'] = self.now - 10_000; self.save_report()
+        self.assertTrue(self.readiness.observe('u1')['allowed'])
+        self.assertEqual(self.gates(), [])
+
+    def test_unavailable_wrong_revision_and_wrong_branch_fail_closed(self):
         original = deepcopy(self.report)
-        for field, value, reason in [('observed_at', -201, 'protection_stale'), ('available', False, 'protection_unavailable'),
+        for field, value, reason in [('available', False, 'protection_unavailable'),
                                      ('branch', 'other', 'protection_branch_changed'), ('repo_id', 9, 'protection_identity_changed')]:
             with self.subTest(field=field):
                 self.report = {**original, field: value}; self.save_report()
@@ -164,7 +169,7 @@ class RepositoryReadinessTests(unittest.TestCase):
             self.assertEqual(saved['status'], 'checking')
             self.assertEqual(saved['report']['observed_at'], original_observed_at)
             value = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
-            self.assertEqual(value['valid_until'], min(original_observed_at + 300, self.now + CHECK_TIMEOUT))
+            self.assertLessEqual(value['valid_until'], self.now + CHECK_TIMEOUT)
             self.assertTrue(self.readiness.observe('u1')['allowed'])
             self.assertEqual(self.gates(), [])
             return 'main'
@@ -178,10 +183,9 @@ class RepositoryReadinessTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE unit_id='u1' AND kind IN ('gate_opened','gate_resolved')").fetchone()[0], 0)
 
-    def test_refresh_does_not_extend_expiry_or_override_failed_protection(self):
+    def test_refresh_does_not_override_failed_protection(self):
         setup = RepositorySetup(self.settings)
         for report, reason in [
-                ({**self.report, 'observed_at': self.now - 300}, 'protection_stale'),
                 ({**self.report, 'bypass': {'status': 'missing'}}, 'protection_needs_setup'),
                 ({**self.report, 'branch': None}, 'protection_unavailable'),
                 ({**self.report, 'branch': 'release'}, 'protection_branch_changed')]:
@@ -259,7 +263,7 @@ class RepositoryReadinessTests(unittest.TestCase):
         self.assertTrue(self.readiness.observe('u1')['allowed'])
         self.assertEqual([gate['code'] for gate in self.gates()], ['operator_pause'])
 
-    def test_running_build_survives_report_expiry_and_repair(self):
+    def test_running_build_survives_failed_report_and_repair(self):
         identifier = self.dispatch.step('u1')['job_id']
         executions = Executions(self.store, clock=lambda: self.now)
         job = ExecutionQueries(self.store).job(identifier)
@@ -269,13 +273,14 @@ class RepositoryReadinessTests(unittest.TestCase):
                             phase='running', container_id='owned-container')
         before = ExecutionQueries(self.store).job(identifier)
         self.now = 401
+        self.report['bypass'] = {'status': 'missing'}; self.save_report()
         self.readiness.observe('u1')
         stale = ExecutionQueries(self.store).job(identifier)
         self.assertFalse(stale['fenced'])
         self.assertEqual(stale['fencing_generation'], before['fencing_generation'])
         self.assertEqual(stale['phase'], 'running')
-        self.assertEqual(json.loads(self.gates()[0]['details_json'])['reason'], 'protection_stale')
-        self.report['observed_at'] = self.now; self.save_report()
+        self.assertEqual(json.loads(self.gates()[0]['details_json'])['reason'], 'protection_needs_setup')
+        self.report['bypass'] = {'status': 'ready'}; self.save_report()
         self.readiness.observe('u1')
         self.assertEqual(self.gates(), [])
         executions.collect(self.command(), identifier, execution_fence=job['execution_fence'], capture={'result': None, 'logs': ''})

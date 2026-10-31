@@ -446,7 +446,7 @@ class ExecutionQueries:
             job['reviewers_requested']=reviewer_request_in(db,job['candidate_id']) if job['candidate_id']==job['current_candidate_id'] else None
             # Every assignment reads its immutable scope; later membership edits
             # cannot change the requirements that were handed to this execution.
-            members = db.execute('SELECT m.id AS member_id,i.github_number AS issue_number,m.issue_id AS issue_key,'
+            members = db.execute('SELECT m.id AS member_id,i.github_number AS issue_number,i.repository_id,m.issue_id AS issue_key,'
                                  'p.requirements_revision_id,r.requirements_json,r.title,r.body '
                                  'FROM job_members p JOIN unit_issues m ON m.id=p.member_id '
                                  'JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=p.requirements_revision_id '

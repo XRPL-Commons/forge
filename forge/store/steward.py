@@ -18,24 +18,6 @@ def artifact_in(db, job_id, kind):
     return json.loads(read_in(db, job_id, kind).content)
 
 
-def reusable_deferral_in(db, job_id, now):
-    """Only a trusted provider or pre-agent Forge failure reuses its cycle.
-
-    The controller asks this before launching a physical retry so an
-    unauthorized retry becomes one operator wait, not a rejected reservation
-    in every supervisor cycle.
-    """
-    from ..factory.execution_problems import classify
-    state = db.execute('SELECT container_id FROM job_execution_state WHERE job_id=?', (job_id,)).fetchone()
-    evidence = artifact_in(db, job_id, 'result')
-    observed = classify({'id': job_id, 'container_id': state['container_id'] if state else None},
-                        artifact_in(db, job_id, 'worker_capture'), now)
-    provider = observed and observed['kind'] == 'provider_error' and evidence.get('kind') == 'provider_error'
-    before_agent = (observed and observed['kind'] == 'forge_problem' and observed['details'].get('phase') == 'before_agent'
-                    and evidence.get('reason') == 'forge_problem')
-    return bool(provider or before_agent)
-
-
 def dossier_in(db, job_id):
     return artifact_in(db, job_id, 'steward_dossier')
 
@@ -61,20 +43,12 @@ def trigger_decision_in(db, unit_id, trigger_key, authority, *, include_applied=
 
 
 def refreshed_cycle_in(db, unit_id, trigger_key, authority):
-    """A changed obligation gets a new cycle; failed physical runs cannot escape their cap."""
-    prior = db.execute('SELECT t.job_id,j.cleanup,j.outcome FROM steward_turns t '
+    """A changed obligation gets a new cycle; a deferred run retries within its physical cap."""
+    prior = db.execute('SELECT t.job_id,j.outcome FROM steward_turns t '
         'JOIN jobs j ON j.id=t.job_id WHERE t.unit_id=? AND t.trigger_key=? '
         'ORDER BY t.cycle DESC,t.physical_attempt DESC LIMIT 1', (unit_id,trigger_key)).fetchone()
-    if prior is None:
-        return True
-    if not prior['cleanup'] or dossier_in(db,prior['job_id'])['authority'] == authority:
-        return False
-    if trigger_decision_in(db,unit_id,trigger_key,authority,include_applied=True):
-        return False
-    if prior['outcome'] == 'stale_investigation':
-        return artifact_in(db,prior['job_id'],'result').get('reason') == 'steward_authority_changed'
-    return prior['outcome'] == 'success' and db.execute(
-        'SELECT 1 FROM steward_decisions WHERE job_id=?', (prior['job_id'],)).fetchone() is not None
+    return prior is None or (prior['outcome'] != 'deferred'
+                             and dossier_in(db,prior['job_id'])['authority'] != authority)
 
 
 def selection_in(db, decision_id):
@@ -122,7 +96,7 @@ class Steward(Executions):
         cycle, physical = count+1, 1
         if retry_of is None:
             require(refreshed_cycle_in(db,unit['id'],dossier['trigger_key'],dossier['authority']),
-                    'Existing trigger requires changed semantic authority or an authorized physical retry')
+                    'Existing trigger requires changed semantic authority or a physical retry')
             require(count < MAX_CYCLES, 'Steward cycle limit reached; operator choice required')
         else:
             prior = db.execute('SELECT t.*,j.cleanup,j.outcome,e.container_id FROM steward_turns t JOIN jobs j ON j.id=t.job_id '
@@ -132,7 +106,6 @@ class Steward(Executions):
             latest = db.execute('SELECT job_id FROM steward_turns WHERE unit_id=? AND trigger_key=? '
                 'ORDER BY cycle DESC,physical_attempt DESC LIMIT 1', (unit['id'],dossier['trigger_key'])).fetchone()
             require(latest and latest[0]==retry_of, 'Steward retry must continue the latest physical attempt')
-            require(reusable_deferral_in(db, retry_of, self.clock()), 'Only trusted provider or pre-agent Forge failure can reuse a cycle')
             cycle = prior['cycle']
             physical = db.execute('SELECT count(*) FROM steward_turns WHERE unit_id=? AND cycle=?',(unit['id'],cycle)).fetchone()[0]+1
             require(physical <= 3, 'Steward physical retry limit reached; owned wait requires operator attention')

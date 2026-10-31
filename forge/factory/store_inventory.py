@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 
+from ..repository_setup import RepositorySetup
 from ..settings import digest
 from ..store.models import Command, TransitionError, RequirementsStale, complete_requirements
 from ..store.remote_time import order as remote_order
@@ -308,9 +309,13 @@ class DiscoveryController:
                 'AND NOT EXISTS(SELECT 1 FROM issue_discovery_observations d WHERE d.issue_id=i.id '
                 'AND d.revision_id=i.current_revision_id AND d.retry_after>?) ORDER BY i.id LIMIT ?', (after, self.config['ready_label'], self.clock(), limit + 1)).fetchall()
         results = []
+        setup = RepositorySetup(self.settings).read()['repositories'] if rows else {}
         for row in rows[:limit]:
             from ..install_scope import issue_allowed
             if not issue_allowed(self.store, row['repo_id'], row['github_number']):
+                continue
+            # Unready repositories wait for Settings; do not spend GitHub reads on them.
+            if setup.get(str(row['repo_id']), {}).get('status') != 'ready':
                 continue
             item = dict(repo=row['full_name'], repo_id=row['repo_id'], number=row['github_number'])
             try:

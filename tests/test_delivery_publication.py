@@ -59,6 +59,9 @@ class DeliveryPublicationTests(unittest.TestCase):
         authorization = publication_authorization(note, github)
         self.assertEqual(authorization['kind'], 'ownership_transfer')
         self.assertEqual(authorization['expected_head_oid'], 'a' * 40)
+        # A rebuild on a moved base force-replaces the branch; only the head is pinned.
+        self.pr['base']['sha'] = 'c' * 40
+        self.assertTrue(publication_authorization(note, github)['replace_ref'])
         self.pr['head']['sha'] = 'd' * 40
         with self.assertRaises(PublicationClaim) as raised:
             publication_authorization(note, github)
