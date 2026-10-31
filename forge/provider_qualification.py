@@ -7,6 +7,7 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import platform
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -15,7 +16,7 @@ import threading
 import time
 import uuid
 
-from .factory.runner import ContainerRunner, process_isolation
+from .factory.runner import ContainerRunner, process_isolation, scrub
 from .factory.worker_boundary import BoundaryError, WorkerBoundary
 from .provider_proxy import Assignment, Broker, SessionServer, claude_environment
 
@@ -23,6 +24,11 @@ MODEL = 'claude-sonnet-4-6'
 CAPABILITY = 'synthetic-job-capability-for-qualification'
 HOST_KEY = 'synthetic-host-key-for-qualification'
 DIAGNOSTIC_PREFIX = 'forge-provider-diagnostic:'
+SHELL_PREFIX = 'forge-provider-shell:'
+SHELL_PHASES = ('environment', 'private_files', 'public_assignment', 'namespace_fixture',
+                'pid_namespace', 'process_namespace', 'process_environment', 'process_files')
+SHELL_ERRORS = ('AssertionError', 'FileNotFoundError', 'PermissionError', 'OSError',
+                'ValueError', 'JSONDecodeError', 'KeyError', 'TypeError', 'RuntimeError')
 WORKER_PHASES = ('assignment', 'credentials', 'cli_version', 'route_denial',
                  'capability_denial', 'shell_fixture', 'tool_loop', 'tool_result', 'complete')
 SHELL_FAILURES = {
@@ -38,6 +44,40 @@ UPSTREAM_FAILURES = ('route', 'host_key', 'caller_authorization', 'model',
                      'shell_result_failed', 'shell_proof_missing', 'invalid_request', 'transport')
 
 
+def tool_diagnostic(results):
+    """This fixture receives only its own script output in a credential-free worker.
+
+    Keep a short redacted error for private diagnostic reports when Bash fails
+    before Python starts; structured script failures also identify their stage.
+    Never call this on a real provider or arbitrary worker capture.
+    """
+    parts = []
+    for result in results:
+        content = result.get('content', '')
+        if isinstance(content, str): parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(item['text'] for item in content if isinstance(item, dict) and isinstance(item.get('text'), str))
+    text = '\n'.join(parts)
+    details = {}
+    for line in text.splitlines():
+        if not line.startswith(SHELL_PREFIX): continue
+        try: value = json.loads(line[len(SHELL_PREFIX):])
+        except ValueError: continue
+        if not isinstance(value, dict): continue
+        if value.get('phase') in SHELL_PHASES: details['phase'] = value['phase']
+        if value.get('error') in SHELL_ERRORS: details['error'] = value['error']
+        if value.get('function') in ('<module>', 'unreadable'): details['function'] = value['function']
+        for key in ('line', 'errno'):
+            if type(value.get(key)) is int and 0 <= value[key] < 10000: details[key] = value[key]
+    # The only credential values created by this canary are these two synthetic
+    # strings. Runner.scrub also removes recognizable provider/token patterns.
+    safe = scrub(text, (CAPABILITY, HOST_KEY))
+    safe = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', safe)
+    safe = ''.join(character for character in safe if ord(character) >= 32 or character in '\n\t')
+    details['excerpt'] = safe[-2048:]
+    return details
+
+
 def failure_diagnostic(docker, worker, phase, code, upstream):
     """Only fixture enums and bounded counts survive cleanup, never raw CLI output."""
     details = dict(phase=phase, upstream_requests=min(len(upstream.requests), 1000),
@@ -46,6 +86,8 @@ def failure_diagnostic(docker, worker, phase, code, upstream):
         value = getattr(upstream, field, None)
         if value in choices:
             details['upstream_' + field] = value
+    tool = getattr(upstream, 'tool_diagnostic', None)
+    if isinstance(tool, dict): details['tool_diagnostic'] = tool
     try:
         captured = docker(['logs', '--tail', '32', worker], check=False, timeout=10).stdout
         if isinstance(captured, bytes): captured = captured.decode(errors='replace')
@@ -71,6 +113,7 @@ class Upstream(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        sent = False
         try:
             assert self.path == '/v1/messages?beta=true', 'route'
             assert self.headers.get('x-api-key') == HOST_KEY, 'host_key'
@@ -84,12 +127,14 @@ class Upstream(BaseHTTPRequestHandler):
             if results:
                 output = json.dumps(results)
                 self.server.shell_failure = next((code for message, code in SHELL_FAILURES.items() if message in output), None)
+                self.server.tool_diagnostic = tool_diagnostic(results)
                 assert not any(result.get('is_error') for result in results), 'shell_result_failed'
                 assert 'forge-shell-private' in output, 'shell_proof_missing'
             tool, arguments = ('StructuredOutput', {'ready': True}) if results else ('Bash', {
                 'command': 'python3 /work/repository/proxy-privacy.py',
                 'description':'Verify that shell tools cannot read inference credentials'})
             self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+            sent = True
             self.event('message_start', {'type':'message_start','message':{'id':'fixture','type':'message',
                 'role':'assistant','model':MODEL,'content':[],'stop_reason':None,'stop_sequence':None,
                 'usage':{'input_tokens':1,'output_tokens':0}}})
@@ -105,13 +150,25 @@ class Upstream(BaseHTTPRequestHandler):
             self.server.failed = True
             self.server.failure = (str(error) if isinstance(error, AssertionError) and str(error) in UPSTREAM_FAILURES
                                    else 'transport' if isinstance(error, OSError) else 'invalid_request')
+            if not sent:
+                # Closing the connection makes the SDK retry the same failed
+                # tool result until the worker times out. This failure is final.
+                body = json.dumps({'type':'error', 'error':{'type':'invalid_request_error',
+                    'message':'Forge qualification fixture: '+self.server.failure}}).encode()
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('x-should-retry', 'false')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(body); self.wfile.flush()
             self.close_connection = True
 
     def event(self, name, value):
         self.wfile.write(('event: '+name+'\ndata: '+json.dumps(value)+'\n\n').encode()); self.wfile.flush()
 
 
-SHELL_CHECK = r'''import json,os
+_SHELL_CHECK = r'''import json,os
 from pathlib import Path
 keys = {'ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN'}
 assert not any(os.environ.get(key) for key in keys), 'shell environment exposes credential'
@@ -119,27 +176,45 @@ def unreadable(path):
     try: Path(path).read_bytes()
     except OSError: return
     raise AssertionError('protected credential file is readable')
+phase='private_files'
 unreadable('/work/credentials.json')
 unreadable('/work/home/proxy-private')
 # The public assignment is never a credential envelope, even if readable.
+phase='public_assignment'
 try: assignment = json.loads(Path('/run/forge-input/assignment.json').read_text())
 except OSError: pass
 else: assert not ({'capability'} | keys).intersection(assignment), 'public assignment carries credential'
+phase='namespace_fixture'
 outer = json.loads(Path('/work/repository/namespace.json').read_text())
+phase='pid_namespace'
 assert os.readlink('/proc/self/ns/pid') != outer['pid_namespace'], 'parent processes remain visible'
 # A private PID namespace and its own procfs must hide the credential-bearing
 # harness, including alternate /proc/<pid>/root and fd paths into its files.
 for process in Path('/proc').iterdir():
     if not process.name.isdigit(): continue
+    phase='process_namespace'
     try: namespace = os.readlink(process / 'ns/pid')
     except OSError: namespace = None
     assert namespace != outer['pid_namespace'], 'parent procfs exposes the harness'
+    phase='process_environment'
     try: values = (process / 'environ').read_bytes().split(b'\0')
     except OSError: values = []
     assert not any(value.split(b'=',1)[0].decode(errors='ignore') in keys for value in values), 'process environment exposes credential'
+    phase='process_files'
     unreadable(process / 'root/work/home/proxy-private')
     unreadable(process / 'root/work/credentials.json')
 print('forge-shell-private')
+'''
+SHELL_CHECK = '''import json,traceback
+phase='environment'
+try:
+''' + textwrap.indent(_SHELL_CHECK, '    ') + '''
+except Exception as error:
+    filename=globals().get('__file__','<string>')
+    location=next(frame for frame in reversed(traceback.extract_tb(error.__traceback__)) if frame.filename==filename)
+    print('forge-provider-shell:'+json.dumps(dict(phase=phase,error=type(error).__name__,
+        errno=getattr(error,'errno',None),line=location.lineno,function=location.name)),flush=True)
+    raise
 '''
 
 

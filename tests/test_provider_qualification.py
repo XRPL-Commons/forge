@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge.provider_qualification import (CAPABILITY, HOST_KEY, MODEL, SHELL_CHECK, WORKER,
-    DIAGNOSTIC_PREFIX, Upstream, failure_diagnostic, handoff, qualify)
+    DIAGNOSTIC_PREFIX, SHELL_PREFIX, Upstream, failure_diagnostic, handoff, qualify, tool_diagnostic)
 from forge.factory.worker_boundary import BoundaryError
 from forge_client.boundary_qualification import execute
 from tests.test_worker_boundary import Engine
@@ -53,12 +53,14 @@ class ProviderQualificationTests(unittest.TestCase):
                                       'ANTHROPIC_AUTH_TOKEN':CAPABILITY})
         self.assertNotIn(HOST_KEY.encode(), kwargs['input'])
 
-    def privacy(self, *, exposed_file=None, environment=b'PATH=/usr/bin\0', namespace='pid:[private]', process_namespace=None):
+    def privacy(self, *, exposed_file=None, environment=b'PATH=/usr/bin\0', namespace='pid:[private]', process_namespace=None,
+                missing_file=None, diagnostics=None):
         files = {
             '/run/forge-input/assignment.json': json.dumps({'model':'claude-sonnet-4-6'}).encode(),
             '/work/repository/namespace.json': json.dumps({'pid_namespace':'pid:[outer]'}).encode(),
             '/proc/42/environ': environment,
         }
+        if missing_file: files.pop(missing_file, None)
         if exposed_file: files[exposed_file] = b'private-data'
         class FixturePath:
             def __init__(self, value): self.value = str(value)
@@ -68,12 +70,13 @@ class ProviderQualificationTests(unittest.TestCase):
             def name(self): return self.value.rsplit('/',1)[-1]
             def __truediv__(self, child): return FixturePath(self.value+'/'+child)
             def read_bytes(self):
-                if self.value not in files: raise PermissionError('unreadable')
+                if self.value not in files: raise PermissionError(13, 'unreadable', self.value)
                 return files[self.value]
             def read_text(self): return self.read_bytes().decode()
             def iterdir(self): return iter([FixturePath('/proc/42')])
         with patch('pathlib.Path', FixturePath), patch.dict('os.environ', {}, clear=True), \
-                patch('os.readlink', side_effect=lambda path: namespace if str(path)=='/proc/self/ns/pid' else process_namespace or namespace), patch('builtins.print'):
+                patch('os.readlink', side_effect=lambda path: namespace if str(path)=='/proc/self/ns/pid' else process_namespace or namespace), \
+                patch('builtins.print', side_effect=lambda *values, **kwargs: diagnostics.extend(values) if diagnostics is not None else None):
             exec(SHELL_CHECK, {})
 
     def test_bash_privacy_probe_checks_files_processes_and_alternate_roots(self):
@@ -123,6 +126,7 @@ class ProviderQualificationTests(unittest.TestCase):
         value.path = '/v1/messages?beta=true'
         value.headers = {'x-api-key':HOST_KEY, 'Content-Length':str(len(body))}
         value.rfile = io.BytesIO(body)
+        value.wfile = io.BytesIO()
         value.server = SimpleNamespace(requests=[], failed=False)
         for name in ('send_response', 'send_header', 'end_headers', 'event'):
             setattr(value, name, Mock())
@@ -136,9 +140,37 @@ class ProviderQualificationTests(unittest.TestCase):
         self.assertEqual(value.server.failure, 'shell_result_failed')
         self.assertEqual(value.server.shell_failure, 'private_file')
         value.event.assert_not_called()
+        value.send_response.assert_called_once_with(400)
+        value.send_header.assert_any_call('x-should-retry', 'false')
+        self.assertEqual(json.loads(value.wfile.getvalue())['error']['type'], 'invalid_request_error')
         value = self.upstream([dict(type='tool_result', content='unrecognized private output')])
         self.assertEqual(value.server.failure, 'shell_proof_missing')
         self.assertIsNone(value.server.shell_failure)
+
+    def test_shell_os_failure_reports_phase_errno_and_script_location(self):
+        output = []
+        with self.assertRaises(PermissionError):
+            self.privacy(missing_file='/work/repository/namespace.json', diagnostics=output)
+        record = json.loads(output[-1].removeprefix(SHELL_PREFIX))
+        self.assertEqual(record['phase'], 'namespace_fixture')
+        self.assertEqual(record['error'], 'PermissionError')
+        self.assertEqual(record['errno'], 13)
+        self.assertEqual(record['function'], '<module>')
+        self.assertIsInstance(record['line'], int)
+        self.assertNotIn('namespace.json', output[-1])
+
+    def test_synthetic_tool_diagnostics_redact_credentials_and_bound_unknown_launch_errors(self):
+        token = 'sk-'+'a'*24
+        text = ('x'*3000 + '\nError: Exit code 1\nbwrap: No such file or directory\n'
+                + CAPABILITY+' '+HOST_KEY+' '+token+'\x1b[31m')
+        report = tool_diagnostic([dict(type='tool_result', is_error=True, content=[{'type':'text', 'text':text}])])
+        self.assertLessEqual(len(report['excerpt']), 2048)
+        self.assertIn('bwrap: No such file or directory', report['excerpt'])
+        for value in (CAPABILITY, HOST_KEY, token, '\x1b'):
+            self.assertNotIn(value, json.dumps(report))
+        marker = dict(phase='private_files', error='AssertionError', line=12, function='unreadable')
+        report = tool_diagnostic([dict(content=SHELL_PREFIX+json.dumps(marker))])
+        self.assertEqual({key:report[key] for key in marker}, marker)
 
     def test_worker_launch_matches_production_and_reports_failure_without_raw_cli_output(self):
         with tempfile.TemporaryDirectory() as directory:
