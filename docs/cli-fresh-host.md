@@ -43,6 +43,13 @@ for diagnosis after handover, with automation disabled. Choosing a real reposito
 instead creates a small documentation smoke issue there; its merge policy and
 any independent operator holds still apply.
 
+After preflight passes, the CLI prepares these GitHub targets before installing
+the host. Provider sign-in runs immediately after App and operator identity setup,
+before repository repair, database-image provisioning and publication checks.
+Pending sign-in pauses that later work; resume observes the same login session.
+The browser steps still require the full host installation and Tailscale setup.
+This ordering does not yet provide a single consent batch before installation.
+
 ### Browser steps
 
 The CLI prints the exact browser actions as they become available:

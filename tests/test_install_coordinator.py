@@ -85,11 +85,67 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_failed_preflight_has_no_remote_mutation_and_cannot_waive_host_identity(self):
         self.report['items'] = [finding('host.identity', 'needs_you', 'Mismatch')]
-        self.assertEqual(self.install.apply()['status'], 'preflight_blocked')
+        with patch('forge_client.install_targets.prepare_targets') as targets:
+            self.assertEqual(self.install.apply()['status'], 'preflight_blocked')
+        targets.assert_not_called()
         self.host.execute.assert_not_called()
         with self.assertRaises(SetupError): self.install.apply(waivers=['host.identity'])
         self.host.execute.assert_not_called()
 
+    def test_targets_precede_host_and_account_consent_precedes_repository_work(self):
+        self.factory()
+        with patch.object(self.install, 'stage', wraps=self.install.stage) as stages:
+            self.install.apply()
+        names = [call.args[0] for call in stages.call_args_list]
+        self.assertLess(names.index('targets'), names.index('host'))
+        self.assertLess(names.index('identity'), names.index('account.codex'))
+        self.assertLess(names.index('account.codex'), names.index('repository.10'))
+        self.assertLess(names.index('account.codex'), names.index('environment'))
+        self.assertLess(names.index('account.codex'), names.index('publication.10'))
+
+    def test_uncertain_target_creation_stops_before_host_installation(self):
+        self.factory()
+        uncertain = {'status': 'write_unconfirmed'}
+        with patch('forge_client.install_targets.prepare_targets', return_value=uncertain) as targets:
+            result = self.install.apply()
+        targets.assert_called_once()
+        self.host.execute.assert_not_called()
+        self.assertNotIn('host', result['stages'])
+        self.assertEqual(result['pending'][0]['status'], 'write_unconfirmed')
+
+    def test_pending_login_pauses_later_work_and_resumes_existing_journal(self):
+        factory = self.factory()
+        # This is a journal made by the old ordering: repositories are already
+        # prepared when the account needs attention on a later invocation.
+        self.install.apply()
+        original = deepcopy(self.install.state['stages']['repository.10'])
+        original_targets = deepcopy(self.install.state['stages']['targets'])
+        original_start = self.install.state['started_at']
+        usual = factory.call.side_effect
+        connected = False
+        def call(action, **options):
+            if action == 'device_account' and not connected:
+                return {'status': 'account_login_pending', 'session_id': 'existing-login'}
+            return usual(action, **options)
+        factory.call.side_effect = call
+        factory.prepare_repository.reset_mock()
+        resumed = Install('anvil', github=self.github, installation=self.host, journal=self.journal,
+                          preflight=self.observe)
+        with patch('forge_client.install_environment.Environment') as environment, \
+             patch('forge_client.install_publication.qualify') as publication:
+            waiting = resumed.apply()
+        factory.prepare_repository.assert_not_called()
+        environment.assert_not_called(); publication.assert_not_called()
+        self.assertEqual(waiting['stages']['account.codex']['receipt']['session_id'], 'existing-login')
+        self.assertEqual(waiting['stages']['repository.10'], original)
+        self.assertEqual(waiting['stages']['targets'], original_targets)
+        connected = True
+        result = resumed.apply()
+        self.assertEqual(result['stages']['account.codex']['status'], 'complete')
+        self.assertEqual(result['stages']['repository.10']['completed_at'], original['completed_at'])
+        self.assertEqual(result['stages']['repository.10']['inputs_digest'], original['inputs_digest'])
+        self.assertEqual(result['started_at'], original_start)
+        self.assertTrue(all(not item.kwargs.get('apply') for item in factory.prepare_repository.call_args_list))
     def test_other_repository_owner_is_rejected_before_saving_or_host_work(self):
         self.github.repository.side_effect = lambda name: {'id': 20, 'name': name, 'branch': 'main', 'admin': True, 'owner_id': 99, 'owner_type': 'User'}
         supplied = interview(); supplied['repositories'] = supplied['repositories'][:1]

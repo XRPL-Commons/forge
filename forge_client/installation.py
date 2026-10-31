@@ -145,6 +145,13 @@ class Install:
         self.state['waivers'] = sorted(waivers); self.save()
         if blocked:
             return {**self.status(), 'status': 'preflight_blocked', 'findings': blocked}
+        # These local GitHub writes need only the approved intent and passing
+        # preflight, not an installed host or a private-network origin.
+        from .install_targets import prepare_targets
+        targets = self.stage('targets', lambda: prepare_targets(self.state, self.save, self.github),
+                             lambda _: prepare_targets(self.state, self.save, self.github, apply=True),
+                             complete=lambda row: row.get('status') == 'targets_ready')
+        if targets.get('status') != 'targets_ready': return self.status()
         host = self.stage('host', lambda: self.installation.execute('status'),
                           lambda row: self.installation.execute('resume' if row['status'] == 'interrupted' else 'apply'),
                           complete=lambda row: row.get('status') == 'installed')
@@ -154,17 +161,12 @@ class Install:
                          lambda row: network.execute(hostname=selected['hostname'], apply=True),
                          complete=lambda row: row.get('status') == 'network_ready')
         if net.get('status') != 'network_ready': return self.status()
-        from .install_targets import prepare_targets
         from .install_consent import InstallConsent
         from .install_environment import Environment
         from .install_identity import configure as configure_identity
         from .install_publication import qualify
         from .install_smoke import InstallSmoke
 
-        targets = self.stage('targets', lambda: prepare_targets(self.state, self.save, self.github),
-                             lambda _: prepare_targets(self.state, self.save, self.github, apply=True),
-                             complete=lambda row: row.get('status') == 'targets_ready')
-        if targets.get('status') != 'targets_ready': return self.status()
         consent = InstallConsent(self.installation, selected, github=self.github,
                                  repositories=targets['repositories'], tell=self.notify,
                                  open_browser=self.open_browser if self.interactive else None)
@@ -176,6 +178,15 @@ class Install:
                               lambda _: configure_identity(factory, apply=True),
                               complete=lambda row: row.get('status') == 'identity_ready')
         if identity.get('status') != 'identity_ready': return self.status()
+        # Finish attended account consent before repository repair and image or
+        # publication qualification. Existing login sessions are observed on resume.
+        for provider in selected['providers']:
+            self.stage('account.' + provider['id'], lambda provider=provider: self.account(factory, provider),
+                       lambda _, provider=provider: self.account(factory, provider, apply=True),
+                       complete=lambda row: row.get('status') == 'connected')
+        if any(self.state['stages']['account.' + provider['id']]['status'] != 'complete'
+               for provider in selected['providers']):
+            return self.status()
         # Independent repository findings do not prevent preparing other repos.
         for target in targets['repositories']:
             if target['id'] == targets['publication']['id']: continue
@@ -183,10 +194,6 @@ class Install:
                        lambda target=target: self.repository(factory, target),
                        lambda _, target=target: self.repository(factory, target, apply=True),
                        complete=lambda row: row.get('status') == 'repository_ready')
-        for provider in selected['providers']:
-            self.stage('account.' + provider['id'], lambda provider=provider: self.account(factory, provider),
-                       lambda _, provider=provider: self.account(factory, provider, apply=True),
-                       complete=lambda row: row.get('status') == 'connected')
         if any(row['env_tier'] == 'full' for row in report['repositories']):
             environment = Environment(self.installation)
             self.stage('environment', environment.execute,

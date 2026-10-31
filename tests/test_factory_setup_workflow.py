@@ -73,6 +73,19 @@ class SetupStageTests(unittest.TestCase):
         with self.assertRaises((SetupError, ValueError)):
             self.factory.account('codex', kind='api_key', secret=secret, apply=True)
 
+    def test_account_consent_before_repository_selection_does_not_start_checks(self):
+        # App/operator bootstrap is ready, but no repository has been selected.
+        with self.setup.store.transaction() as state:
+            state['selected'] = None
+            state['checks'] = {}
+        secret = 'synthetic-claude-token-for-test-only'
+        result = self.factory.account('claude', kind='token', secret=secret, apply=True)
+        self.assertTrue(next(row['connected'] for row in result['harnesses'] if row['id'] == 'claude'))
+        self.assertIsNone(result['selected'])
+        self.assertIsNone(result['operation'])
+        self.assertFalse(result['can_start'])
+        self.assertNotIn(secret, self.local.path.read_text())
+
     def test_initial_repository_uses_real_preparation_and_readiness_without_start(self):
         from forge.repository_setup import RepositorySetup
         self.installations[:] = [{'id':100+i,'app_id':i,'account':{'login':'example'}} for i in range(1,5)]
