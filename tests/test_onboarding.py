@@ -129,6 +129,26 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.root / 'setup/runtime.json').exists())
         self.assertFalse((self.root / 'setup/factory.json').exists())
 
+    def test_selecting_smoke_repository_preserves_other_policies_but_disables_their_work(self):
+        self.connected()
+        discover = self.api.discover.side_effect
+        self.api.discover.side_effect = lambda connection: {
+            **discover(connection), 'repositories': [
+                {'id': 10, 'name': 'example/project'}, {'id': 11, 'name': 'example/smoke'}]}
+        settings = self.setup.settings()
+        settings.refresh()
+        config = settings.load()
+        config['repositories'][0]['github_protection'] = 'optional'
+        config['repositories'].append({'id': 11, 'name': 'example/smoke', 'enabled': False,
+                                       'github_protection': 'optional'})
+        settings.save(config, digest(settings.load()))
+        for selected_id in (11, 10, 11):
+            self.setup.select(selected_id)
+            rows = {row['id']: row for row in settings.load()['repositories']}
+            self.assertEqual(set(rows), {10, 11})
+            self.assertEqual([row['id'] for row in rows.values() if row['enabled']], [selected_id])
+            self.assertTrue(all(row['github_protection'] == 'optional' for row in rows.values()))
+
     def test_failed_repository_verification_stops_checking_without_starting_workers(self):
         self.connected()
         service, engine, resets = self.service()
