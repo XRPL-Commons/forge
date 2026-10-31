@@ -94,7 +94,7 @@ def build(state, *, versions=None):
         stage, observed = stages.get(name, {}), observations.get(target['id'], {})
         changes = stage.get('rule_changes', rule_changes(stage.get('receipt') or {}))
         repositories.append({'repository': pick(target, 'id', 'name'),
-            'merge_policy': selected['merge_policy'], 'allow_workflow_edits': selected['allow_workflow_edits'],
+            'merge_policy': selected['merge_policy'], 'github_protection': selected.get('github_protection', 'required'), 'allow_workflow_edits': selected['allow_workflow_edits'],
             'stage_status': stage.get('status', 'unknown'), 'environment_tier': observed.get('env_tier'),
             'environment_observed_at': (state.get('preflight') or {}).get('observed_at'),
             'rules': {'signed_commits_required': observed.get('signed_commits_required'),

@@ -137,7 +137,8 @@ class MergeAdmission:
         peers=self._peers(item['unit_id'],identity['head_oid'])
         if any(peer['source_hash'] is not None for peer in peers):
             item['review_peer_scope']=True
-        if not self.github.gates(item) or not self.github.protections(item, item['candidate']):
+        protection_candidate = dict(item['candidate'], merge_request=True) if effect.get('merge_request') else item['candidate']
+        if not self.github.gates(item) or not self.github.protections(item, protection_candidate):
             return result(None)
         # Approval reads are last; the effect driver repeats this check directly
         # before the exact-head merge request after publishing its check.

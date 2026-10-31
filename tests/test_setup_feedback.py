@@ -18,7 +18,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_report_lists_only_actual_gaps_and_preserves_the_gate(self):
         settings=Mock()
-        settings.load.return_value={'connections':{role:{'app_id':app_id} for app_id,role in
+        settings.load.return_value={'repositories': [], 'connections':{role:{'app_id':app_id} for app_id,role in
             enumerate(('build','review','audit','controller'),1)}}
         github=GitHub(settings, {})
         github.connection=lambda role:{'app_id':{'review':2,'audit':3,'controller':4}[role]}
@@ -26,11 +26,11 @@ class FeedbackTests(unittest.TestCase):
             'bypass_pull_request_allowances':{'apps':[{'id':4}]}},'allow_force_pushes':{'enabled':False}}
         github.call=Mock(return_value=protection)
         github.pages=Mock(return_value=[])
-        report=github.protection_report({}, {'base_ref':'main'})
+        report=github.protection_report({'repo_id':10}, {'base_ref':'main'})
         self.assertEqual({r['id'] for r in report['requirements']},{'reviews','stale'})
         self.assertTrue(all(r['passed'] for r in report['requirements']))
-        self.assertTrue(github.protections({}, {'base_ref':'main'}))
+        self.assertTrue(github.protections({'repo_id':10}, {'base_ref':'main'}))
         github.call.side_effect=GitHubUnavailable('unreadable',status=403)
-        report=github.protection_report({}, {'base_ref':'main'})
+        report=github.protection_report({'repo_id':10}, {'base_ref':'main'})
         self.assertFalse(report['available'])
         self.assertEqual([r['id'] for r in report['requirements']],['readable'])

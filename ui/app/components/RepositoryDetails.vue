@@ -6,7 +6,7 @@ const repoId = computed(() => props.repoId)
 const route = useRoute()
 const wizard = ref(route.query.setup === '1')
 watch(() => route.query.setup, value => { if (value === '1') wizard.value = true })
-const { poll, view, live, row, report, shown, displayReady, ready, prepared, failed, hint, editUrl, downloadHref, downloaded, busy, checking, error, deployment, deployError, environmentError, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope } = useRepository(repoId, computed(() => !wizard.value))
+const { poll, view, live, row, report, shown, displayReady, ready, prepared, failed, hint, editUrl, downloadHref, downloaded, busy, checking, error, deployment, deployError, environmentError, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, updateGithubProtection } = useRepository(repoId, computed(() => !wizard.value))
 async function closed() { wizard.value = false; await navigateTo(`/settings/repositories/${props.repoId}`, { replace: true }); await poll.refresh() }
 </script>
 <template>
@@ -37,6 +37,7 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
         </select>
         <p class="mt-2 text-xs text-muted">Changing scope does not change GitHub rules. If GitHub requires Forge checks for every pull request, update that rule through repository setup before selecting Forge-only.</p>
       </section>
+      <RepositoryProtectionPolicy :mode="row.github_protection ?? 'required'" :busy="busy || checking" @change="updateGithubProtection" />
       <RepositoryMirrorPolicyCard v-if="live" :key="`mirror-${row.id}`" :entries="row.mirror_denied_repositories ?? []" :busy="busy" :error="mirrorError" @save="updateMirrorPolicy" />
       <RepositoryStewardPolicy v-if="live" :key="`steward-${row.id}`" :repo-id="row.id" />
       <RepositoryRulesPanel id-prefix="repo-" :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" :controller-slug="view?.connections?.controller?.app_slug" @download="downloaded = true" />

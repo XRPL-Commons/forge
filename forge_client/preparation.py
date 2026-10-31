@@ -11,12 +11,14 @@ from .contracts import SetupError, baseline, connection_identity, digest, fields
 
 
 class Preparation:
-    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None, repair='apply-if-admin'):
+    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None, repair='apply-if-admin', github_protection=None):
         self.github, self.forge, self.clock = github, forge, clock
         self.instance, self.generation, self.apps = instance, generation, deepcopy(apps)
         self.progress = progress or (lambda phase, step: None)
         require(repair in ('apply-if-admin', 'print-commands', 'skip'))
         self.repair = repair
+        require(github_protection in (None, 'required', 'optional'))
+        self.github_protection = github_protection
 
     def _authorize(self, target, capability):
         self.forge.authorize(self.instance, self.generation,
@@ -38,6 +40,15 @@ class Preparation:
         target = self.github.repository(name)
         value = self._requirements(target)
         steps, blockers = [], []
+        mode = value['baseline'].get('github_protection', 'required')
+        if self.github_protection is not None and self.github_protection != mode:
+            self._authorize(target, 'repositories:policy')
+            policy = self.forge.protection({'id': target['id'], 'name': target['name']}, action='read')
+            steps.append({'kind': 'forge.github_protection', 'mode': self.github_protection,
+                          'revision': policy['revision']})
+            # Commit the explicit policy before planning any GitHub rule writes.
+            mode = self.github_protection
+
         for role, app in value['roles'].items():
             if app['access'] == 'ready':
                 continue
@@ -48,7 +59,7 @@ class Preparation:
             else:
                 blockers.append({'code': 'app_access_unverified', 'role': role})
         readiness = value['readiness']
-        if readiness['access_ready'] and not readiness['protection_ready']:
+        if mode == 'required' and not steps and readiness['access_ready'] and not readiness['protection_ready']:
             try:
                 inventory = self.github.rulesets(target['name'])
             except SetupError as error:
@@ -56,8 +67,8 @@ class Preparation:
                     raise
                 blockers.append({'code': 'github_plan_required', 'reason':
                     'GitHub does not support rulesets on this repository with its current plan. '
-                    'Enable a GitHub plan that supports private-repository rulesets, then rerun setup, '
-                    'or defer this repository. Its visibility will not be changed by Forge.'})
+                    'Use --github-protection optional with an approved policy grant to keep Forge checks without GitHub enforcement, '
+                    'or enable a GitHub plan that supports private-repository rulesets. Its visibility will not be changed by Forge.'})
             else:
                 from .rules import inspect
                 repair = inspect(self.github, target, self.apps['controller']['app_id'])
@@ -79,7 +90,7 @@ class Preparation:
                             steps.append({'kind': 'github.ruleset.ensure_baseline',**({'merge_check_scope':value['baseline']['merge_check_scope']} if 'merge_check_scope' in value['baseline'] else {})})
                     else:
                         blockers.append({'code': 'protection_unverified'})
-        if steps and not target['admin']:
+        if any(step['kind'].startswith('github.') for step in steps) and not target['admin']:
             blockers.append({'code': 'github_admin_required'})
         created_at = self.clock()
         plan = {'version': 1, 'instance': self.instance, 'generation': self.generation,
@@ -120,6 +131,13 @@ class Preparation:
             fresh = self._requirements(target)
             self._authorize(target, 'repositories:prepare')
             require(fresh['revision'] == plan['revision'], 'plan_stale', 'Forge settings changed; create a new plan.')
+            if step['kind'] == 'forge.github_protection':
+                self._authorize(target, 'repositories:policy')
+                self.forge.protection({'id': target['id'], 'name': target['name']}, action='set', mode=step['mode'], revision=step['revision'],
+                                      request_id=digest({'plan': plan['id'], 'step': step})[:32])
+                completed.append(deepcopy(step))
+                return {'status': 'verification_pending', 'completed': completed,
+                        'policy_changed': True, 'next_actions': [{'kind': 'forge.repositories.verify'}]}
             if step['kind'] == 'github.installation.add_repository':
                 if fresh['roles'][step['role']]['access'] != 'ready':
                     try:
@@ -202,6 +220,8 @@ class Preparation:
             result['completed'] = deepcopy(completed)
             if result['status'] != 'verification_pending':
                 return result
+            if result.get('policy_changed'):
+                continue
             fresh = self._requirements(plan['target'])
             if fresh['readiness']['protection_status'] != 'needs_setup':
                 return result

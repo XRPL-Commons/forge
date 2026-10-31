@@ -191,7 +191,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(result['completed'], [])
         self.assertEqual([b['code'] for b in result['blockers']], ['github_plan_required'])
-        self.assertIn('defer this repository', result['blockers'][0]['reason'])
+        self.assertIn('--github-protection optional', result['blockers'][0]['reason'])
         self.assertNotIn(SECRET, json.dumps(result))
         self.assertTrue(reads)
         self.assertEqual(self.writes, [])

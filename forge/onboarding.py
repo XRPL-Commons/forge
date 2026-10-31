@@ -388,7 +388,8 @@ class Onboarding:
             if not repo:
                 raise ValueError('Refresh GitHub access and choose a repository the Forge App can reach')
             config = settings.load()
-            config['repositories'] = [{'id': repo['id'], 'name': repo['name'], 'enabled': True}]
+            selected = next((r for r in config['repositories'] if r['id'] == repo_id), {})
+            config['repositories'] = [{**selected, 'id': repo['id'], 'name': repo['name'], 'enabled': True}]
             settings.save(config, digest(settings.load()))
             data.update(selected={'id': repo['id'], 'name': repo['name']}, checks={}, repository_check=None, error=None)
             data.pop('readiness', None)

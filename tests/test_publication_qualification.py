@@ -123,7 +123,7 @@ class QualificationTests(unittest.TestCase):
         again = self.run_probe(apply=True, receipt_id=result['receipt_id'])
         self.assertEqual(again['qualification_revision'], result['qualification_revision'])
         self.assertEqual(self.access.writes, before)
-        reader = SigningCapabilities(self.store, SimpleNamespace(connection=lambda *a: self.access.conn,
+        reader = SigningCapabilities(self.store, SimpleNamespace(settings=SimpleNamespace(load=lambda: {'repositories': []}), connection=lambda *a: self.access.conn,
             call=lambda role, job, method, suffix: self.access.target(method, suffix)))
         self.assertTrue(reader({'repo_id': 1, 'target_branch': 'main'})['qualified'])
         self.assertFalse(reader({'repo_id': 1, 'target_branch': 'other'})['qualified'])

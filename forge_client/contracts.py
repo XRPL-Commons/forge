@@ -70,11 +70,12 @@ def requirements(value):
     require(value['readiness']['protection_ready'] == (value['readiness']['protection_status'] == 'ready'))
     require(value['readiness']['discovered'] or not any(value['readiness'][k] for k in
             ('enabled', 'access_ready', 'protection_ready')))
-    # The client understands one additive policy. It will not accept a server's
+    # The client understands these additive policies. It will not accept a server's
     # arbitrary ruleset body, permissions, endpoints or shell instructions.
     baseline_fields={'branch','required_approvals','dismiss_stale_reviews'}
-    require(isinstance(value['baseline'],dict) and set(value['baseline']) in
-            (baseline_fields,baseline_fields|{'merge_check_scope'}))
+    require(isinstance(value['baseline'],dict) and baseline_fields <= set(value['baseline']) <= baseline_fields|{'merge_check_scope','github_protection'})
+    if 'github_protection' in value['baseline']:
+        require(value['baseline']['github_protection'] in ('required','optional'))
     if 'merge_check_scope' in value['baseline']:
         require(value['baseline']['merge_check_scope'] in ('all','forge'))
     require(type(value['baseline']['required_approvals']) is int

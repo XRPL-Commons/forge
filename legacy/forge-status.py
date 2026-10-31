@@ -385,7 +385,7 @@ class H(BaseHTTPRequestHandler):
         if not self._session:
             # Without configured sign-in and a session, the API offers no control.
             self.send_error(401);return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/review-scope', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/review-scope', '/api/repositories/github-protection', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -563,6 +563,12 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected repository identity, runtime revision and review scope')
                 result = RepositorySetup(settings_service()).review_scope(**value)
                 self._send(json.dumps({**result, 'ok': True, 'controls_token': self._action_token}));return
+            if self.path == '/api/repositories/github-protection':
+                from forge.repository_setup import RepositorySetup
+                if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'mode'}:
+                    raise ValueError('Expected repository identity, current revision and GitHub protection requirement')
+                result = RepositorySetup(settings_service()).github_protection(**value)
+                self._send(json.dumps({**result, 'ok': True, 'controls_token': self._action_token}));return
             if self.path == '/api/repositories/mirror':
                 from forge.repository_setup import RepositorySetup
                 if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'denied_repositories'}:
@@ -606,6 +612,10 @@ class H(BaseHTTPRequestHandler):
             raise ValueError('invalid_action_request')
         except RequestReplay:
             raise
+        except BlockingIOError:
+            if self._mutation_audit is not None:
+                self._mutation_audit.failed('operation_busy')
+            self._send(json.dumps({'ok':False,'reason':'A repository operation is in progress. Try saving again shortly.'}), status=409)
         except (ValueError,TypeError) as exc:
             if self._mutation_audit is not None:
                 self._mutation_audit.failed('invalid_request')

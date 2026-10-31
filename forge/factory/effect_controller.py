@@ -19,6 +19,24 @@ from ..store.models import Command, IdempotencyConflict, TransitionError
 from .github import GitHubUnavailable
 
 
+@contextmanager
+def effect_lock(store):
+    path = store.root / '.effect-controller.lock'
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise TransitionError('effect lock must be an owned private regular file')
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with store.read_snapshot() as db:
+            if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
+                raise TransitionError('staging imports cannot issue GitHub effects')
+        yield
+    finally:
+        os.close(fd)
+
+
 class EffectController:
     def __init__(self, store, github, *, admission=None, clock=time.time, reliability=None):
         self.store, self.github, self.clock = store, github, clock
@@ -30,22 +48,8 @@ class EffectController:
         self.queries = EffectQueries(store, clock=clock)
         self.jobs = ExecutionQueries(store)
 
-    @contextmanager
     def _lock(self):
-        path = self.store.root / '.effect-controller.lock'
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            info = os.fstat(fd)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-                raise TransitionError('effect lock must be an owned private regular file')
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.store.read_snapshot() as db:
-                if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
-                    raise TransitionError('staging imports cannot issue GitHub effects')
-            yield
-        finally:
-            os.close(fd)
+        return effect_lock(self.store)
 
     def ensure(self, job, report):
         """Return verified check identity; a lost response leaves durable intent."""
@@ -219,7 +223,7 @@ class EffectController:
                     self.commands.observe_wait(effect_id,conflict=fresh.get('mergeable') is False)
                     return self.queries.get(effect_id)
                 current = self.queries.get(effect_id)
-                authorization = self.admission(current) if self.admission else None
+                authorization = self.admission({**current, 'merge_request': True}) if self.admission else None
                 try:
                     self.commands.claim(effect_id, expected_version=current['unit_version'],
                                         authorization=authorization, merge_request=True)

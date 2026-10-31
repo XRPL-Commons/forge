@@ -178,12 +178,12 @@ class AdapterTests(unittest.TestCase):
             'required_status_checks':{'strict':False,'checks':[{'context':'project-ci','app_id':99}]}}
         github.call = Mock(return_value=protection)
         github.pages = Mock(return_value=[])
-        self.assertTrue(github.protections({}, {'base_ref':'main'}))
+        self.assertTrue(github.protections({'repo_id':10}, {'base_ref':'main'}))
         protection['required_pull_request_reviews']['dismiss_stale_reviews'] = False
-        self.assertFalse(github.protections({}, {'base_ref':'main'}))
+        self.assertFalse(github.protections({'repo_id':10}, {'base_ref':'main'}))
         protection['required_pull_request_reviews']['dismiss_stale_reviews'] = True
         protection['required_pull_request_reviews']['required_approving_review_count'] = 1
-        self.assertFalse(github.protections({}, {'base_ref':'main'}))
+        self.assertFalse(github.protections({'repo_id':10}, {'base_ref':'main'}))
 
     def test_forge_still_requires_its_own_current_review_and_audit_evidence(self):
         github, _, _ = self.github()

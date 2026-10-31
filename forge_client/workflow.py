@@ -63,6 +63,9 @@ class Workflow:
     def requirements(self, target):
         return self.client.requirements(target)
 
+    def protection(self, target, **parameters):
+        return self.client.request('policy', target, policy='github_protection', **parameters)
+
     def operation(self, action, target, revision):
         request = self.state.get('operation')
         if request:
@@ -108,13 +111,15 @@ class Workflow:
             self.state['completed'].append(step)
         self.journal.save(self.state)
 
-    def execute(self, action, *, apply=False, enable=False, resume=False):
+    def execute(self, action, *, apply=False, enable=False, resume=False, github_protection=None):
         connection = self.client.status()
         observed = self.requirements(self.target)
         saved = self.journal.read()
         binding = {'instance': connection['instance'], 'generation': connection['generation'],
                    'client': connection['id'], 'target': self.target,
                    'apps': connection_identity(observed), 'action': action, 'enable': enable}
+        if github_protection is not None:
+            binding['github_protection'] = github_protection
         if resume:
             require(saved is not None, 'no_operation', 'Start repository setup before requesting --resume.')
             require(saved['binding'] == binding, 'connection_changed',
@@ -126,7 +131,7 @@ class Workflow:
             self.state = {'version': 1, 'id': uuid.uuid4().hex, 'binding': binding,
                           'operation': None, 'local_write': None, 'completed': []}
         preparation = Preparation(self.github, self, instance=binding['instance'], generation=binding['generation'],
-                                  apps=binding['apps'], progress=self.progress)
+                                  apps=binding['apps'], progress=self.progress, github_protection=github_protection)
         if action == 'setup' and not apply:
             require(not resume, 'apply_required', 'Resume setup with --apply and the original --enable intent.')
             return preparation.setup(self.target['name'])

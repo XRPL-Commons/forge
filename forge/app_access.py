@@ -45,9 +45,10 @@ REPO_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9_.-
 
 class AccessError(ValueError):
     """An intentionally credential-free error suitable for the settings UI."""
-    def __init__(self, message, *, status=None):
+    def __init__(self, message, *, status=None, plan_required=False):
         super().__init__(message)
         self.status = status
+        self.plan_required = plan_required
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -108,8 +109,21 @@ class AppClient:
                     return json.loads(raw) if raw else None
             except HTTPError as error:
                 receipt.update(status=error.code, headers=error.headers)
-                # Never echo response bodies, headers, tokens, or key paths.
-                raise AccessError(f'GitHub returned HTTP {error.code}; check installation access', status=error.code) from None
+                # Retain only an allowlisted plan signal, never the response body.
+                plan_required = False
+                if error.code == 403:
+                    try:
+                        body = json.loads(error.read(16385))
+                        message = body.get('message') if isinstance(body, dict) else None
+                        plan_required = message in (
+                            'Upgrade to GitHub Pro or make this repository public to enable this feature.',
+                            'Upgrade to GitHub Pro or make this repository public to enable this feature',
+                            'Upgrade to GitHub Team or make this repository public to enable this feature.',
+                        )
+                    except (ValueError, OSError):
+                        pass
+                raise AccessError(f'GitHub returned HTTP {error.code}; check installation access',
+                                  status=error.code, plan_required=plan_required) from None
             except (URLError, TimeoutError, OSError):
                 if time.monotonic() >= deadline():
                     raise RequestBudgetExhausted('GitHub request budget exhausted') from None

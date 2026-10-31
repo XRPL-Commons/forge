@@ -107,6 +107,7 @@ export interface ProtectionReport {
 export interface MirrorDeniedRepository { canonical_name: string; repository_id?: number }
 
 export interface RepositoryRow {
+  github_protection?: 'required' | 'optional'
   mirror_denied_repositories?: MirrorDeniedRepository[]
   id: number; name: string; enabled: boolean; configured: boolean
   access: Record<AppRole, RepoAccessStatus>
@@ -241,7 +242,7 @@ export function repoDescription(row: RepositoryRow, live: boolean): string {
     if (live) return 'Setup is complete and automation is enabled. No action is needed here.'
     return 'Repository setup is complete. Continue to finish setting up Forge.'
   }
-  if (row.protection_status === 'needs_setup') return 'Update the GitHub review rules below, then check again.'
+  if (row.protection_status === 'needs_setup') return row.github_protection === 'optional' ? 'Check the repository before enabling Forge. Existing GitHub rules still apply.' : 'Update the GitHub review rules below, then check again.'
   if (row.protection_status === 'access_needed') return 'Connect the missing Apps before continuing.'
   return 'Forge checks App access and GitHub review rules before enabling automation.'
 }
