@@ -4,6 +4,7 @@ import { signInNotice } from '~/utils/signIn'
 definePageMeta({ layout: false })
 useHead({ title: 'Sign in' })
 const route = useRoute()
+const setupPending = useRuntimeConfig().public.forgeSetupPending
 const signInUrl = computed(() => '/auth/github/start' + (typeof route.query.return_to === 'string' ? '?return_to=' + encodeURIComponent(route.query.return_to) : ''))
 const { session, refresh } = useOperator()
 const unavailable = ref(!session.value)
@@ -12,7 +13,7 @@ async function retry() {
   retrying.value = true
   try { await refresh(); unavailable.value = false } catch { unavailable.value = true } finally { retrying.value = false }
 }
-const notice = computed(() => signInNotice({ error: route.query.error, returnTo: route.query.return_to, unavailable: unavailable.value }))
+const notice = computed(() => signInNotice({ error: route.query.error, returnTo: route.query.return_to, unavailable: unavailable.value, setupPending }))
 const mood = computed(() => notice.value?.mood ?? 'waving')
 const TONE = {
   coral: 'border-coral/45 bg-coral/10 [&_strong]:text-coral',
@@ -40,8 +41,8 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow))
           Forge
         </div>
         <div class="space-y-2">
-          <h1 id="sign-in-title" class="text-2xl font-semibold leading-tight text-balance">Welcome back to the factory floor</h1>
-          <p class="text-muted">Sign in with the GitHub account your Forge administrator authorized.</p>
+          <h1 id="sign-in-title" class="text-2xl font-semibold leading-tight text-balance">{{ setupPending ? 'Your factory is getting ready' : 'Welcome back to the factory floor' }}</h1>
+          <p class="text-muted">{{ setupPending ? 'Continue setup in the terminal where you started Forge.' : 'Sign in with the GitHub account your Forge administrator authorized.' }}</p>
         </div>
         <div
           v-if="notice"
@@ -53,7 +54,8 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow))
           <strong class="block font-semibold">{{ notice.title }}</strong>
           {{ notice.text }}
         </div>
-        <UButton v-if="unavailable" color="primary" size="lg" icon="i-lucide-rotate-cw" :loading="retrying" @click="retry">Try again</UButton>
+        <UButton v-if="setupPending" color="primary" size="lg" icon="i-lucide-rotate-cw" @click="reloadNuxtApp({ force: true })">Check setup progress</UButton>
+        <UButton v-else-if="unavailable" color="primary" size="lg" icon="i-lucide-rotate-cw" :loading="retrying" @click="retry">Try again</UButton>
         <a
           v-else
           :href="signInUrl"

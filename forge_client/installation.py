@@ -130,28 +130,45 @@ class Install:
         row = saved or {'inputs_digest': binding, 'status': 'pending', 'receipt': None, 'uncertain_write': False,
                         'started_at': self.clock()}
         self.state['stages'][name] = row
+        labels = {'targets': 'test repositories', 'host': 'host installation', 'network': 'private HTTPS',
+                  'consent': 'GitHub App approval', 'identity': 'operator sign-in',
+                  'environment': 'database test environment', 'smoke.prepare': 'first-merge test preparation',
+                  'smoke': 'first-merge test', 'handover': 'repository handover'}
+        label = labels.get(name)
+        if label is None:
+            kind, _, key = name.partition('.')
+            target = next((item['target']['name'] for item in value['repositories'] if str(item['target']['id']) == key), key)
+            label = {'account': 'coding account', 'repository': 'repository setup', 'publication': 'signed publication'}.get(kind, kind) + ': ' + target
+        def announce(status):
+            prefix = {'checking': 'Checking', 'applying': 'Setting up', 'pending': 'Waiting for',
+                      'complete': 'Ready', 'needs_user_action': 'Action needed'}[status]
+            self.notify({'event': 'installation_stage', 'stage': name, 'status': status,
+                         'instruction': prefix + ': ' + label + '.'})
+        if row['status'] != 'complete': announce('checking')
         try:
             observed = observe_stage()
             install_report.remember_rules(row, observed)
             if complete(observed):
                 row.update(status='complete', receipt=observed, uncertain_write=False)
                 row.setdefault('completed_at', self.clock())
-                self.save(); return observed
+                self.save(); announce('complete'); return observed
             if apply_stage is None or observed.get('status') == 'write_unconfirmed':
-                row.update(status='needs_user_action', receipt=observed); self.save(); return observed
+                row.update(status='needs_user_action', receipt=observed); self.save(); announce(row['status']); return observed
             # Existing installer and network actions reconcile their pinned remote
             # journals. Repository preparation separately reconciles each saved
             # administrative write before it permits another one.
             row.update(status='applying', receipt=observed, uncertain_write=True); self.save()
+            announce('applying')
             result = apply_stage(observed)
             install_report.remember_rules(row, result)
             row.update(status='complete' if complete(result) else 'pending', receipt=result,
                        uncertain_write=result.get('status') == 'write_unconfirmed')
             if row['status'] == 'complete': row.setdefault('completed_at', self.clock())
-            self.save(); return result
+            self.save(); announce(row['status']); return result
         except SetupError as error:
             row.update(status='needs_user_action', receipt={'error': error.code, 'reason': str(error)})
             self.save()
+            announce('needs_user_action')
             return {'status': 'needs_user_action', 'error': error.code, 'reason': str(error)}
 
     def apply(self, *, waivers=(), retry_smoke=None):
@@ -297,7 +314,8 @@ class Install:
         if provider == {'id': 'codex', 'kind': 'browser'}:
             result = factory.call('device_account', provider='codex', apply=apply, retry=False)
             if result.get('url'):
-                self.notify({'event': 'provider_login', **result})
+                self.notify({'event': 'provider_login', **result,
+                             'instruction': 'Connect your Codex account in the browser using the code below. Keep this installer running; it will continue after sign-in.'})
             if result.get('status') == 'account_login_failed':
                 result['next_action'] = {'command': ['forge', 'account', 'login', 'codex', '--ssh', self.ssh, '--retry', '--json'],
                                          'instruction': 'The device login expired or failed. Start a new login explicitly, then resume installation.'}
@@ -407,6 +425,8 @@ def execute(args):
     interactive = not args.json and sys.stdin.isatty()
     notified = set()
     def event(value):
+        if not args.json and isinstance(value, dict) and value.get('event') == 'installation_progress':
+            return  # Human progress is announced when each stage changes.
         encoded = json.dumps(value, sort_keys=True)
         if encoded in notified: return
         notified.add(encoded)

@@ -230,6 +230,7 @@ def desired_units(root, bind):
           NODE_IMAGE, 'node', '/app/server/index.mjs']
     # Only the public address reaches the UI container. Identity credentials
     # and session state stay in the controller's private state directory.
+    identity = None
     if (root / 'state/storage').exists():
         from forge.operator_auth import OperatorAuth
         identity = OperatorAuth(root).config()
@@ -240,6 +241,7 @@ def desired_units(root, bind):
                          '--env', 'NITRO_ALLOWED_HOSTS=' + urlsplit(origin).netloc]
             if bind == '127.0.0.1' and urlsplit(origin).hostname.endswith('.ts.net'):
                 ui[-3:-3] = ['--env', 'NITRO_FORGE_TAILSCALE_IDENTITY=serve']
+    ui[-3:-3] = ['--env', 'NUXT_PUBLIC_FORGE_SETUP_PENDING=' + ('false' if identity else 'true')]
     return {
         'forge-mirror': unit('Forge job-bound read-only Git mirrors', '/usr/bin/python3 -m forge.launch forge.mirror_daemon --root ' + unit_quote(root), python),
         'forge-registry': unit('Forge shared read-only package cache', '/usr/bin/python3 -m forge.launch forge.registry_cache --root ' + unit_quote(root), python),

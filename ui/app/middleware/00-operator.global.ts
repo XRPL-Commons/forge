@@ -1,4 +1,8 @@
 export default defineNuxtRouteMiddleware(async (to) => {
+  if (useRuntimeConfig().public.forgeSetupPending) {
+    if (to.path !== '/login') return navigateTo('/login', { redirectCode: 303 })
+    return
+  }
   const auth = useOperator()
   try {
     const session = auth.session.value && Date.now() - auth.checked.value < 30_000

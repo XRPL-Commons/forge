@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { drawSignInScene, lineCubes, sceneLayout, signInNotice, SCENE_STILL_T } from '../../app/utils/signIn'
 
 describe('signInNotice', () => {
+  it('explains unfinished setup even while the session endpoint refuses requests', () => {
+    expect(signInNotice({ setupPending: true, unavailable: true })).toMatchObject({
+      kind: 'setup', role: 'status', mood: 'hopeful', title: 'Setup is still in progress',
+    })
+  })
   it('greets a plain visit with no notice', () => {
     expect(signInNotice({ unavailable: false })).toBeNull()
   })
