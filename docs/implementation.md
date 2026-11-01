@@ -40,7 +40,7 @@ See [runtime setup](factory-runtime-reference.md) for the exact configuration an
   membership; ordinary issue closure cannot silently close a grouped delivery.
 - Lazy delivery progress in Issue Details and repository-scoped CLI reads;
   explicit membership operations preview their affected scope before approval.
-- Per-repository `human`/`auto` merge policy, with read-only UI presentation and
+- Per-repository `human`/`auto` merge policy, with authenticated operator UI changes and
   separately authorized CLI changes. External prerequisites distinguish completed
   issues, merged PRs, other closure reasons and inaccessible identities.
 

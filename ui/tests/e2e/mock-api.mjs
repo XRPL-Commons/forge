@@ -26,6 +26,7 @@ let requests = []
 // Like the real server, a saved runtime is what later factory reads return.
 let savedSettings = null
 let savedFactory = null
+let savedSteward = null
 let savedRepositoryView = null
 let savedIssue = null
 let savedIssueList = null
@@ -307,6 +308,7 @@ const server = http.createServer(async (req, res) => {
     requests = []
     savedSettings = null
     savedFactory = null
+    savedSteward = null
     savedRepositoryView = null
     savedIssue = null
     savedIssueList = null
@@ -451,6 +453,7 @@ const server = http.createServer(async (req, res) => {
       : base === 'factory' && savedFactory ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'issues' && !query.issue && savedIssueList ? savedIssueList
+      : base === 'repositories-steward' && savedSteward ? savedSteward
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
@@ -475,6 +478,19 @@ const server = http.createServer(async (req, res) => {
       && req.headers['sec-fetch-site'] === 'same-origin'
     if (!guarded) return send(res, 403, { ok: false, reason: 'Action rejected by mock' })
     const fixture = resolvePostFixture(base, query)
+    if (['repositories-merge-policy', 'repositories-review-scope'].includes(base) && fixture === undefined) {
+      savedRepositoryView ??= resolveGetFixture('repositories', { repo_id: String(body.repo_id) })
+      const row = savedRepositoryView.repositories.find(row => row.id === body.repo_id)
+      if (body.revision !== row.merge_check_revision) return send(res, 409, { ok: false, reason: 'Runtime settings changed. Reload before saving.' })
+      if (base === 'repositories-merge-policy') row.merge_policy = body.mode
+      else row.merge_check_scope = body.scope
+      row.merge_check_revision = `runtime-rev-${++sequence}`
+      return send(res, 200, withToken(savedRepositoryView))
+    }
+    if (base === 'repositories-steward' && fixture === undefined) {
+      savedSteward = { ...resolveGetFixture(base, { repo_id: String(body.repo_id) }), policy: body.policy, revision: body.revision + 1 }
+      return send(res, 200, withToken(savedSteward))
+    }
     if (base === 'repositories-disable' && fixture === undefined) {
       savedSettings = resolveGetFixture('settings', {})
       savedSettings.revision = 'settings-rev-disabled'

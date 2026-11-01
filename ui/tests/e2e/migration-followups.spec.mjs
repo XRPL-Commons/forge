@@ -59,7 +59,7 @@ export default async function (page, { base, scenario, observeIssue }) {
   await page.locator('main h1').waitFor()
   assert.equal(await page.locator('main').count(), 1, 'the layout owns the only main landmark')
 
-  // Missing App access keeps the refresh control visible, without permitting it.
+  // Missing App access keeps setup visible and diagnostics available, without permitting refresh.
   await page.route('**/api/repositories?repo_id=2', async route => {
     const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
     const body = await response.json()
@@ -67,6 +67,8 @@ export default async function (page, { base, scenario, observeIssue }) {
     await route.fulfill({response,json:body})
   })
   await page.goto(base + '/settings/repositories/2')
+  await page.getByRole('button', { name: 'Continue setup', exact: true }).waitFor()
+  await page.locator('summary').filter({ hasText: 'Diagnostics' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Refresh repository' && button.disabled))
   await page.unroute('**/api/repositories?repo_id=2')
 }

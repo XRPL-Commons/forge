@@ -68,6 +68,29 @@ class RepositorySetupTests(unittest.TestCase):
         self.github.return_value.call.assert_not_called()
         self.github.return_value.pages.assert_not_called()
 
+    def test_merge_policy_is_scoped_and_requires_current_revision(self):
+        from forge.factory.config import load, save, policy
+        runtime = load(self.root)
+        runtime['repository_merge_policies']['20'] = 'human'
+        save(self.root, runtime)
+        before = load(self.root)
+        row = self.service.view(10)['repositories'][0]
+        changed = self.service.merge_policy(10, row['merge_check_revision'], 'auto')['repositories'][0]
+        self.assertEqual(changed['merge_policy'], 'auto')
+        expected = {**before, 'repository_merge_policies': {**before['repository_merge_policies'], '10': 'auto'}}
+        self.assertEqual(load(self.root), expected)
+        self.assertFalse(policy(load(self.root), 10)['human_required'])
+        with self.assertRaises(ValueError):
+            self.service.merge_policy(10, row['merge_check_revision'], 'human')
+        for repo_id, mode in ((True, 'human'), (999, 'human'), (10, 'off'), (10, None)):
+            with self.assertRaises(ValueError):
+                self.service.merge_policy(repo_id, changed['merge_check_revision'], mode)
+        self.assertEqual(load(self.root), expected)
+        saved = self.service.merge_policy(10, changed['merge_check_revision'], 'human')['repositories'][0]
+        self.assertEqual(saved['merge_policy'], 'human')
+        self.assertTrue(policy(load(self.root), 10)['human_required'])
+        self.github.return_value.call.assert_not_called()
+
     def test_review_scope_defaults_all_and_requires_current_runtime_revision(self):
         from forge.factory.config import load, save
         row = self.service.view(10)['repositories'][0]
@@ -490,9 +513,30 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/disable','/api/repositories/deployment','/api/repositories/environment','/api/repositories/review-scope','/api/issues/environment']:
+        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/disable','/api/repositories/deployment','/api/repositories/environment','/api/repositories/review-scope','/api/repositories/merge-policy','/api/issues/environment']:
             h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
             h.do_POST();h.send_error.assert_called_once_with(403)
+
+    def test_merge_policy_http_requires_session_and_exact_envelope(self):
+        with patch('forge.repository_setup.RepositorySetup') as setup:
+            setup.return_value.merge_policy.return_value = {'repositories': [{'id': 10, 'merge_policy': 'auto'}]}
+            value = {'repo_id': 10, 'revision': 'runtime-revision', 'mode': 'auto'}
+            h = self.handler('/api/repositories/merge-policy', value); h.do_POST()
+            setup.return_value.merge_policy.assert_called_once_with(**value)
+            self.assertTrue(json.loads(h._send.call_args.args[0])['ok'])
+            setup.reset_mock()
+            for body in ({**value, 'force': True}, {'repo_id': 10}, []):
+                h = self.handler('/api/repositories/merge-policy', body); h.do_POST()
+                self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
+            for headers in ({'X-Forge-Action': 'wrong'}, {'Sec-Fetch-Site': 'cross-site'}):
+                h = self.handler('/api/repositories/merge-policy', value, **headers); h.do_POST()
+                h.send_error.assert_called_once()
+            with patch('forge.operator_auth.OperatorAuth') as auth:
+                auth.return_value.config.return_value = {'origin': 'http://127.0.0.1:8787'}
+                auth.return_value.session.return_value = None
+                h = self.handler('/api/repositories/merge-policy', value); h.do_POST()
+                h.send_error.assert_called_once_with(401)
+            setup.return_value.merge_policy.assert_not_called()
 
     def test_issue_environment_endpoint_validates_services_and_queues_a_decision(self):
         with patch('forge.factory.store_operator.selected_service') as service:

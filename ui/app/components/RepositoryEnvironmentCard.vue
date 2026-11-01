@@ -6,6 +6,7 @@ const props = defineProps<{
   busy: boolean
   action: 'scan' | 'confirm' | 'automatic' | null
   error: string
+  notice?: string
   accessReady: boolean
 }>()
 defineEmits<{ scan: []; confirm: []; automatic: [] }>()
@@ -17,8 +18,8 @@ const unavailable = computed(() => !!props.environment.proposal?.services.length
 </script>
 
 <template>
-  <section id="test-databases" class="mt-4 rounded-xl border border-line bg-panel p-4" aria-labelledby="test-databases-title">
-    <h2 id="test-databases-title" class="text-sm font-semibold text-white">Test databases</h2>
+  <section id="test-databases" class="text-sm" aria-labelledby="test-databases-title">
+    <h2 id="test-databases-title" class="text-sm font-semibold text-white">Database requirements</h2>
     <p class="mt-1 text-sm text-muted">The supervisor chooses an environment for each issue using its description and automatic repository scans. No repository approval is needed.</p>
 
     <div class="mt-3 text-sm" role="status" aria-live="polite">
@@ -52,6 +53,7 @@ const unavailable = computed(() => !!props.environment.proposal?.services.length
       <p v-else class="mt-2">No supported database references found in the scanned files.</p>
     </details>
 
+    <p v-if="notice && !error" role="status" class="mt-3 text-xs text-mint-200">{{ notice }}</p>
     <UAlert v-if="error || environment.error" class="mt-3" role="alert" color="error" variant="subtle" :description="error || environment.error || ''" />
     <p v-if="!accessReady" class="mt-3 text-sm text-amber-200">Refresh GitHub access to scan or save database requirements.</p>
     <UButton class="mt-3" color="neutral" variant="outline" :disabled="busy || scanning || !accessReady" :loading="scanning" @click="$emit('scan')">

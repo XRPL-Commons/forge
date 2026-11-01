@@ -18,7 +18,7 @@ Each decision echoes its dossier ID and digest. Captured subject decisions retai
 
 The dossier pins issue membership and requirements, the candidate, independent holds, runtime configuration and repository autonomy. It includes references to retained attempt evidence and durable repository notes. A later change makes an unselected decision stale.
 
-The default autonomy is `reversible`. An obvious recommended retry, wait or rebuild can proceed automatically. A `manual` repository policy requires operator selection for every choice. Split, drop, fold, escalation and questions always require an authenticated operator choice. Change this policy in Settings → Repositories → Steward autonomy. The core stores policy revisions under the repository's immutable ID. A change invalidates older recommendations.
+The default autonomy is `reversible`. An obvious recommended retry, wait or rebuild can proceed automatically. A `manual` repository policy requires operator selection for every choice. Split, drop, fold, escalation and questions always require an authenticated operator choice. Change this policy in Settings → Repositories → repository → Automation → Recovery. The core stores policy revisions under the repository's immutable ID. A change invalidates older recommendations.
 
 Selection records the exact stored choice. The browser sends identifiers and a request ID; it cannot alter the proposed parameters. Interrupted replies keep the choice locked until a fresh read, with an explicit retry using the same request ID.
 

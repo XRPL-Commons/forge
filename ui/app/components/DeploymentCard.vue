@@ -16,16 +16,20 @@ watch(() => props.card.domain, (value) => { domain.value = value })
 </script>
 
 <template>
-  <section id="deployment" class="mt-4 rounded-xl border border-line bg-panel p-4">
+  <section id="deployment" class="text-sm">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-sm font-semibold text-white">Deployment</h2>
-        <p class="mt-0.5 text-xs text-muted">Forge follows a merge until it reaches production. It only reads; it never deploys.</p>
+        <h2 class="text-sm font-semibold text-white">Deployment tracking</h2>
+        <p class="mt-0.5 text-xs text-muted">Forge checks whether merged changes have reached production.</p>
       </div>
-      <UBadge id="deployment-status" :color="TONE_BADGE[card.state === 'confirmed' ? 'ok' : card.state === 'failed' ? 'warn' : 'muted']" variant="subtle">{{ card.status }}</UBadge>
+      <UBadge id="deployment-status" :color="TONE_BADGE[card.state === 'confirmed' && !card.unavailable ? 'ok' : card.state === 'failed' ? 'warn' : 'muted']" variant="subtle">{{ card.status }}</UBadge>
     </div>
 
-    <p v-if="card.sentence" id="deployment-sentence" class="mt-3 text-sm text-muted">{{ card.sentence }}</p>
+    <p v-if="card.unavailable" class="mt-3 text-sm text-muted">Forge found no supported way to track deployments for this repository. Automation can continue without deployment tracking.</p>
+    <details v-if="card.sentence" class="mt-3 text-sm text-muted">
+      <summary class="cursor-pointer text-sky-200">Inspection details</summary>
+      <p id="deployment-sentence" class="mt-2 break-words">{{ card.sentence }}</p>
+    </details>
 
     <ul v-if="card.lines.length" id="deployment-facts" class="mt-3 flex flex-col gap-1 text-xs text-muted">
       <li v-for="line in card.lines" :key="line" class="break-words">{{ line }}</li>

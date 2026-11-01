@@ -121,13 +121,15 @@ publication readiness; loss of access still blocks them.
 
 A green worker result alone is not merge permission. Forge checks its App-bound Review and Audit evidence, required CI, verification, repository protections and current ownership; unresolved changes requested also prevent merging.
 
-Merge policy is set per repository and defaults to `human`, which requires one counted approval. Explicit `auto` permits a merge after CI, Review and Audit pass; Audit or verification can still require human approval. Settings shows the effective policy read-only. A counted review must come from an eligible person with repository write access (and the configured reviewer list, if any); bots and the pull request author do not count.
+Merge policy is set per repository and defaults to `human`, which requires one counted approval. Explicit `auto` permits a merge after CI, Review and Audit pass; Audit or verification can still require human approval. Change it in **Settings → Repositories → repository → Automation → Merging**, then choose **Save**. A counted review must come from an eligible person with repository write access (and the configured reviewer list, if any); bots and the pull request author do not count.
 
 The approval must follow acceptance of the current candidate and match its exact head commit. The issue panel shows the reviews found and whether each counted.
 
 Changes to the head, base, requirements or policy invalidate earlier candidate evidence. Forge reads approvals again just before merging and sends GitHub the expected head SHA, so a new commit cannot slip through using an old approval.
 
-Set or inspect the policy through the CLI:
+Use **Save** to apply review coverage and recovery choices. **Advanced** contains dependency, environment and deployment settings; **Diagnostics** contains access and GitHub observations. [Settings reference](factory-runtime-reference.md#repository-settings) explains their behavior.
+
+You can also set or inspect merge policy through the CLI:
 
 ```sh
 forge connect https://forge.example --repo OWNER/REPO --policy

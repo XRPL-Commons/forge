@@ -436,8 +436,18 @@ The CLI's `/api/client/policy` write requires the separately approved
 `repositories:policy` capability. It compares the runtime revision and commits
 the configuration revision, attributed audit record and idempotent operation
 receipt together. Grant revocation is serialized against that effect. Read-only
-connections can inspect policy. Browser Settings and issue details display it;
-neither exposes a policy editor.
+connections can inspect policy. Browser Settings also exposes an operator policy editor through
+`POST /api/repositories/merge-policy` with `repo_id`, `revision` (the runtime
+revision) and `mode`. It uses the existing authenticated operator, CSRF and
+mutation audit boundaries, requires a configured repository and compares the
+runtime revision before saving. It changes only that repository's entry and
+makes no GitHub permission or ruleset changes. Issue details display the policy.
+
+### Repository settings
+
+Repository settings control automation, merging, review coverage and routine recovery. Each policy choice has an explicit Save button; selecting an option does not apply it. Review coverage defaults to all pull requests, and existing selections are preserved. Reviewing another author's PR does not authorize Forge to merge it.
+
+Advanced sections contain dependency restrictions, test environment overrides and deployment tracking. They open on demand and keep unsaved edits when collapsed. A repository without an observable deployment can keep working without tracking; its scan evidence remains available under Inspection details. Diagnostics contains access status, observed GitHub rules and Refresh repository.
 
 ### Measured worker resources
 
