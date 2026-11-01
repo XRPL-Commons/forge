@@ -446,7 +446,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET') {
     record(req, pathname, query, body)
-    let fixture = base === 'settings' && savedSettings ? savedSettings
+    let fixture = base === 'pull-requests' && !query.repo_id && !query.number ? resolveGetFixture('pull-request-list', query)
+      : base === 'settings' && savedSettings ? savedSettings
       : base === 'factory' && savedFactory ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'issues' && !query.issue && savedIssueList ? savedIssueList

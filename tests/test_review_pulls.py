@@ -83,7 +83,8 @@ class ReviewPullTests(unittest.TestCase):
             _, current = self.life._job(db,unit,job['job_id'],'fence',manifest)
             self.assertFalse(current)
             self.assertEqual(db.execute('SELECT count(*) FROM candidates').fetchone()[0],2)
-            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],2)
+            self.assertEqual(db.execute("SELECT count(*) FROM external_effects WHERE kind='github_check'").fetchone()[0],2)
+            self.assertEqual(db.execute("SELECT count(*) FROM external_effects WHERE kind='github_settle_checks'").fetchone()[0],1)
             self.assertEqual(source_in(db,old['candidate_id'])['head']['sha'],'a'*40)
         self.assertEqual(self.snapshot(old['unit_id'])['unit']['state'],'reviewing')
 
@@ -96,7 +97,7 @@ class ReviewPullTests(unittest.TestCase):
         self.assertNotEqual(old['candidate_id'],fresh['candidate_id'])
         self.assertEqual(self.snapshot(old['unit_id'])['reason'],'operator_pause')
         with self.store.read_snapshot() as db:
-            effects=db.execute('SELECT id FROM external_effects ORDER BY id').fetchall()
+            effects=db.execute("SELECT id FROM external_effects WHERE kind='github_check' ORDER BY id").fetchall()
             self.assertEqual(len(effects),2)
             self.assertNotEqual(effects[0][0],effects[1][0])
 

@@ -77,6 +77,10 @@ merges. Setup does not create GitHub rulesets, require branch protection, or
 require GitHub Pro. Repository owners manage their own GitHub protections;
 Forge respects those rules and reports when GitHub blocks a merge.
 
+**Activity** shows issue work and independent PR reviews, including queued and
+blocked work. Open a PR review for its current revision, retry timing and worker
+history. GitHub checks link to the same work record.
+
 ### Forge server
 
 On an AppArmor-enabled Linux VM with Docker Engine (Compose plugin), systemd and

@@ -126,6 +126,11 @@ class Effects(Lifecycle):
 
     def _insert(self, db, command, unit, candidate, kind, payload, job_id=None):
         effect_id = _id(command.request_id, 'effect')
+        if kind == 'github_check' and payload.get('role') == 'controller':
+            from .review_pulls import source_in
+            if source_in(db, candidate['id']) is not None:
+                from .review_progress import publication_key
+                payload = {**payload, 'check_external_id': publication_key(db, candidate['id']) or effect_id}
         db.execute('INSERT INTO external_effects(id,request_id,unit_id,kind,status,expected_version,'
                    'payload_json,created_at,updated_at) VALUES(?,?,?,?,\'pending\',?,?,?,?)',
                    (effect_id, command.request_id, unit['id'], kind, unit['version'] + 1,
@@ -241,21 +246,24 @@ class Effects(Lifecycle):
                                    (candidate_id, unit['id'])).fetchone()
             if candidate is None:
                 raise TransitionError('check settlement must belong to this unit')
-            # Freeze ownership before the remote read. A replacement candidate
-            # may reuse this commit with different base/policy/requirements;
-            # a later retry must never adopt its newly published checks.
-            external_ids = [row[0] for row in db.execute(
-                'SELECT id FROM jobs WHERE candidate_id=? AND role IN (\'review\',\'audit\') '
-                'UNION SELECT effect_id FROM candidate_effects WHERE candidate_id=? ORDER BY 1 LIMIT 501',
-                (candidate_id, candidate_id))]
-            check_ids = [dict(row) for row in db.execute(
-                'SELECT github_id,app_id FROM check_runs WHERE candidate_id=? ORDER BY github_id LIMIT 501',
-                (candidate_id,))]
-            effect_payload = {**payload, 'external_ids': external_ids, 'check_ids': check_ids}
-            if len(external_ids) > 500 or len(check_ids) > 500 or len(_json(effect_payload).encode()) > 65536:
-                raise TransitionError('candidate check settlement exceeds its ownership limit')
-            return self._insert(db, command, unit, dict(candidate), 'github_settle_checks', effect_payload)
+            return self._settlement_in(db, command, unit, dict(candidate), summary)
         return self._apply(command, 'queue_settlement', payload, change)
+
+    def _settlement_in(self, db, command, unit, candidate, summary):
+        # Freeze ownership before the remote read. A replacement candidate
+        # may reuse this commit with different base/policy/requirements;
+        # a later retry must never adopt its newly published checks.
+        external_ids = [row[0] for row in db.execute(
+            'SELECT id FROM jobs WHERE candidate_id=? AND role IN (\'review\',\'audit\') '
+            'UNION SELECT effect_id FROM candidate_effects WHERE candidate_id=? ORDER BY 1 LIMIT 501',
+            (candidate['id'], candidate['id']))]
+        check_ids = [dict(row) for row in db.execute(
+            'SELECT github_id,app_id FROM check_runs WHERE candidate_id=? ORDER BY github_id LIMIT 501',
+            (candidate['id'],))]
+        effect_payload = {'candidate_id': candidate['id'], 'summary': summary, 'external_ids': external_ids, 'check_ids': check_ids}
+        if len(external_ids) > 500 or len(check_ids) > 500 or len(_json(effect_payload).encode()) > 65536:
+            raise TransitionError('candidate check settlement exceeds its ownership limit')
+        return self._insert(db, command, unit, dict(candidate), 'github_settle_checks', effect_payload)
 
     def claim(self, effect_id, *, expected_version, authorization=None, merge_request=False):
         """Commit possible delivery before any network mutation, under driver lock."""
@@ -281,6 +289,10 @@ class Effects(Lifecycle):
                 self._merge_ready(db, unit, candidate, authorization)
             elif row['kind']=='github_check' and json.loads(row['payload_json']).get('review_only') is True:
                 self._review_policy_ready(db,unit,candidate,authorization)
+            elif row['kind'] == 'github_check' and 'progress' in json.loads(row['payload_json']):
+                from .review_progress import projection
+                if projection(db, unit) != json.loads(row['payload_json'])['progress']:
+                    raise TransitionError('pull request progress changed before publication')
             elif row['kind'] == 'github_verdict':
                 self._verdict_ready(db, unit, candidate, row['job_id'])
             # The preliminary merge check is not another merge PUT attempt.

@@ -1,0 +1,156 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "active": true,
+  "operator": null,
+  "repositories": [
+    {
+      "id": 1,
+      "name": "example/anton",
+      "enabled": true
+    }
+  ],
+  "observation": {
+    "at": 1790000000,
+    "errors": [],
+    "capacity": null,
+    "issues": 10
+  },
+  "actions": [],
+  "issues": [],
+  "jobs": [],
+  "slots": {
+    "build-1": "11111111-1111-4111-8111-111111111111",
+    "recovery-1": "22222222-2222-4222-8222-222222222222"
+  },
+  "runtime": {
+    "version": 1,
+    "enabled": true,
+    "merge_enabled": true,
+    "slots": {
+      "build": 2,
+      "review": 1,
+      "audit": 1,
+      "recovery": 1
+    },
+    "cycle_seconds": 30,
+    "timeout_seconds": {
+      "build": 1800,
+      "review": 900,
+      "audit": 900,
+      "recovery": 600
+    },
+    "grace_seconds": 30,
+    "availability_retry_seconds": 120,
+    "image": "forge/worker:2026.09",
+    "engine": "docker",
+    "engine_socket": "/var/run/docker.sock",
+    "apparmor_profile": null,
+    "seccomp_profile_env": null,
+    "network": "forge-worker-net",
+    "proxy": "",
+    "memory": "4g",
+    "cpus": 2,
+    "pids_limit": 512,
+    "harness_argv": [
+      "/opt/forge/bin/forge",
+      "worker",
+      "run"
+    ],
+    "provider_environment": [
+      "FORGE_PROVIDER_TOKEN"
+    ],
+    "human_reviewers": [
+      "luc-bocahut"
+    ],
+    "human_required": false,
+    "provider_auth_file_env": "FORGE_PROVIDER_AUTH_FILE",
+    "cycle_budget_seconds": 5400,
+    "provider": "claude",
+    "model": "claude-sonnet-4.5",
+    "provider_pool": [
+      {
+        "id": "claude",
+        "provider": "claude",
+        "model": "claude-sonnet-4.5",
+        "provider_environment": [
+          "FORGE_PROVIDER_TOKEN"
+        ],
+        "provider_auth_file_env": "FORGE_PROVIDER_AUTH_FILE"
+      },
+      {
+        "id": "codex",
+        "provider": "codex",
+        "model": "gpt-5-codex",
+        "provider_environment": [
+          "FORGE_PROVIDER_TOKEN"
+        ],
+        "provider_auth_file_env": "FORGE_PROVIDER_AUTH_FILE"
+      }
+    ],
+    "provider_ready": null,
+    "ready_label": "ready",
+    "hold_labels": [
+      "hold"
+    ],
+    "merge_method": "squash"
+  },
+  "runtime_revision": "6f2a9c8e1d4b7035af6c2e9d10b4f7a3c5e8d1b6924a7f3c0e5b8a1d4f7c2e9b",
+  "pull_requests": [
+    {
+      "key": "pr:1:670",
+      "repo_id": 1,
+      "repo": "example/anton",
+      "number": 670,
+      "title": "Correct the session loader",
+      "url": "https://github.com/example/anton/pull/670",
+      "unit_id": "unit",
+      "candidate": {
+        "id": "current",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "base_ref": "main",
+        "pr": 670
+      },
+      "stage_code": "auditing",
+      "state": "auditing",
+      "status": "running",
+      "reason": "Audit is running.",
+      "reason_code": "dependency_access",
+      "retry_at": null,
+      "active_job_id": "44444444-4444-4444-8444-444444444670",
+      "created_at": 1793520000,
+      "updated_at": 1793520100,
+      "enabled": true
+    },
+    {
+      "key": "pr:1:671",
+      "repo_id": 1,
+      "repo": "example/anton",
+      "number": 671,
+      "title": "Queued session review",
+      "url": "https://github.com/example/anton/pull/670",
+      "unit_id": "unit",
+      "candidate": {
+        "id": "current",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "base_ref": "main",
+        "pr": 670
+      },
+      "stage_code": "reviewing",
+      "state": "reviewing",
+      "status": "queued",
+      "reason": "Waiting for a review worker.",
+      "reason_code": "dependency_access",
+      "retry_at": null,
+      "active_job_id": null,
+      "created_at": 1793520000,
+      "updated_at": 1793520100,
+      "enabled": true
+    }
+  ],
+  "pull_requests_next": "older-active",
+  "pull_requests_recent_limit": 20,
+  "pull_requests_recent_truncated": true
+}

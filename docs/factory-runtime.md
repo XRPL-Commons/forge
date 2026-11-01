@@ -35,6 +35,18 @@ Each worker normally gets 4 GiB of memory and two CPUs. Forge reserves host memo
 
 Use **Settings → Worker capacity** to inspect the configured capacity. When an issue waits, read its reason rather than increasing every limit.
 
+## Watching work
+
+Open **Activity** to see issue work and independent pull request reviews. A PR
+review appears even when Forge did not create the PR and no issue is assigned.
+Open its work record to see the current commit, Review and Audit progress,
+blockers, retry timing and previous attempts. Worker output loads when opened.
+GitHub's Forge check links to that same record.
+
+Queued or blocked work remains visible without a running container. If the PR
+merges or closes on GitHub, Forge stops obsolete work and keeps its history.
+Previous-revision results do not count as evidence for the current revision.
+
 ## What a worker can reach
 
 ```mermaid
@@ -50,13 +62,12 @@ flowchart TD
 
 Repository commands run inside the provider's native sandbox as well as the container boundary. Workers get their own workspace and limited network access; they do not get the host's Docker socket or the Controller credential.
 
-A singleton builder or grouped integration execution receives repository-scoped
-write access. Group planning, owner and child tasks, and repository triage receive
-read-only GitHub tokens; tasks return local Git bundles. Only final integration
-can publish the grouped candidate. Review, Audit and
-Recovery also receive read-only access. The supervisor independently checks
-evidence and publishes role verdicts with the appropriate App. Untracked native
-provider delegation is disabled; the supported fallback is Forge-managed children.
+Workers receive a repository checkout through Forge's read-only git mirror,
+without GitHub credentials. Builders return local changes; the supervisor
+validates and publishes them. Review, Audit and Recovery return evidence that
+the supervisor checks before publishing role verdicts through the Forge App.
+Untracked native provider delegation is disabled; the supported fallback is
+Forge-managed children.
 
 The current production runner requires Linux, Docker and the installed isolation policies. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
 

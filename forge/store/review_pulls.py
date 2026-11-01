@@ -119,14 +119,47 @@ class ReviewPullRequests(Lifecycle):
     def __init__(self, store, *, clock=time.time):
         super().__init__(store, clock=clock)
 
-    def _retire_in(self, db, unit, *, reason):
+    def _retire_in(self, db, unit, *, reason, source=None):
         command = Command(str(uuid.uuid4()), 'supervisor:review-pulls', unit['id'], unit['version'])
         self._fence(db, command)
         for gate in db.execute('SELECT id FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL', (unit['id'],)).fetchall():
             self._resolve(db, command, gate['id'], {'review_pull_retired': reason}, resolution='superseded')
         db.execute("UPDATE units SET state='closed',close_code=?,primary_gate_id=NULL WHERE id=?", (reason, unit['id']))
-        self._event(db, command, 'phase_changed', {'before': unit['state'], 'after': 'closed', 'reason': reason})
+        self._event(db, command, 'phase_changed', {'before': unit['state'], 'after': 'closed', 'reason': reason,
+             **({'pull_state': source['state'], 'pull_merged': source['merged']} if source else {})})
+        if unit['current_candidate_id']:
+            from .effects import Effects
+            candidate = dict(db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone())
+            summary = ('This pull request merged outside Forge; remaining Forge work stopped.'
+                       if source and source['merged'] else 'This pull request is no longer in scope; remaining Forge work stopped.'
+                       if reason != 'pull_request_closed' else 'This pull request closed; remaining Forge work stopped.')
+            Effects(self.store, clock=self.clock)._settlement_in(db, command, _unit(db, unit['id']), candidate, summary)
         return self._save(db, command, 'retire_review_pull', {'reason': reason}, {'admitted': False, 'reason': reason})
+
+    def settle_retired(self, unit_id, source):
+        """Repair pre-upgrade terminal work using its frozen publication owners."""
+        with self.store.write() as db:
+            writable(db)
+            unit = _unit(db, unit_id)
+            binding = review_only_in(db, unit_id)
+            if (not binding or unit['state'] != 'closed' or not unit['current_candidate_id']
+                    or source['repo_id'] != binding['repository_id'] or source['pull_number'] != binding['pull_number']):
+                raise TransitionError('terminal check settlement requires the original pull request')
+            existing = db.execute("SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
+                "WHERE c.candidate_id=? AND e.kind='github_settle_checks' LIMIT 1", (unit['current_candidate_id'],)).fetchone()
+            if existing:
+                return {'unit_id': unit_id, 'changed': False}
+            command = Command(str(uuid.uuid4()), 'supervisor:review-settlement', unit_id, unit['version'])
+            candidate = dict(db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone())
+            from .effects import Effects
+            summary = ('This pull request merged outside Forge; remaining Forge work stopped.' if source['merged']
+                       else 'This pull request closed; remaining Forge work stopped.' if source['state'] == 'closed'
+                       else 'This pull request is no longer in scope; remaining Forge work stopped.')
+            result = Effects(self.store, clock=self.clock)._settlement_in(db, command, unit, candidate, summary)
+            self._event(db, command, 'phase_changed',
+                        {'before': 'closed', 'after': 'closed', 'reason': 'terminal_observation',
+                         'pull_state': source['state'], 'pull_merged': source['merged']})
+            return self._save(db, command, 'settle_retired_review', {}, result)
 
     def defer_review(self, command, job_id, *, execution_fence, input_manifest, evidence, reason):
         """Hold a review-only revision whose Review or Audit could not run.
@@ -154,9 +187,50 @@ class ReviewPullRequests(Lifecycle):
             retry_at = self.clock() + REVIEW_RETRY_SECONDS[prior] if prior < len(REVIEW_RETRY_SECONDS) else None
             gate_id = self._open_gate(db, command, 'review_source', {
                 'source': 'review_pull', 'reason': 'review_unavailable', 'cause': reason,
-                'candidate_id': job['candidate_id'], 'job_id': job_id, 'retry_at': retry_at, 'attempt': prior + 1})
+                'candidate_id': job['candidate_id'], 'job_id': job_id, 'role': job['role'], 'retry_at': retry_at, 'attempt': prior + 1})
+            self._progress_in(db, command, _unit(db, unit['id']))
             return {'accepted': True, 'charged': False, 'gate_id': gate_id, 'retry_at': retry_at}
         return self._apply(command, 'defer_review_pull', payload, change)
+
+    def _progress_in(self, db, command, unit):
+        from .effects import Effects
+        from .review_progress import projection, summary
+        value = projection(db, unit)
+        if value is None:
+            return None
+        rows = db.execute("SELECT e.* FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
+            "WHERE c.candidate_id=? AND e.kind='github_check' AND json_extract(e.payload_json,'$.role')='controller' "
+            "ORDER BY e.rowid DESC", (unit['current_candidate_id'],)).fetchall()
+        text = summary(value)
+        for row in rows:
+            payload = json.loads(row['payload_json'])
+            if row['status'] != 'superseded':
+                if payload.get('progress') == value or payload.get('summary') == text:
+                    return None
+                break
+        # Immutable older progress remains history; no stale retry can overwrite
+        # a newer projection. The initial publication gate remains independently
+        # recoverable, and still owns its exact check receipt.
+        for row in rows:
+            if 'progress' in json.loads(row['payload_json']) and row['status'] in {'pending','running','uncertain'}:
+                db.execute("UPDATE external_effects SET status='superseded',retry_at=NULL,updated_at=? WHERE id=?",
+                           (self.clock(), row['id']))
+                Effects(self.store, clock=self.clock)._effect_event(db, row['id'])
+        candidate = dict(db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone())
+        return Effects(self.store, clock=self.clock)._insert(db, command, unit, candidate, 'github_check',
+            dict(candidate_id=candidate['id'], role='controller', conclusion=None, summary=text, progress=value))
+
+    def refresh_progress(self, unit_id):
+        with self.store.write() as db:
+            writable(db)
+            unit = _unit(db, unit_id)
+            if not review_only_in(db, unit_id):
+                raise TransitionError('review progress requires a review-only pull request')
+            command = Command(str(uuid.uuid4()), 'supervisor:review-progress', unit_id, unit['version'])
+            result = self._progress_in(db, command, unit)
+            if result:
+                return self._save(db, command, 'review_progress', {}, result)
+            return {'changed': False}
 
     def observe(self, source, *, policy_hash, scope='all', enabled=True, hold_labels=('hold', 'blocked'), expected_version=None):
         """Admit/refresh one complete PR observation. Performs no remote writes."""
@@ -188,7 +262,7 @@ class ReviewPullRequests(Lifecycle):
                 return {'admitted': False, 'reason': blocked}
             carry = []
             if existing and (source['state'] == 'closed' or source['merged']):
-                return self._retire_in(db, dict(existing), reason='pull_request_closed')
+                return self._retire_in(db, dict(existing), reason='pull_request_closed', source=source)
             if existing and blocked == 'scope_excluded':
                 # The operator's review scope no longer covers this PR; a held
                 # gate would never release. Reuse the operator close code.
@@ -263,6 +337,10 @@ class ReviewPullRequests(Lifecycle):
                 if not initial:
                     self._fence(db, command)
                     self._event(db, command, 'candidate_superseded', {'candidate_id': unit['current_candidate_id'], 'reason': 'pull_source_changed'})
+                    from .effects import Effects
+                    settlement = Command(command.request_id + ':settlement', command.actor_id, unit_id, unit['version'])
+                    Effects(self.store, clock=self.clock)._settlement_in(db, settlement, _unit(db, unit_id), dict(current),
+                        'This pull request revision was superseded; remaining Forge work stopped.')
                 candidate_id = _id(request, 'candidate')
                 requirements_hash = manifest_hash({key: source[key] for key in ('title', 'body')})
                 input_hash = manifest_hash(dict(source=source, policy_hash=policy_hash))
@@ -289,7 +367,7 @@ class ReviewPullRequests(Lifecycle):
                 identity = dict(db.execute('SELECT * FROM candidates WHERE id=?', (candidate_id,)).fetchone())
                 effect = Effects(self.store, clock=self.clock)._insert(db, command, fresh, identity, 'github_check',
                     dict(candidate_id=candidate_id, role='controller', conclusion=None,
-                         summary='Forge Review and Audit are required for this exact pull request revision.'))
+                         summary='Forge Review is queued for this exact pull request revision.'))
                 for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL "
                         "AND json_extract(details_json,'$.source')='review_pull_policy'", (unit_id,)).fetchall():
                     self._resolve(db, command, gate['id'], {'candidate_changed': candidate_id}, resolution='superseded')

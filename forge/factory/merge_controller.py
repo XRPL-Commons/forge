@@ -227,12 +227,22 @@ class MergeAdmission:
         identities=[]
         with self.store.read_snapshot() as db:
             for peer in authorization['peer_pins']:
-                row=db.execute("SELECT e.id FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
+                row=db.execute("SELECT COALESCE(json_extract(e.payload_json,'$.check_external_id'),e.id) AS id FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
                     "WHERE c.candidate_id=? AND e.kind='github_check' AND e.status='confirmed' "
                     "AND json_extract(e.payload_json,'$.review_only')=1 ORDER BY e.created_at DESC,e.rowid DESC LIMIT 1",
                     (peer['candidate_id'],)).fetchone()
                 if row:identities.append(row['id'])
-        return bool(identities) and self.github.review_policy_current(item,identities) is True
+            retired = [row[0] for row in db.execute(
+                "SELECT DISTINCT COALESCE(json_extract(e.payload_json,'$.check_external_id'),e.id) "
+                "FROM external_effects e JOIN candidate_effects ce ON ce.effect_id=e.id "
+                "JOIN candidates c ON c.id=ce.candidate_id JOIN units u ON u.id=c.unit_id "
+                "WHERE u.repository_id=? AND c.head_oid=? AND e.kind='github_check' "
+                "AND json_extract(e.payload_json,'$.role')='controller' "
+                "AND (u.state IN ('closed','merged') OR u.current_candidate_id!=c.id) LIMIT 501",
+                (item['repo_id'], item['candidate']['head']))]
+        if len(retired) > 500:
+            return False
+        return bool(identities) and self.github.review_policy_current({**item, 'retired_policy_ids': retired},identities) is True
 
 
     def evaluate(self, effect):

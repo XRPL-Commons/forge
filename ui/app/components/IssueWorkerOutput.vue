@@ -7,6 +7,7 @@ import { emptyOutputText, outputText, type OutputView } from '~/utils/liveWork'
 // so this only renders it: the text without heartbeats (or raw on demand),
 // following the end of a live tail unless the operator scrolled up to read.
 const props = defineProps<{
+  currentCandidateId?: string
   jobs: JobView[]
   selectedJob: string | null
   output: OutputView | null
@@ -121,7 +122,7 @@ function isoTime(at: number): string { return new Date(at * 1000).toISOString() 
           :aria-current="job.id === selectedJob ? 'true' : undefined"
           class="hover:underline"
           :class="job.id === selectedJob ? 'text-mint-200' : 'text-muted'"
-        >{{ jobSummary(job) }}<span v-if="job.started_at"> · <time :datetime="isoTime(job.started_at)">{{ localTime(job.started_at) }}</time></span></NuxtLink>
+        >{{ jobSummary(job) }}<span v-if="currentCandidateId"> · {{ job.candidate_id === currentCandidateId ? 'current revision' : 'earlier revision' }}</span><span v-if="job.started_at"> · <time :datetime="isoTime(job.started_at)">{{ localTime(job.started_at) }}</time></span></NuxtLink>
       </li>
     </ul>
   </section>

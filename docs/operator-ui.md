@@ -82,6 +82,25 @@ an operator wants the factory to do.
   Avoid duplicate back controls and reserve primary actions for substantive work.
 
 
+## Every job has a visible work record
+
+Activity includes pull requests reviewed independently of an issue. A worker's
+absence from the issue board must never hide its work. Show the repository, PR
+title and number, current Review or Audit stage, and whether work is queued,
+running, waiting, blocked or finished. Keep PR identity distinct from issue
+identity and label counters by the work they include.
+
+Each PR opens a durable detail page with its current head and base, blocker and
+retry schedule, and attempt history. Load worker output only when requested.
+Clearly label previous revisions and stopped attempts so historical evidence
+cannot be mistaken for current progress. After a merge on GitHub, retain the
+work record and explain why unfinished Forge work stopped.
+
+GitHub checks link directly to the same PR detail page. A pending check describes
+the actual stage or blocker; it must not keep saying a worker is running after
+that worker stopped. Closing or superseding a PR settles pending work without
+inventing a successful Review or Audit.
+
 ## Issue decisions
 
 Activity is the default home page and first work tab. It shows running workers

@@ -29,6 +29,15 @@ class HumanPullGitHub(GitHub):
             base={'sha':BASE,'ref':'main','repo':{'id':1,'full_name':'owner/repo'}})
         self.published=[]
 
+    def connection(self, role):
+        return {'app_id': 1}
+
+    def app_ids(self, role):
+        return [1]
+
+    def pages(self, role, item, path, key=None):
+        return []  # Settlement transport is covered with actual runs separately.
+
     def issue(self,item):
         raise AssertionError('Human PR review must not invent an issue')
 

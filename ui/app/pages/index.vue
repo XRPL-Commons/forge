@@ -140,7 +140,7 @@ async function revealSection() {
   const hash = route.hash
   if (hash === '#stage-recovery' || hash === '#runners') runnersOpen.value = true
   else if (hash === '#needs-attention') { showAttention('all'); return }
-  else if (hash !== '#completed' && hash !== '#factory-line') return
+  else if (hash !== '#completed' && hash !== '#factory-line' && hash !== '#pull-request-work') return
   await nextTick()
   document.getElementById(hash.slice(1))?.scrollIntoView({ block: 'start' })
 }
@@ -248,12 +248,15 @@ watch(() => panel.value.key, (key, before) => {
       <FactoryLine id="factory-line" class="mt-5 scroll-mt-32" :view="view" :now="now" :groups="groups" :transition="transition" @open="open" @attention="showAttention" />
 
       <p v-if="counts" id="readout" class="readout mt-3 flex flex-wrap gap-x-5 gap-y-1 border-y border-line py-2 text-xs text-muted tabular-nums sm:justify-end">
-        <span data-readout="working">Working <NuxtLink to="/issues?show=working" class="font-semibold text-white hover:underline" :aria-label="`${counts.working} of ${counts.slots} slots working`">{{ counts.working }}</NuxtLink> of {{ counts.slots }}<span v-if="counts.occupied > counts.working" class="text-muted"> · {{ counts.occupied }} {{ counts.occupied === 1 ? 'slot' : 'slots' }} in use</span></span>
-        <span data-readout="queued">Queued <NuxtLink to="/issues?show=queued" class="font-semibold text-white hover:underline" :aria-label="`${counts.queued} queued`">{{ counts.queued }}</NuxtLink></span>
-        <span data-readout="merging">Waiting to merge <b class="font-semibold text-white">{{ counts.merging }}</b></span>
-        <span data-readout="attention">Needs you <button type="button" class="cursor-pointer font-semibold hover:underline focus-visible:outline-2 focus-visible:outline-sky-200" :class="needsYou ? 'text-amber-200' : 'text-white'" aria-haspopup="dialog" :aria-label="`Show the ${needsYou} issue${needsYou === 1 ? '' : 's'} that need${needsYou === 1 ? 's' : ''} you`" @click="showAttention('all')">{{ needsYou }}</button></span>
+        <span v-if="view.pull_requests?.length" data-readout="working">Workers running <b class="font-semibold text-white">{{ counts.working }}</b> of {{ counts.slots }}<span v-if="counts.occupied > counts.working"> · {{ counts.occupied }} slots in use</span></span>
+        <span v-else data-readout="working">Working <NuxtLink to="/issues?show=working" class="font-semibold text-white hover:underline" :aria-label="`${counts.working} of ${counts.slots} slots working`">{{ counts.working }}</NuxtLink> of {{ counts.slots }}<span v-if="counts.occupied > counts.working" class="text-muted"> · {{ counts.occupied }} {{ counts.occupied === 1 ? 'slot' : 'slots' }} in use</span></span>
+        <span data-readout="queued">{{ view.pull_requests?.length ? 'Issues queued' : 'Queued' }} <NuxtLink to="/issues?show=queued" class="font-semibold text-white hover:underline" :aria-label="`${counts.queued} queued`">{{ counts.queued }}</NuxtLink></span>
+        <span data-readout="merging">{{ view.pull_requests?.length ? 'Issues waiting to merge' : 'Waiting to merge' }} <b class="font-semibold text-white">{{ counts.merging }}</b></span>
+        <span data-readout="attention">{{ view.pull_requests?.length ? 'Issues needing you' : 'Needs you' }} <button type="button" class="cursor-pointer font-semibold hover:underline focus-visible:outline-2 focus-visible:outline-sky-200" :class="needsYou ? 'text-amber-200' : 'text-white'" aria-haspopup="dialog" :aria-label="`Show the ${needsYou} issue${needsYou === 1 ? '' : 's'} that need${needsYou === 1 ? 's' : ''} you`" @click="showAttention('all')">{{ needsYou }}</button></span>
         <span data-readout="merged">Merged today <a href="#completed" class="font-semibold text-white hover:underline" :aria-label="`${counts.merged} merged today, go to Recently completed`">{{ counts.merged }}</a></span>
       </p>
+
+      <PullRequestWorkList :items="view.pull_requests ?? []" :more="view.pull_requests_next" :recent-truncated="view.pull_requests_recent_truncated" class="mt-6" />
 
       <!-- Investigations and cleanup runs are drawn nowhere else: one line,
            opened on demand, so an internal run can still be reset. -->
