@@ -443,6 +443,12 @@ mutation audit boundaries, requires a configured repository and compares the
 runtime revision before saving. It changes only that repository's entry and
 makes no GitHub permission or ruleset changes. Issue details display the policy.
 
+### Repository settings
+
+Repository settings control automation, merging, review coverage and routine recovery. Each policy choice has an explicit Save button; selecting an option does not apply it. Review coverage defaults to all pull requests, and existing selections are preserved. Reviewing another author's PR does not authorize Forge to merge it.
+
+Advanced sections contain dependency restrictions, test environment overrides and deployment tracking. They open on demand and keep unsaved edits when collapsed. A repository without an observable deployment can keep working without tracking; its scan evidence remains available under Inspection details. Diagnostics contains access status, observed GitHub rules and Refresh repository.
+
 ### Measured worker resources
 
 The lazy delivery tree exposes timestamped CPU/current-memory samples and verified

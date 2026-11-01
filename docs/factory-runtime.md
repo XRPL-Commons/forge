@@ -127,9 +127,7 @@ The approval must follow acceptance of the current candidate and match its exact
 
 Changes to the head, base, requirements or policy invalidate earlier candidate evidence. Forge reads approvals again just before merging and sends GitHub the expected head SHA, so a new commit cannot slip through using an old approval.
 
-Repository settings also control review coverage and routine recovery. Each choice has an explicit Save button; selecting an option does not apply it. Review coverage defaults to all pull requests, and existing selections are preserved. Reviewing another author's PR does not authorize Forge to merge it.
-
-Advanced sections contain dependency restrictions, test environment overrides and deployment tracking. They open on demand and keep unsaved edits when collapsed. A repository without an observable deployment can keep working without tracking; its scan evidence remains available under Inspection details. Diagnostics contains access status, observed GitHub rules and Refresh repository.
+Use **Save** to apply review coverage and recovery choices. **Advanced** contains dependency, environment and deployment settings; **Diagnostics** contains access and GitHub observations. [Settings reference](factory-runtime-reference.md#repository-settings) explains their behavior.
 
 You can also set or inspect merge policy through the CLI:
 
