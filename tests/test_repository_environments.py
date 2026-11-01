@@ -52,6 +52,20 @@ class RepositoryEnvironmentTests(unittest.TestCase):
         self.assertIsNone(reloaded['proposal'])
         self.assertEqual(load(self.root)['environment_tiers']['full'], FULL)
 
+    def test_external_verification_remains_visible_after_default_save_and_during_rescan(self):
+        external = {'capability': 'xcode', 'head': 'a' * 40, 'evidence': ['App.xcodeproj/project.pbxproj']}
+        self.finish(self.start(), {**self.proposal, 'external_verification': external})
+        self.action('confirm')
+        self.start()
+        row = self.service.view(10)
+        self.assertEqual(row['worker_capabilities'], {'os': 'linux', 'xcode': False, 'ios_simulator': False})
+        self.assertIsNone(row['proposal'])
+        self.assertEqual(row['external_verification'], external)
+        self.assertNotIn('external_verification', load(self.root)['repository_environments']['10'])
+        # A complete new scan can remove old evidence; a scan in progress cannot.
+        self.finish(self.scan_id())
+        self.assertIsNone(self.service.view(10)['external_verification'])
+
     def test_stale_confirmation_cannot_overwrite_newer_scan_or_saved_profile(self):
         self.proposed()
         old = self.service.view(10)['revision']

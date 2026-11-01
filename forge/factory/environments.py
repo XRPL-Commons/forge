@@ -8,6 +8,7 @@ from urllib.parse import quote
 from .contracts import SHA, digest
 
 SERVICES = ('mongodb', 'postgres', 'redis')
+WORKER_CAPABILITIES = {'os': 'linux', 'xcode': False, 'ios_simulator': False}
 DEPENDENCIES = {'mongodb': {'mongodb', 'mongoose', 'mongodb-memory-server', 'mongodb-memory-server-core'},
                 'postgres': {'pg', 'postgres', 'postgresql', 'psycopg', 'psycopg2', 'psycopg2-binary'},
                 'redis': {'redis', 'ioredis', '@redis/client'}}
@@ -71,13 +72,17 @@ def probe(github, repo):
     tree = github.call('controller', repo, 'GET', f'/git/trees/{head}?recursive=1')
     if tree.get('truncated') or not isinstance(tree.get('tree'), list):
         raise ValueError('Repository tree is incomplete; inspect the environment manually')
-    paths = []
+    paths, apple_projects = [], []
     for row in tree['tree']:
         path = row.get('path', '')
         name = PurePosixPath(path).name
-        if row.get('type') != 'blob' or row.get('mode') == '120000' or row.get('size', 0) > 65536:
+        if row.get('type') != 'blob' or row.get('mode') == '120000':
             continue
         if any(part in {'node_modules', 'vendor', '.git', '.forge'} for part in PurePosixPath(path).parts):
+            continue
+        if path.endswith(('.xcodeproj/project.pbxproj', '.xcworkspace/contents.xcworkspacedata')):
+            apple_projects.append(path)
+        if row.get('size', 0) > 65536:
             continue
         if (name == 'package.json' or name.startswith(('requirements', 'compose.', 'docker-compose.'))
                 or name == 'pyproject.toml' or path.endswith('.prisma')
@@ -94,6 +99,11 @@ def probe(github, repo):
             raise ValueError('Environment source could not be read completely')
         files[path] = base64.b64decode(row['content']).decode('utf-8')
     value = {'repo_id': repo['repo_id'], 'repo': repo['repo'], 'head': head, **inspect_files(files)}
+    # Project paths establish an Xcode requirement without reading or executing
+    # project files. A Swift package alone can support Linux and is not evidence.
+    if apple_projects:
+        value['external_verification'] = {'capability': 'xcode', 'head': head,
+                                          'evidence': sorted(apple_projects)[:100]}
     return {**value, 'revision': digest(value)}
 
 

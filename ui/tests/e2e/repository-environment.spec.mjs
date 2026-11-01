@@ -3,6 +3,15 @@ import assert from 'node:assert/strict'
 const path = '/settings/repositories/2'
 const endpoint = '/api/repositories/environment'
 export default async function (page, { base, scenario, requests }) {
+  await scenario('environment-xcode')
+  await page.goto(base + path)
+  await page.locator('#repository-platform-notice').waitFor()
+  assert.ok((await page.locator('#repository-platform-notice').innerText()).includes('verification on a Mac'))
+  await page.locator('summary').filter({ hasText: 'Test environment' }).click()
+  assert.ok((await page.locator('#test-databases').innerText()).includes('Workers run Linux'))
+  assert.ok((await page.locator('#test-databases').innerText()).includes('App.xcodeproj/project.pbxproj'))
+  assert.equal((await requests()).filter(r => r.method === 'POST').length, 0, 'viewing capability evidence does not change repository policy')
+
   await scenario('environment-idle')
   await page.goto(base + path)
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()

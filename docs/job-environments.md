@@ -6,6 +6,25 @@ UID 1000, read-only root, dropped capabilities, seccomp policy and egress proxy.
 No service is shared between jobs; database processes bind only to loopback and
 write under the job's repository in `/work`.
 
+## Apple builds and simulator tests
+
+Both worker tiers run Linux. They cannot run Xcode, Apple SDKs or the iOS
+Simulator. Forge can prepare iOS changes and run checks supported on Linux.
+Required Apple builds and simulator tests need verification on a Mac before
+Forge merges. A successful Linux test is not evidence that an iOS test passed.
+
+Workers report the exact project, scheme, simulator destination, commands and
+expected result through the existing external-verification contract. Forge waits
+for an explicitly configured trusted CI check at the current candidate revision,
+or explicit human verification. Independent Review and Audit still apply.
+Documentation-only work does not automatically require simulator testing.
+
+**Settings → Repositories → repository → Advanced → Test environment** shows
+worker capabilities. **Scan requirements** detects Xcode project and workspace
+paths, records the scanned commit and shows a notice on the repository page.
+This is evidence for planning individual work; it does not disable the repository
+or add a Mac runner. A Swift package alone does not imply a Mac requirement.
+
 The full image additionally allows native tools to read the single CPU topology
 file `/sys/devices/system/cpu/possible`, required by MongoDB 8's allocator. This
 does not grant writes, additional capabilities or access to credentials.
@@ -33,19 +52,14 @@ The base MongoDB image is digest-pinned in `deploy/runner/Dockerfile.full`.
 ## Automatic assignment per issue
 
 The supervisor chooses an environment for each issue. No repository profile or
-confirmation is required. It scans repository dependencies, test setup, Compose
-and CI files in the background when assigning work. Results are cached and
-refreshed after ten minutes when another issue is assigned. Each scan records the
-exact repository commit and file evidence. A failed or interrupted scan does not
-block dispatch; the supervisor can use earlier evidence, and the worker can report
-missing databases.
+confirmation is required. Selection uses an explicit issue override or environment
+label, a supported retry after a worker claim, an accepted steward brief, or an
+optional repository default. Otherwise it starts on standard workers. Keywords in
+an issue do not select a worker tier.
 
-Selection uses the issue title and description:
-
-- Explicit documentation/copy-only work starts on standard workers.
-- An issue naming MongoDB, PostgreSQL or Redis gets those services.
-- Backend, API, integration or test work uses databases found by the cached scan.
-- Otherwise the issue starts on standard workers, or an optional repository default.
+Repository scans read dependencies, test setup, Compose, CI and project paths.
+Results are cached with the exact commit and file evidence. A failed or interrupted
+scan does not block dispatch; workers can report concrete missing requirements.
 
 The issue's **Worker environment** section shows the assignment and reason. Use
 **Change environment** to choose an optional override for that issue, or return to

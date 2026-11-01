@@ -422,6 +422,8 @@ def plain_language():
 def assignment_note(job):
     """Data is context, never permission to change factory state or run another job."""
     base = {k: job[k] for k in ('id', 'role', 'repo', 'repo_id', 'issue_number', 'branch', 'publisher', 'target_branch', 'candidate', 'deadline', 'history')}
+    from .environments import WORKER_CAPABILITIES
+    base['worker_capabilities'] = dict(WORKER_CAPABILITIES)
     if job.get('members'):
         base['members'] = job['members']
     if job.get('review_only'):
@@ -442,6 +444,9 @@ def assignment_note(job):
             'Return exactly the supplied decision v1 schema as your final structured response. '
             'Rank bounded concrete choices, identify judgement calls, and recommend one choice. '
             'Use only offered configuration, observed issue identities and source revisions. '
+            'Workers run Linux; Xcode and the iOS Simulator are unavailable. Plan required Apple builds '
+            'and simulator tests as external verification, using trusted configured CI or a human on a Mac. '
+            'Do not invent a macOS environment or mark unrun checks as passed. '
             'When supplying a brief, pin its choice_id and preserve original intent and acceptance criteria. '
             'In brief mode keep the accepted choices, recommendation and confidence unchanged; enrich only '
             'the selected choice instructions and evidence. The core alone applies an accepted move. '
@@ -483,6 +488,14 @@ def assignment_note(job):
             'For incomplete work, completion artifacts and verification are null. '
             'A completed implementation may include verification for checks requiring human access. ')
     base['instructions'] += plain_language()
+    base['instructions'] += (
+        ' Workers run Linux. Xcode, Apple SDKs and the iOS Simulator are unavailable in every worker tier. '
+        'A Swift package may support Linux, but a Linux check does not prove an iOS build or simulator test passed. '
+        'Complete work that can be done here. If the acceptance criteria require an Apple build or simulator test, '
+        'request external verification with the exact project or workspace, scheme, destination, commands and '
+        'expected result. Use the verification outcome described below; do not report an unrun check as passed '
+        'or retry it on another Linux tier. Do not require simulator verification for documentation-only changes '
+        'whose acceptance criteria do not need it. ')
     if job['role']=='build':
         base['instructions'] += (
             ' Use the repository lockfile and declared package manager. Node, npm, Corepack, a compiler, '

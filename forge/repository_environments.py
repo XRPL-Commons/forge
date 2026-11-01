@@ -5,7 +5,7 @@ import time
 import uuid
 
 from .factory.config import load, validate, save
-from .factory.environments import probe
+from .factory.environments import probe, WORKER_CAPABILITIES
 from .factory.github import GitHub, GitHubUnavailable
 from .settings import digest
 from .store.configuration import Configuration
@@ -75,6 +75,8 @@ class RepositoryEnvironments:
             status, error = 'failed', 'The scan did not finish. Scan requirements again.'
         same = profile and proposal and all(profile.get(k) == proposal.get(k) for k in ('head', 'services', 'evidence'))
         return {'profile': profile, 'proposal': proposal if status not in ('running', 'failed') and not same else None,
+                'worker_capabilities': dict(WORKER_CAPABILITIES),
+                'external_verification': (proposal or {}).get('external_verification'),
                 'status': status, 'error': error, 'full_available': 'full' in config['environment_tiers'],
                 'revision': digest({'profile': stored, 'proposal': proposal, 'scan': scan,
                                     'full_available': 'full' in config['environment_tiers']})}
