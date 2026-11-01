@@ -6,17 +6,21 @@ Host-specific runner qualification still runs after an image is loaded.
 """
 from functools import lru_cache
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import platform
 import re
 import shutil
+import stat
+import time
 import subprocess
 import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+import urllib.parse
 
 REPOSITORY = 'XRPL-Commons/forge'
 ASSETS = {'ui': 'forge-ui-linux-amd64.tar.gz', 'runner': 'forge-runner-linux-amd64.tar.gz',
@@ -72,6 +76,9 @@ def validate_manifest(value, revision, inputs, node_image, python_image):
 
 
 def read_manifest(revision):
+    cached = cache_directory(revision) / 'manifest.json'
+    if cached.exists():
+        return cached_manifest(revision)
     try:
         with urllib.request.urlopen(asset_url(revision, 'manifest.json'), timeout=30) as response:
             raw = response.read(128 * 1024 + 1)
@@ -101,8 +108,14 @@ class Release:
     def download(self, kind, destination):
         asset = self.manifest['artifacts'][kind]
         digest, size = hashlib.sha256(), 0
+        cached = cache_directory(self.revision) / asset['filename']
+        if cached.exists():
+            private_file(cached)
+            source = cached.open('rb')
+        else:
+            source = None
         try:
-            with urllib.request.urlopen(asset_url(self.revision, asset['filename']), timeout=120) as response, open(destination, 'wb') as target:
+            with source or urllib.request.urlopen(asset_url(self.revision, asset['filename']), timeout=120) as response, open(destination, 'wb') as target:
                 while chunk := response.read(1024 * 1024):
                     size += len(chunk)
                     require(size <= asset['size'], 'Prepared asset exceeds its declared size.')
@@ -143,3 +156,166 @@ class Release:
             if target.exists():
                 shutil.rmtree(target)
             os.replace(staging, target)
+
+
+# The CLI obtains asset-specific signed URLs with its local GitHub access.
+# Only validated bytes enter this cache; URLs remain in the SSH request memory.
+def cache_directory(revision, cache_root=None):
+    release_tag(revision)
+    return Path(cache_root or Path.home() / '.cache/forge/prepared') / revision
+
+
+def private_file(path, *, uid=None):
+    info = path.lstat()
+    require(stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o077
+            and info.st_uid == (os.geteuid() if uid is None else uid) and info.st_nlink == 1,
+            'Prepared cache file must be private and owned by the service account.')
+
+
+def private_directory(path, *, uid=None, gid=None):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    owner = os.geteuid() if uid is None else uid
+    require(stat.S_ISDIR(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o077
+            and info.st_uid in (os.geteuid(), owner), 'Prepared cache directory must be private and owned.')
+    if uid is not None:
+        os.chown(path, uid, gid if gid is not None else -1)
+
+
+def manifest_shape(value, revision):
+    require(isinstance(value, dict) and isinstance(value.get('artifacts'), dict)
+            and set(value['artifacts']) == set(ASSETS), 'Invalid prepared artifact manifest.')
+    require(isinstance(value.get('node_image'), str) and isinstance(value.get('python_image'), str),
+            'Invalid prepared toolchain descriptor.')
+    inputs = {}
+    for kind, item in value['artifacts'].items():
+        require(isinstance(item, dict) and isinstance(item.get('inputs'), str)
+                and SHA256.fullmatch(item['inputs']), 'Invalid prepared build inputs.')
+        inputs[kind] = item['inputs']
+    # Actual toolchain and tree pins are checked again by prepared() before use.
+    return validate_manifest(value, revision, inputs, value['node_image'], value['python_image'])
+
+
+def cached_manifest(revision, cache_root=None):
+    path = cache_directory(revision, cache_root) / 'manifest.json'
+    private_file(path)
+    require(path.stat().st_size <= 128 * 1024, 'Prepared artifact manifest is too large.')
+    try:
+        return manifest_shape(json.loads(path.read_bytes()), revision)
+    except (UnicodeError, ValueError) as error:
+        raise ArtifactError('Invalid cached prepared artifact manifest.') from None
+
+
+def verified_file(path, asset, *, uid=None):
+    if not path.exists():
+        return False
+    private_file(path, uid=uid)
+    if path.stat().st_size != asset['size']:
+        return False
+    checksum = hashlib.sha256()
+    with path.open('rb') as stream:
+        while chunk := stream.read(1024 * 1024): checksum.update(chunk)
+    return checksum.hexdigest() == asset['sha256']
+
+
+def cache_status(revision, cache_root=None):
+    directory = cache_directory(revision, cache_root)
+    if not (directory / 'manifest.json').exists():
+        return {'revision': revision, 'cached': []}
+    manifest = cached_manifest(revision, cache_root)
+    return {'revision': revision, 'cached': [kind for kind, asset in manifest['artifacts'].items()
+            if verified_file(directory / asset['filename'], asset)]}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        raise ArtifactError('Prepared asset download redirected outside its signed request.')
+
+
+def _signed_url(value):
+    require(isinstance(value, str) and len(value) <= 16384, 'Invalid prepared asset download URL.')
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        allowed = (parsed.scheme == 'https' and parsed.hostname == 'release-assets.githubusercontent.com'
+                   and not parsed.username and not parsed.password and parsed.port is None
+                   and not parsed.fragment and bool(parsed.query))
+    except ValueError:
+        allowed = False
+    require(allowed, 'Prepared assets must use GitHub release asset storage.')
+    return value
+
+
+def _atomic_file(path, write, *, uid=None, gid=None):
+    descriptor, temporary = tempfile.mkstemp(prefix='.receiving-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            write(stream)
+            stream.flush(); os.fsync(stream.fileno())
+            if uid is not None: os.fchown(stream.fileno(), uid, gid if gid is not None else -1)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def stage(access, cache_root=None):
+    require(isinstance(access, dict) and set(access) == {'revision', 'manifest', 'urls'},
+            'Invalid prepared asset handoff.')
+    revision = access['revision']; directory = cache_directory(revision, cache_root)
+    manifest = manifest_shape(access['manifest'], revision)
+    require(isinstance(access['urls'], dict) and set(access['urls']) <= set(ASSETS), 'Invalid prepared asset selection.')
+    urls = {kind: _signed_url(url) for kind, url in access['urls'].items()}
+    raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    require(len(raw) <= 128 * 1024, 'Prepared artifact manifest is too large.')
+    private_directory(directory.parent); private_directory(directory)
+    if (directory / 'manifest.json').exists():
+        require(cached_manifest(revision, cache_root) == manifest, 'Prepared release manifest changed for this source revision.')
+    else:
+        _atomic_file(directory / 'manifest.json', lambda stream: stream.write(raw))
+    opener = urllib.request.build_opener(_NoRedirect())
+    for kind, url in urls.items():
+        asset = manifest['artifacts'][kind]; target = directory / asset['filename']
+        if verified_file(target, asset): continue
+        def download(stream):
+            checksum, size, deadline = hashlib.sha256(), 0, time.monotonic() + 900
+            try:
+                with opener.open(url, timeout=120) as response:
+                    while chunk := response.read(1024 * 1024):
+                        require(time.monotonic() <= deadline, 'Prepared asset download timed out. Resume setup to retry.')
+                        size += len(chunk)
+                        require(size <= asset['size'], 'Prepared asset exceeds its declared size.')
+                        checksum.update(chunk); stream.write(chunk)
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
+                raise ArtifactError('Prepared asset download failed. Resume the CLI to obtain fresh download access.') from None
+            require(size == asset['size'] and checksum.hexdigest() == asset['sha256'],
+                    'Prepared ' + kind + ' artifact checksum mismatch.')
+        _atomic_file(target, download)
+    return cache_status(revision, cache_root)
+
+
+def copy_cache(revision, source_root, destination_root, *, uid=None, gid=None):
+    """Promote the bootstrap cache to the service account without URL metadata."""
+    manifest = cached_manifest(revision, source_root)
+    source = cache_directory(revision, source_root)
+    target = cache_directory(revision, destination_root)
+    private_directory(target.parent, uid=uid, gid=gid)
+    private_directory(target, uid=uid, gid=gid)
+    existing = target / 'manifest.json'
+    if existing.exists():
+        private_file(existing, uid=uid)
+        require(existing.stat().st_size <= 128 * 1024, 'Prepared artifact manifest is too large.')
+        try:
+            previous = manifest_shape(json.loads(existing.read_bytes()), revision)
+        except (UnicodeError, ValueError):
+            raise ArtifactError('Invalid cached prepared artifact manifest.') from None
+        require(previous == manifest, 'Prepared release manifest changed for this source revision.')
+    for asset in manifest['artifacts'].values():
+        if not verified_file(source / asset['filename'], asset): continue
+        if verified_file(target / asset['filename'], asset, uid=uid): continue
+        def copy(stream):
+            with (source / asset['filename']).open('rb') as original:
+                shutil.copyfileobj(original, stream, 1024 * 1024)
+        _atomic_file(target / asset['filename'], copy, uid=uid, gid=gid)
+    raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    _atomic_file(target / 'manifest.json', lambda stream: stream.write(raw), uid=uid, gid=gid)
+    return {'revision': revision, 'cached': [kind for kind, asset in manifest['artifacts'].items()
+            if verified_file(target / asset['filename'], asset, uid=uid)]}

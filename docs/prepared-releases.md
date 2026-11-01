@@ -2,8 +2,9 @@
 
 Published Forge releases include the operator UI and worker images. A fresh
 Linux amd64 host downloads these assets instead of running `npm ci`, compiling
-the UI or building worker images. The full worker image is downloaded only when
-the installation needs database services.
+the UI or building worker images. The CLI stages the standard and full worker
+archives so later environment preparation can continue without local GitHub
+access. The full worker is loaded and qualified when database services are needed.
 
 Each release is named `forge-build-<full commit SHA>`. Its `manifest.json` records:
 
@@ -42,7 +43,27 @@ full commit SHA remains available for pinned recovery and development.
 
 Only revisions with a published prepared release are ready for installation.
 After merging, wait for the Prepared release workflow before installing that
-revision. Downloads need no personal GitHub credential or registry token.
+revision.
+
+## Private repository access
+
+The CLI uses your local GitHub CLI login to read private release metadata and
+obtain short-lived, read-only links for the exact assets. It sends those links
+over the existing SSH connection. Your personal GitHub token stays local; it is
+never sent to the server. Links stay in memory and are excluded from journals,
+command arguments and normal output.
+
+The host immediately downloads and verifies each archive into a private cache
+at `~/.cache/forge/prepared/<revision>`. Fresh installation stages the cache under
+the installer before the Forge service account exists, then transfers the
+verified files to that account. Interrupted transfers do not become usable cache
+entries. Resume reuses verified files and obtains fresh download links for any
+remaining transfers. Worker and UI activation still checks the manifest against
+the exact source, toolchain and build inputs.
+
+Use the local CLI for installing or updating a private Forge release. A direct
+host-side update needs an already staged cache or an explicitly selected source
+build; the host cannot fetch private releases using your personal credentials.
 
 ## Development builds
 

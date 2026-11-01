@@ -178,10 +178,14 @@ def view(data, host):
 
 
 def dispatch(request, payload):
-    need(isinstance(request, dict) and set(request) == {'version', 'action', 'intent', 'source', 'upgrade_installer'}, 'invalid_request')
+    need(isinstance(request, dict), 'invalid_request')
+    release_access = request.pop('release_access', None)
+    need(set(request) == {'version', 'action', 'intent', 'source', 'upgrade_installer'}, 'invalid_request')
     need(type(request['version']) is int and request['version'] == 1
          and request['action'] in ('plan', 'apply', 'status', 'resume'), 'invalid_request')
     intent = validate_intent(request['intent'])
+    need(release_access is None or request['action'] in ('apply', 'resume')
+         and isinstance(release_access, dict) and release_access.get('revision') == intent['revision'], 'invalid_request')
     need(type(request['upgrade_installer']) is bool and (not request['upgrade_installer'] or request['action'] == 'resume'), 'invalid_request')
     need(request['action'] in ('apply', 'resume') or request['source'] is None, 'invalid_request')
     host = facts()
@@ -210,6 +214,12 @@ def dispatch(request, payload):
         payload_digest = hashlib.sha256(payload.encode()).hexdigest()
         need(data['payload'] == payload_digest or request['upgrade_installer'], 'installer_changed')
         with locked('work'):
+            if release_access is not None:
+                from forge_release_helpers import stage, ArtifactError
+                try:
+                    stage(release_access, cache_root=STATE / 'prepared')
+                except ArtifactError:
+                    raise InstallError('prepared_release_unavailable') from None
             if not source_present(data):
                 source = request['source']
                 need(isinstance(source, dict) and set(source) == {'sha256', 'data'}
@@ -248,6 +258,27 @@ def dispatch(request, payload):
         return view(read(), host)
 
 
+def prepare_service_cache(data):
+    # Resume may have completed account creation before assets became available.
+    if not (STATE / 'prepared' / data['intent']['revision']).exists():
+        return
+    from forge_release_helpers import copy_cache, ArtifactError
+    account = pwd.getpwnam('forge')
+    need(account.pw_dir == str(HOME) and account.pw_uid != 0 and HOME.resolve() == HOME,
+         'existing_installation')
+    for directory in (HOME / '.cache', HOME / '.cache/forge'):
+        need(not directory.is_symlink(), 'unsafe_install_state')
+        directory.mkdir(mode=0o700, exist_ok=True)
+        need(directory.is_dir(), 'unsafe_install_state')
+        os.chown(directory, account.pw_uid, account.pw_gid)
+        directory.chmod(0o700)
+    try:
+        copy_cache(data['intent']['revision'], STATE / 'prepared', HOME / '.cache/forge/prepared',
+                   uid=account.pw_uid, gid=account.pw_gid)
+    except ArtifactError:
+        raise InstallError('prepared_release_unavailable') from None
+
+
 def install_step(step, data):
     if step == 'packages':
         run(['apt-get', 'update'])
@@ -266,6 +297,7 @@ def install_step(step, data):
         run(['usermod', '-aG', 'docker', 'forge'])
         run(['loginctl', 'enable-linger', 'forge'])
         run(['systemctl', 'start', 'user@' + str(account.pw_uid) + '.service'])
+        prepare_service_cache(data)
     elif step == 'source':
         revision = data['intent']['revision']
         need(not SOURCE.is_symlink(), 'source_conflict')
@@ -299,6 +331,7 @@ def install_step(step, data):
         run(['install', '-m', '0644', str(source), str(target)])
         run(['apparmor_parser', '-r', str(target)])
     elif step == 'host':
+        prepare_service_cache(data)
         need(service(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], capture=True) == data['intent']['revision'], 'source_conflict')
         need(not service(['git', '-C', str(SOURCE), 'status', '--porcelain', '--untracked-files=no'], capture=True), 'source_conflict')
         service([str(SOURCE / 'bin/forge'), 'setup', 'initialize', '--root', str(ROOT)])

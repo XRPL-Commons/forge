@@ -35,11 +35,12 @@ class MigrationCLITests(unittest.TestCase):
             with self.assertRaises(SetupError):execute(parser().parse_args([*values,'--apply']))
             call.assert_not_called()
             pack={'data':'bounded-pack','sha256':'digest'}
-            with patch('forge_client.source.export',return_value=pack) as export:
+            with patch('forge_client.source.export',return_value=pack) as export, \
+                    patch('forge_client.release_delivery.access',return_value={'revision':'a'*40}) as access:
                 execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
             export.assert_called_once_with('a'*40,previous='b'*40)
             self.assertEqual(call.call_args_list[0].kwargs,{'apply':False,'source_revision':'a'*40})
-            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40,'source_pack':pack})
+            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40,'source_pack':pack,'release_access':{'revision':'a'*40}})
 
     def test_upgrade_draining_reply_contains_the_complete_pinned_resume_command(self):
         from types import SimpleNamespace
@@ -240,13 +241,15 @@ print(json.dumps({'before':before,'cleanup':'confirmed'}))
         self.assertIn('upgrade_host_update_failed (MigrationError at reconciling)',str(error.exception))
         self.assertIn('Host output (last lines):\nError response from daemon: No such container',str(error.exception))
 
-    def test_resume_after_checkout_needs_no_new_github_access(self):
+    def test_resume_after_checkout_refreshes_asset_access_without_source_export(self):
         args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',
             '--root','/srv/runtime','--apply','--source-revision','a'*40])
         with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'a'*40}) as call, \
-                patch('forge_client.source.export',side_effect=AssertionError('unexpected GitHub access')):
+                patch('forge_client.source.export',side_effect=AssertionError('unexpected source export')), \
+                patch('forge_client.release_delivery.access',return_value={'revision':'a'*40}) as access:
             execute(args)
-        self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
+        access.assert_called_once_with('a'*40)
+        self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40,'release_access':{'revision':'a'*40}})
 
     def test_local_source_failure_stops_before_remote_apply(self):
         args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',

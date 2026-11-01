@@ -48,6 +48,7 @@ ERRORS = {
     'installation_conflict': 'This VM belongs to a different saved setup. Resume that setup or select another VM.',
     'installer_changed': 'Resume with the client version that started this installation.',
     'source_required': 'The host needs the pinned source. Use forge setup resume with local GitHub access available.',
+    'prepared_release_unavailable': 'Prepared release assets could not be staged. Resume with local GitHub access to obtain fresh download access.',
     'invalid_source': 'The transferred source failed validation. Preserve the installation and inspect the source before retrying.',
     'installation_busy': 'Another installation request is running. Use forge setup status, then resume.',
     'source_conflict': 'The managed source has changed. Installation stopped to preserve it; select a fresh VM or reconcile the source before resuming.',
@@ -132,7 +133,8 @@ def revision(value=None, *, run=run_bounded, fetch_manifest=None):
         return value
     executable = shutil.which('gh')
     require(executable, 'github_cli_missing', 'Install the GitHub CLI locally before selecting a prepared Forge release.')
-    from forge.release_artifacts import ASSETS, ArtifactError, read_manifest
+    from forge.release_artifacts import ASSETS, ArtifactError
+    from .release_delivery import read_manifest
     try:
         raw = run([executable, 'api', '--hostname', 'github.com', '--method', 'GET',
                    '-H', 'Accept: application/vnd.github+json',
@@ -150,7 +152,7 @@ def revision(value=None, *, run=run_bounded, fetch_manifest=None):
         require(bool(candidates), 'prepared_release_unavailable')
         selected = max(candidates, key=lambda item: item['published_at'])
         commit = selected['tag_name'].removeprefix('forge-build-')
-        manifest = (fetch_manifest or read_manifest)(commit)
+        manifest = fetch_manifest(commit) if fetch_manifest else read_manifest(commit, run=run)
         require(isinstance(manifest, dict) and manifest.get('version') == 1 and manifest.get('source') == commit
                 and manifest.get('platform') == 'linux/amd64' and isinstance(manifest.get('artifacts'), dict)
                 and set(manifest['artifacts']) == set(ASSETS), 'prepared_release_unavailable')
@@ -173,14 +175,24 @@ class InstallerHost:
         self.ssh, self.run, self.fingerprint = ssh, run, fingerprint
 
     def call(self, action, intent):
-        payload = files('forge_client').joinpath('_install_host.py').read_text()
-        source = None
+        helper = files('forge').joinpath('release_artifacts.py').read_text()
+        payload = ('import sys, types\n_release = types.ModuleType("forge_release_helpers")\n'
+                   + 'exec(compile(' + repr(helper) + ', "<forge-release-helpers>", "exec"), _release.__dict__)\n'
+                   + 'sys.modules["forge_release_helpers"] = _release\n'
+                   + files('forge_client').joinpath('_install_host.py').read_text())
+        source, release_access = None, None
         if action in ('apply', 'resume'):
             observed = self.call('status', intent)
-            if observed['status'] in ('not_installed', 'interrupted') and not observed['source_received']:
-                source = export_source(intent['revision'])
-        result = self.rpc(payload, {'version': 1, 'action': action, 'intent': intent, 'source': source,
-                                   'upgrade_installer': bool(getattr(self, 'upgrade_installer', False) and action == 'resume')})
+            if observed['status'] in ('not_installed', 'interrupted'):
+                if not observed['source_received']:
+                    source = export_source(intent['revision'])
+                from .release_delivery import access
+                release_access = access(intent['revision'])
+        request = {'version': 1, 'action': action, 'intent': intent, 'source': source,
+                   'upgrade_installer': bool(getattr(self, 'upgrade_installer', False) and action == 'resume')}
+        if release_access is not None:
+            request['release_access'] = release_access
+        result = self.rpc(payload, request, timeout=3000 if release_access is not None else 180)
         return self.validate(result, intent)
 
     def rpc(self, payload, request, *, timeout=180):

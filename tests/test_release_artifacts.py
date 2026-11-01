@@ -141,3 +141,103 @@ class ConsumptionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'selected base image'):
                 host_update.full_runner_image('sha256:' + 'd' * 64)
             release.image.assert_called_once()
+
+
+class PrivateDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        self.cache = Path(temporary.name) / 'prepared'
+        self.payload = b'archive'
+        self.access = {'revision': REVISION, 'manifest': manifest(self.payload), 'urls': {
+            kind: 'https://release-assets.githubusercontent.com/release/' + kind + '?sig=private-temporary-value'
+            for kind in artifacts.ASSETS}}
+
+    def stage(self, payload=None):
+        opener = Mock()
+        opener.open.side_effect = lambda *a, **kw: io.BytesIO(self.payload if payload is None else payload)
+        with patch.object(artifacts.urllib.request, 'build_opener', return_value=opener):
+            result = artifacts.stage(self.access, self.cache)
+        return result, opener
+
+    def test_signed_urls_never_persist_and_verified_assets_are_reused(self):
+        result, opener = self.stage()
+        self.assertEqual(set(result['cached']), set(artifacts.ASSETS))
+        self.assertEqual(opener.open.call_count, 3)
+        self.assertNotIn('private-temporary-value', str(result))
+        for path in (self.cache / REVISION).iterdir():
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(b'private-temporary-value', path.read_bytes())
+        result, opener = self.stage()
+        opener.open.assert_not_called()
+        self.assertEqual(set(result['cached']), set(artifacts.ASSETS))
+
+    def test_missing_or_corrupt_files_resume_without_redownloading_verified_assets(self):
+        self.stage()
+        (self.cache / REVISION / artifacts.ASSETS['full']).unlink()
+        (self.cache / REVISION / artifacts.ASSETS['runner']).write_bytes(b'corrupt')
+        self.assertEqual(artifacts.cache_status(REVISION, self.cache)['cached'], ['ui'])
+        result, opener = self.stage()
+        self.assertEqual(opener.open.call_count, 2)
+        self.assertEqual(set(result['cached']), set(artifacts.ASSETS))
+
+    def test_failed_stream_never_promotes_partial_asset_or_prints_signed_url(self):
+        opener = Mock()
+        opener.open.side_effect = artifacts.urllib.error.URLError(self.access['urls']['ui'])
+        with patch.object(artifacts.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaises(artifacts.ArtifactError) as caught:
+                artifacts.stage(self.access, self.cache)
+        self.assertNotIn('private-temporary-value', str(caught.exception))
+        self.assertEqual(list((self.cache / REVISION).iterdir()), [self.cache / REVISION / 'manifest.json'])
+        with self.assertRaisesRegex(artifacts.ArtifactError, 'checksum mismatch'):
+            self.stage(b'corrupt')
+        self.assertEqual(artifacts.cache_status(REVISION, self.cache)['cached'], [])
+
+    def test_url_authority_and_manifest_revision_are_checked_before_writes(self):
+        for url in ('http://release-assets.githubusercontent.com/file', 'https://attacker.invalid/file',
+                    'https://user:secret@release-assets.githubusercontent.com/file',
+                    'https://release-assets.githubusercontent.com:443/file',
+                    'https://release-assets.githubusercontent.com/file#fragment'):
+            with self.subTest(url=url):
+                self.access['urls']['ui'] = url
+                with self.assertRaises(artifacts.ArtifactError): artifacts.stage(self.access, self.cache)
+                self.assertFalse(self.cache.exists())
+        self.access['urls'] = {}
+        self.access['manifest']['source'] = 'f' * 40
+        with self.assertRaises(artifacts.ArtifactError): artifacts.stage(self.access, self.cache)
+
+    def test_manifest_cannot_change_for_a_cached_source_revision(self):
+        self.stage()
+        self.access['manifest']['artifacts']['ui']['sha256'] = 'e' * 64
+        with self.assertRaisesRegex(artifacts.ArtifactError, 'manifest changed'):
+            artifacts.stage(self.access, self.cache)
+
+    def test_cached_source_still_requires_exact_inputs_and_toolchain(self):
+        self.stage(); artifacts.prepared.cache_clear()
+        with patch.object(artifacts.Path, 'home', return_value=self.cache.parent), \
+                patch.object(artifacts, 'cache_directory', side_effect=lambda revision, cache_root=None: self.cache / revision), \
+                patch.object(artifacts.platform, 'system', return_value='Linux'), \
+                patch.object(artifacts.platform, 'machine', return_value='x86_64'), \
+                patch.object(artifacts.urllib.request, 'urlopen') as remote:
+            with self.assertRaisesRegex(artifacts.ArtifactError, 'build inputs differ'):
+                artifacts.prepared(REVISION, 'f' * 64, INPUTS['full'], INPUTS['ui'], 'node@sha256:fixed', 'python@sha256:fixed')
+            release = artifacts.prepared(REVISION, INPUTS['runner'], INPUTS['full'], INPUTS['ui'], 'node@sha256:fixed', 'python@sha256:fixed')
+            target = self.cache.parent / 'consumed'
+            release.download('runner', target)
+            self.assertEqual(target.read_bytes(), self.payload)
+            remote.assert_not_called()
+        artifacts.prepared.cache_clear()
+
+    def test_bootstrap_copy_keeps_only_verified_bytes_and_private_modes(self):
+        self.stage()
+        (self.cache / REVISION / artifacts.ASSETS['full']).write_bytes(b'corrupt')
+        destination = self.cache.parent / 'service-cache'
+        result = artifacts.copy_cache(REVISION, self.cache, destination)
+        self.assertEqual(set(result['cached']), {'runner', 'ui'})
+        self.assertEqual(set(artifacts.cache_status(REVISION, destination)['cached']), {'runner', 'ui'})
+        self.assertEqual((destination / REVISION).stat().st_mode & 0o777, 0o700)
+        self.assertTrue(all(path.stat().st_mode & 0o777 == 0o600 for path in (destination / REVISION).iterdir()))
+
+    def test_redirects_from_signed_storage_are_refused(self):
+        handler = artifacts._NoRedirect()
+        with self.assertRaises(artifacts.ArtifactError):
+            handler.redirect_request(None, None, 302, '', {}, 'https://attacker.invalid/file')
