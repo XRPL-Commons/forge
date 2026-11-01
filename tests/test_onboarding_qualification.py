@@ -9,21 +9,24 @@ class QualificationReuseTests(unittest.TestCase):
     connected=setup_tests.SetupTests.connected
     service=setup_tests.SetupTests.service
 
-    def test_missing_controller_bypass_blocks_setup_verification(self):
+    def test_unreadable_repository_rules_block_setup_verification(self):
         self.connected(); service, _, _ = self.service()
         report = service.github_class.return_value.protection_report.return_value
-        report['bypass'] = {'status': 'missing'}
+        report['available'] = False
+        report['requirements'] = [{'id': 'readable', 'passed': False}]
         self.setup.queue('check', self.setup.view()['revision'])
         for _ in range(3): service.tick()
         self.assertFalse(self.setup.view()['can_start'])
         self.assertIn('protection needs attention', self.setup.view()['error'])
 
-    def test_controller_bypass_removed_after_verification_blocks_start(self):
+    def test_repository_rules_becoming_unreadable_after_verification_block_start(self):
         self.connected(); service, _, _ = self.service()
         self.setup.queue('check', self.setup.view()['revision'])
         for _ in range(20): service.tick()
         self.assertTrue(self.setup.view()['can_start'])
-        service.github_class.return_value.protection_report.return_value['bypass'] = {'status': 'missing'}
+        report = service.github_class.return_value.protection_report.return_value
+        report['available'] = False
+        report['requirements'] = [{'id': 'readable', 'passed': False}]
         self.setup.queue('start', self.setup.view()['revision'])
         service.tick()
         self.assertFalse(ConfigurationAuthority(self.root).active())

@@ -152,13 +152,13 @@ class SetupTests(unittest.TestCase):
     def test_failed_repository_verification_stops_checking_without_starting_workers(self):
         self.connected()
         service, engine, resets = self.service()
-        service.github_class.return_value.protection_report.return_value = {'branch':'main','available':True,'requirements':[{'id':'stale','label':'Dismiss approvals when code changes','passed':False,'detail':'Enable stale-approval dismissal.'}]}
+        service.github_class.return_value.protection_report.return_value = {'branch':'main','available':False,'requirements':[{'id':'readable','label':'Observe GitHub rules','passed':False,'detail':'Repository rules could not be read.'}]}
         self.setup.queue('check', self.setup.view()['revision'])
         for _ in range(4): service.tick()
         view = self.setup.view()
         self.assertIsNone(view['operation'])
         self.assertIn('Repository protection needs attention', view['error'])
-        self.assertEqual(view['repository_check']['requirements'][0]['id'], 'stale')
+        self.assertEqual(view['repository_check']['requirements'][0]['id'], 'readable')
         self.assertFalse(view['can_start'])
         self.assertFalse(engine)
         self.assertFalse(resets)
@@ -166,7 +166,7 @@ class SetupTests(unittest.TestCase):
     def test_failed_repository_verification_marks_the_github_check_failed(self):
         self.connected()
         service, _, _ = self.service()
-        service.github_class.return_value.protection_report.return_value = {'branch':'main','available':True,'requirements':[{'id':'stale','label':'Dismiss approvals when code changes','passed':False,'detail':'Enable stale-approval dismissal.'}]}
+        service.github_class.return_value.protection_report.return_value = {'branch':'main','available':False,'requirements':[{'id':'readable','label':'Observe GitHub rules','passed':False,'detail':'Repository rules could not be read.'}]}
         self.setup.queue('check', self.setup.view()['revision'])
         for _ in range(4): service.tick()
         self.assertEqual(self.setup.view()['checks']['github'], 'failed')

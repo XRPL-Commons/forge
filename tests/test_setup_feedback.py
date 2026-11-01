@@ -16,7 +16,7 @@ class FeedbackTests(unittest.TestCase):
         data['operation']=None
         self.assertIsNone(Onboarding.activity(data))
 
-    def test_report_lists_only_actual_gaps_and_preserves_the_gate(self):
+    def test_report_observes_owner_rules_and_blocks_unreadable_results(self):
         settings=Mock()
         settings.load.return_value={'repositories': [], 'connections':{role:{'app_id':app_id} for app_id,role in
             enumerate(('build','review','audit','controller'),1)}}
@@ -27,10 +27,13 @@ class FeedbackTests(unittest.TestCase):
         github.call=Mock(return_value=protection)
         github.pages=Mock(return_value=[])
         report=github.protection_report({'repo_id':10}, {'base_ref':'main'})
-        self.assertEqual({r['id'] for r in report['requirements']},{'reviews','stale'})
+        self.assertEqual({r['id'] for r in report['requirements']},{'readable'})
+        self.assertEqual(report['required_approvals'], 2)
+        self.assertNotIn('bypass', report)
         self.assertTrue(all(r['passed'] for r in report['requirements']))
         self.assertTrue(github.protections({'repo_id':10}, {'base_ref':'main'}))
         github.call.side_effect=GitHubUnavailable('unreadable',status=403)
         report=github.protection_report({'repo_id':10}, {'base_ref':'main'})
         self.assertFalse(report['available'])
+        self.assertFalse(github.protections({'repo_id':10}, {'base_ref':'main'}))
         self.assertEqual([r['id'] for r in report['requirements']],['readable'])
