@@ -17,27 +17,22 @@ credential configuration, while the Forge interface receives only repository
 identity, instance/generation, capabilities and configuration revisions.
 
 `Preparation` combines current Forge requirements with GitHub repository state.
-Plans have a ten-minute lifetime and pin App/installation IDs and the exact
-repository and merge-check scope. Applying a plan reconstructs it from fresh
-observations. Roles sharing the Forge App use one installation grant. Grant calls
-add one repository; rule writes create an additive review baseline. With scope
-`all`, the baseline also requires `forge/merge-policy` from the exact Forge App.
-Single-App qualification verifies that check alongside existing review rules;
-installations still using separate Apps retain their previous qualification. Existing
-effective review rules can receive a bypass-only update that preserves their
-rules and current actors. Classic protection receives only review bypass
-allowances. Organization rules require organization admin authority. A ruleset
-that also enforces signatures needs an operator to separate that rule first;
-Forge does not add a signing bypass. A baseline name collision still requires
-independent verification or operator resolution. Migrating to one App can therefore
-report `needs_setup` when an older baseline lacks the pinned merge-policy check.
-Setup does not overwrite that existing ruleset.
+Plans have a ten-minute lifetime and pin App/installation IDs, repository identity
+and the Forge configuration revision. Applying a plan reconstructs its App access
+actions from fresh observations. Roles sharing the Forge App use one installation
+grant; each grant adds only the selected repository.
 
-A failed grant returns a GitHub browser link. An uncertain rule write returns
-`write_unconfirmed`; the engine does not retry it automatically. Subsequent setup
-can verify effective rules before proposing another change. Calling `setup`
+Forge's supervisor enforces CI, independent Review and Audit, and the selected
+human/auto policy before its own merges. Setup observes existing GitHub rules
+without creating or repairing rulesets, changing bypass actors, or requiring
+GitHub Pro. The GitHub merge API still enforces the repository owner's rules.
+A merge refused by those rules reports its blocker on the issue.
+
+A failed grant returns a GitHub browser link. Resuming independently refreshes
+App access before deciding whether another grant is needed. Calling `setup`
 without `apply=True` performs reads only. Activation additionally requires
 `enable=True`, an activation capability, and Forge's own readiness checks.
+Old journals preserve attempted rule writes as history; resume never replays them.
 
 ## Authenticated transport contract
 
@@ -45,13 +40,13 @@ The engine's `forge` argument supplies:
 
 - `authorize(instance, generation, target, capability)`; verify the current grant,
   operator, reset generation and repository scope. Reject before any requested
-  effect. Baseline capabilities are `repositories:read`, `repositories:prepare`,
+  effect. Default capabilities are `repositories:read`, `repositories:prepare`,
   and `repositories:activate`. Planning and merge-policy mutations require the
   separately approved `repositories:triage` and `repositories:policy` grants.
 - `requirements(target)`; return the closed contract produced by
   `forge.repository_requirements.describe` after authorizing the target.
 - `verify(target, revision)`; authorize and schedule independent App access and
-  protection checks. It may return while work continues; requirements then
+  observations of existing GitHub rules. It may return while work continues; requirements then
   indicate incomplete verification.
 - `enable(target, revision)`; authorize activation and call the existing
   `RepositorySetup.enable` path, which rechecks server-side readiness and revision.
@@ -79,7 +74,7 @@ previously undiscovered repository reaches activation, repeat setup avoids
 additional administrative writes, and synthetic operator secrets stay out of
 Forge calls, persisted server files and result objects. It also exercises plan
 editing, changed identities, expired plans, capability restrictions, revocation,
-stronger rules, collisions, uncertain writes and subprocess failures.
+existing owner rules, interrupted App grants and subprocess failures.
 
 ## Repository merge policy
 
@@ -162,7 +157,7 @@ forge install --ssh anvil --resume --json
 `forge commands` includes the closed `installation_commands.intent_schema`.
 The intent records multiple repositories, per-repository human/auto merge policy
 (default human in the interview), workflow-edit permission, provider login kinds,
-rules repair preference, operators, App owner, hostname and a source revision
+operators, App owner, hostname and a source revision
 resolved once. It accepts no credentials. Resume preserves the saved inputs and
 observes server progress after handoff without replaying bootstrap. Local journals are private and each stage records its
 input digest, status, safe receipt and whether a write is still uncertain.
@@ -193,14 +188,14 @@ and checks repositories while the operator connects Codex in the web page.
 Human CLI use returns at this handoff; closing it does not stop setup. Agents
 can follow through handover with `--json --wait SECONDS`. Use
 `forge install --ssh HOST --status --refresh --json` to reconcile server progress
-without applying installation; plain `--status` remains offline. A repository
-repair requiring personal GitHub administrator access stays local and scoped to
-the saved plan.
+without applying installation; plain `--status` remains offline. GitHub App
+registration and repository grants use local administrative access. Forge setup
+does not change repository rules.
 
 The private GitHub App must be owned by the account that owns the selected
 repositories. For personal repositories, choose your personal GitHub login as
-the App owner. Choose `optional` protection to use private repositories on
-GitHub Free. A private organization App cannot discover personal repositories.
+the App owner. Private repositories on GitHub Free are supported without a
+protection-mode setting. A private organization App cannot discover personal repositories.
 
 If only preflight has run, revise the saved plan with
 `forge install --ssh anvil --replace-plan` and answer the interview again, or
@@ -241,29 +236,20 @@ memory limit; the quota is a ceiling, not a memory reservation. The trusted
 frontend keeps it mounted through stopped-worker capture. A full host restart
 loses these temporary bytes, so recovery must retry the physical job.
 
-### Optional GitHub branch protection
+## Existing GitHub rules
 
-Private personal repositories can use Forge without GitHub Pro. Choose
-`optional` for that repository. Forge still runs Review and Audit and enforces
-its merge policy before its own merges. GitHub does not enforce Forge's checks
-for other writers. Existing GitHub rules remain in effect and are never removed
-or repaired by optional setup.
+Forge owns the decision to merge its work after its checks pass. Repository
+owners independently manage branch protection and rulesets on GitHub. Those
+rules can require additional reviews, CI results, signatures or other conditions.
+Forge reports a refused merge and retries when the blocker is resolved.
 
-A connection needs the separately approved `--policy` grant to change this
-setting. Preview and apply a repository setup with:
+The repository's Review and Audit scope remains `all` by default, with `forge`
+for Forge-created pull requests only. This scope controls Forge's workers; setup
+does not install a required GitHub check for it. Human pull requests remain under
+their author's control.
 
-```sh
-forge repo plan OWNER/REPO --server https://forge.example --github-protection optional
-forge repo setup OWNER/REPO --server https://forge.example --github-protection optional --apply --enable
-```
-
-To change only the setting, use `forge repo policy OWNER/REPO --server URL --github-protection optional`. Use `forge repo inspect OWNER/REPO --server URL`
-to read the effective setting. Pass `required` to restore the requirement;
-repository checks must then confirm GitHub protection before work resumes.
-
-For `forge install --intent-file`, each repository accepts
-`"github_protection": "optional"`. Omission keeps the existing `required`
-default and existing saved intent identity. The human interview offers the same
-choice. An installation-owned smoke repository uses optional protection when
-all selected repositories explicitly choose optional; otherwise it requires
-protection. A selected smoke repository uses its own setting.
+`--github-protection`, `rules_repair`, and repository `github_protection` intent
+fields are retired. Older saved installation values remain part of their
+historical identity so setup can resume, but authorize no GitHub rule changes.
+Previously installed Forge rulesets are not silently removed. Their cleanup is
+an explicit repository-owner decision.

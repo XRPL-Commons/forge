@@ -229,28 +229,20 @@ digest for production as well.
 
 ## GitHub gates
 
-Set up the four Apps as described in [GitHub settings](github-settings.md).
-The controller additionally needs **Administration: read** to verify branch
-protections; it does not need an administration write grant. Workers receive fresh,
-repository-scoped installation tokens. Review, Audit and Recovery jobs receive
-read-only tokens; the supervisor publishes reviews/checks using the corresponding
-role App after validating the result. No worker receives the controller's token.
+Set up the Forge App as described in [GitHub settings](github-settings.md).
+Administration read permits observing repository protections; setup does not
+request Administration write. Workers run without GitHub credentials. The
+supervisor publishes their verified output and performs merge requests.
 
-Forge operates alongside developers. The default branch baseline requires two
-approving reviews, stale-approval dismissal, and a controller App bypass through
-pull requests. A known missing controller bypass blocks setup and dispatch.
-Repository owners choose all
-other protection settings, including required CI, administrator enforcement,
-bypass actors and push permissions. No exclusive Controller access, global
-Forge status-check requirement or strict/up-to-date setting is required.
+Repository admission verifies App access and fresh rule observations. No minimum
+GitHub approval count, stale-approval setting or App bypass is required. GitHub
+plan restrictions on rules do not prevent using private repositories.
 
-Forge publishes and independently verifies its own App-bound review/audit checks
-for each accepted candidate. Other contributors' approvals cannot stand in for
-those technical roles. The supervisor checks the shared review baseline before
-dispatch and merge. The reader combines classic branch protection and active rulesets, including
-inherited organization rules. GitHub may hide bypass actors; their review remains
-an operator responsibility. Other repository constraints still apply; a review
-baseline pass does not certify all merge requirements or merge-queue support.
+Forge independently verifies its App-bound Review and Audit checks, CI and any
+required human approval for each accepted candidate. Other contributors'
+approvals cannot replace those technical verdicts. Existing classic protection
+and active rulesets, including organization rules, are read without modification.
+GitHub applies owner protections to the final merge request.
 
 External merges are observed as completion and any active runner is cleaned up.
 Target-branch changes invalidate prior evidence and restart review. A PR changed
@@ -269,8 +261,7 @@ Human approval must follow acceptance of the current candidate and still be
 approved on its exact head. Bots and the PR author do not count. Head, base,
 requirements or policy changes invalidate earlier candidate evidence. GitHub's
 own protections make the final decision; the merge request includes the expected
-head SHA through GitHub's ordinary merge API, using the controller's configured
-pull-request bypass for the review baseline.
+head SHA through GitHub's ordinary merge API.
 
 ## Deployment observation
 
@@ -423,16 +414,11 @@ mean `human`. The old global `human_required` field is retained for legacy impor
 and the retired JSON supervisor; live SQLite admission uses the repository map.
 The global `merge_enabled` switch still gates every merge.
 
-`repository_merge_check_scopes` maps the same repository ID strings to `all`
-(the default when missing) or `forge`. With `all`, Forge publishes
-`forge/merge-policy` on every open pull request: a PR Forge did not create
-passes it (Forge review and audit do not apply; the repository's own reviews,
-CI and signing rules still decide), while a Forge-created PR passes only through
-the merge controller's verified gates. A commit shared with a Forge candidate
-keeps the merge controller's verdict. The downloaded baseline ruleset then also
-requires `forge/merge-policy` from the Forge App. With `forge`, human PRs carry
-no Forge check and the ruleset does not require it. The scope is outside the
-candidate policy hash, so changing it never withdraws a pending merge.
+`repository_merge_check_scopes` maps repository ID strings to `all` (the default)
+or `forge`. With `all`, independent Forge Review and Audit also run on human PRs;
+with `forge`, review coverage is limited to Forge-created PRs. This does not create
+required GitHub checks or govern merges performed outside Forge. Forge's own
+merges always require its supervisor gates, regardless of review coverage.
 
 `policy(config, repository_id, repository_name=...)` returns a candidate policy
 bound to the repository ID, its effective mode, human reviewer eligibility,

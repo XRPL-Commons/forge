@@ -22,9 +22,7 @@ class InstallSmoke:
         if not apply:
             return {'status': 'smoke_pending', 'repository': target, 'reason': 'Apply prepares the smoke repository and its issue.'}
         selected = next((row for row in self.state['intent']['repositories'] if row['target']['id'] == target['id']), None)
-        mode = selected.get('github_protection') if selected else ('optional' if all(row.get('github_protection') == 'optional' for row in self.state['intent']['repositories']) else None)
-        prepared = self.factory.prepare_repository(target['name'], apply=True, initial=False,
-                                                   repair=self.state['intent']['rules_repair'], github_protection=mode)
+        prepared = self.factory.prepare_repository(target['name'], apply=True, initial=False)
         if prepared['status'] != 'repository_ready':
             return prepared
         response = self.factory.call('smoke_issue', intent_digest=self.state['inputs_digest'], repository=target,

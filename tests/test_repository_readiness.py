@@ -13,6 +13,7 @@ from forge.factory.observation_controller import ObservationController
 from forge.factory.github import GitHubUnavailable
 from forge.factory.repository_readiness import RepositoryReadiness
 from forge.factory.store_views import PipelineViews
+from forge.repository_policy import protection_ready
 from forge.repository_setup import CHECK_TIMEOUT, RepositorySetup, observation_key
 from forge.settings import Settings, digest
 from forge.store.delivery import Delivery
@@ -64,7 +65,7 @@ class RepositoryReadinessTests(unittest.TestCase):
     def save_report(self, *, revision=None):
         RepositorySetup(self.settings).save_observation(1, {'repositories': {'1': dict(name=self.repo['name'],
             revision=revision or observation_key(self.settings.load(), self.repo), started_at=self.now,
-            status='ready' if self.report.get('available') and self.report.get('bypass', {}).get('status') != 'missing' else 'needs_setup',
+            status='ready' if protection_ready(self.report) else 'needs_setup',
             report=deepcopy(self.report))}})
 
     def command(self, unit='u1'):
@@ -74,12 +75,12 @@ class RepositoryReadinessTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             return [dict(row) for row in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL', (unit,))]
 
-    def test_missing_bypass_is_actionable_for_each_grouped_member_without_reserving(self):
+    def test_unreadable_rules_are_actionable_for_each_grouped_member_without_reserving(self):
         proposal = dict(repository_id=1, base_branch='main', members=self.pins, dependencies=[], existing_prs=[], rationale='One change')
         delivery = Delivery(self.store, clock=lambda: self.now)
         delivery.compose(Command('compose', 'operator', 'batch', 1), **proposal,
                          approval={'approved': True, 'composition_hash': delivery.composition_hash(**proposal)})
-        self.report['bypass'] = {'status': 'missing'}; self.save_report()
+        self.report['requirements'] = [{'id': 'readable', 'passed': False}]; self.save_report()
         self.assertEqual(self.dispatch.step('batch')['reason'], 'repository_setup')
         views = PipelineViews(self.store, runtime=self.config, clock=lambda: self.now)
         for identifier in ('i1', 'i2'):
@@ -87,7 +88,7 @@ class RepositoryReadinessTests(unittest.TestCase):
             self.assertTrue(row['setup_needed'], row)
             self.assertEqual(row['setup_url'], '/settings/repositories/1?setup=1')
             self.assertEqual(row['reason_code'], 'repository_setup')
-            self.assertEqual(row['summary']['plain'], 'GitHub repository rules need attention. Open Repository setup to see which requirements need changes.')
+            self.assertEqual(row['summary']['plain'], 'GitHub repository rules could not be verified. Open Repository setup and check again.')
             self.assertEqual(row['status'], 'attention')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 0)
@@ -124,12 +125,12 @@ class RepositoryReadinessTests(unittest.TestCase):
 
     def test_live_dispatch_failure_persists_report_then_fresh_observation_resumes(self):
         # Saved readiness is positive; the actual final remote read finds a repair needed.
-        self.report['bypass'] = {'status': 'missing'}
+        self.report['requirements'] = [{'id': 'readable', 'passed': False}]
         self.assertEqual(self.dispatch.step('u1')['reason'], 'repository_setup')
-        self.assertEqual(RepositorySetup(self.settings).read()['repositories']['1']['report']['bypass']['status'], 'missing')
+        self.assertEqual(RepositorySetup(self.settings).read()['repositories']['1']['report']['requirements'][0]['passed'], False)
         self.now += 1
         self.life.pause(self.command())
-        self.report['bypass'] = {'status': 'ready'}; self.report['observed_at'] = self.now; self.save_report()
+        self.report['requirements'] = [{'id': 'readable', 'passed': True}]; self.report['observed_at'] = self.now; self.save_report()
         observer = ObservationController(self.store, self.github, admission=lambda item: self.settings.admission(item['repo'])['allowed'],
                                         readiness=self.readiness, clock=lambda: self.now)
         observer.step('u1')
@@ -186,7 +187,7 @@ class RepositoryReadinessTests(unittest.TestCase):
     def test_refresh_does_not_override_failed_protection(self):
         setup = RepositorySetup(self.settings)
         for report, reason in [
-                ({**self.report, 'bypass': {'status': 'missing'}}, 'protection_needs_setup'),
+                ({**self.report, 'requirements': [{'id': 'readable', 'passed': False}]}, 'protection_needs_setup'),
                 ({**self.report, 'branch': None}, 'protection_unavailable'),
                 ({**self.report, 'branch': 'release'}, 'protection_branch_changed')]:
             with self.subTest(reason=reason):
@@ -206,10 +207,10 @@ class RepositoryReadinessTests(unittest.TestCase):
         self.assertEqual(value['reason'], 'protection_unavailable')
 
     def test_refresh_expiry_rejects_previously_evaluated_gate_release(self):
-        self.report['bypass'] = {'status': 'missing'}
+        self.report['requirements'] = [{'id': 'readable', 'passed': False}]
         self.save_report()
         self.readiness.observe('u1')
-        self.report['bypass'] = {'status': 'ready'}
+        self.report['requirements'] = [{'id': 'readable', 'passed': True}]
         started_at = self.now
         RepositorySetup(self.settings).save_observation(1, {'repositories': {'1': dict(name=self.repo['name'],
             revision=observation_key(self.settings.load(), self.repo), started_at=started_at,
@@ -252,7 +253,7 @@ class RepositoryReadinessTests(unittest.TestCase):
         github = Mock()
         github.target.return_value = 'main'
         github.pages.return_value = []
-        github.protection_report.return_value = {**self.report, 'bypass': {'status': 'missing'}}
+        github.protection_report.return_value = {**self.report, 'requirements': [{'id': 'readable', 'passed': False}]}
         setup = RepositorySetup(self.settings, github_class=lambda *a, **k: github)
         self.life.pause(self.command())
         self.assertTrue(setup.check(1))
@@ -273,14 +274,14 @@ class RepositoryReadinessTests(unittest.TestCase):
                             phase='running', container_id='owned-container')
         before = ExecutionQueries(self.store).job(identifier)
         self.now = 401
-        self.report['bypass'] = {'status': 'missing'}; self.save_report()
+        self.report['requirements'] = [{'id': 'readable', 'passed': False}]; self.save_report()
         self.readiness.observe('u1')
         stale = ExecutionQueries(self.store).job(identifier)
         self.assertFalse(stale['fenced'])
         self.assertEqual(stale['fencing_generation'], before['fencing_generation'])
         self.assertEqual(stale['phase'], 'running')
         self.assertEqual(json.loads(self.gates()[0]['details_json'])['reason'], 'protection_needs_setup')
-        self.report['bypass'] = {'status': 'ready'}; self.save_report()
+        self.report['requirements'] = [{'id': 'readable', 'passed': True}]; self.save_report()
         self.readiness.observe('u1')
         self.assertEqual(self.gates(), [])
         executions.collect(self.command(), identifier, execution_fence=job['execution_fence'], capture={'result': None, 'logs': ''})
@@ -290,8 +291,8 @@ class RepositoryReadinessTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0], 0)
 
     def test_gate_release_rejects_config_access_or_report_change_after_evaluation(self):
-        self.report['bypass'] = {'status': 'missing'}; self.save_report(); self.readiness.observe('u1')
-        self.report['bypass'] = {'status': 'ready'}; self.save_report()
+        self.report['requirements'] = [{'id': 'readable', 'passed': False}]; self.save_report(); self.readiness.observe('u1')
+        self.report['requirements'] = [{'id': 'readable', 'passed': True}]; self.save_report()
         for kind in ('config', 'access', 'report'):
             with self.subTest(kind=kind):
                 authority = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
@@ -302,14 +303,14 @@ class RepositoryReadinessTests(unittest.TestCase):
                     access = self.settings.observation(); access['roles']['controller']['status'] = 'unavailable'
                     self.settings.save_observation(access)
                 else:
-                    self.report['bypass'] = {'status': 'missing'}; self.save_report()
+                    self.report['requirements'] = [{'id': 'readable', 'passed': False}]; self.save_report()
                 with self.assertRaisesRegex(VersionConflict, 'readiness changed'):
                     self.life.observe_repository_readiness(self.command(), **authority)
                 self.assertEqual([gate['code'] for gate in self.gates()], ['repository_setup'])
                 # Restore the real access and setup observations for the next race.
                 config = self.settings.load(); config['connections'] = configured()['connections']
                 self.settings.save_config(config); self.settings.refresh()
-                self.report['bypass'] = {'status': 'ready'}; self.save_report()
+                self.report['requirements'] = [{'id': 'readable', 'passed': True}]; self.save_report()
 
     def test_access_expiry_rejects_release_and_diagnostic_exemption_without_database_change(self):
         # Access was observed at100 (expires1000); protection is newer.

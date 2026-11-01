@@ -113,7 +113,8 @@ forge server identity apps --ssh HOST --source /absolute/forge/source --root /ab
 This preserves retired App identities and runs a fresh repository protection
 check. If the factory is paused or another refresh is running, the response shows
 `protection_check: pending`; repeat the step once that condition clears. A
-completed check can still report repository rules that need setup. Configure the
+completed check can still report access or observation failures. It does not
+require a Forge baseline or alter existing GitHub rules. Configure the
 Forge App's sign-in callback, then run the `sign-in` step
 with the same host options. It prompts privately for that App's client secret;
 automation can use `--secret-stdin`. Secrets never belong in command arguments.

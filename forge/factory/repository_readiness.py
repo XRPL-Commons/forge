@@ -66,7 +66,7 @@ class RepositoryReadiness:
             result['reason'] = 'protection_branch_changed'
         elif report.get('repo_id', row['id']) != row['id']:
             result['reason'] = 'protection_identity_changed'
-        elif saved.get('status') != 'ready' and not refreshing or not protection_ready(report):
+        elif not protection_ready(report):
             result['reason'] = 'protection_needs_setup'
         else:
             result.update(allowed=True, reason='implementation_ready')

@@ -172,8 +172,8 @@ const repoItems = computed(() => repositories.value.map(row => ({
 const checking = computed(() => Boolean(state.value?.operation))
 const problem = computed(() => {
   if (!state.value) return null
-  const needsRules = Boolean(state.value.repository_setup) && !state.value.repository_setup!.protection_ready
-  return needsRules ? null : repositoryProblem(state.value)
+  const needsRepositoryCheck = Boolean(state.value.repository_setup) && !state.value.repository_setup!.protection_ready
+  return needsRepositoryCheck ? null : repositoryProblem(state.value)
 })
 const checkRows = computed(() => (state.value ? technicalChecks(state.value) : []))
 const checksSuffix = computed(() => (state.value && checksPassed(state.value) ? ' — coding accounts and workers passed' : ''))
@@ -319,8 +319,8 @@ function activityFor(target: string): string | null {
           </div>
         </div>
 
-        <!-- Repository protection problem (contracts §3.8, step 3 extras). -->
-        <section v-if="problem" aria-label="Repository protection requirements" class="mt-6 overflow-hidden rounded-xl border border-[#74603e] bg-panel">
+        <!-- Repository verification problem (contracts §3.8, step 3 extras). -->
+        <section v-if="problem" aria-label="Repository verification requirements" class="mt-6 overflow-hidden rounded-xl border border-[#74603e] bg-panel">
           <div class="flex items-center gap-4 border-b border-line px-5 py-4">
             <div class="min-w-0 flex-1">
               <h2 class="text-lg">{{ problem.title }}</h2>

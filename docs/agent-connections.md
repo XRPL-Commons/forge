@@ -126,8 +126,7 @@ forge repo plan OWNER/REPO --server https://forge.example --json
 forge repo setup OWNER/REPO --server https://forge.example --apply --enable --json
 ```
 
-`--apply` allows local App repository grants and the additive Forge review
-baseline. `--enable` explicitly allows starting automation after verification;
+`--apply` allows local App repository grants. `--enable` explicitly allows starting automation after verification;
 without it setup stops at readiness. Setup without `--apply` only plans.
 The local broker uses fixed GitHub operations and preserves existing grants,
 unrelated rules and stronger policy. App identities are pinned on the connection's
@@ -156,9 +155,9 @@ configuration revision. Concurrent changes return a conflict.
 
 `--wait` bounds each operation's wait (default 120 seconds, maximum 600); `--wait 0`
 returns immediately. A pending result includes an operation ID and can be resumed.
-An uncertain ruleset create is independently verified before proceeding. If it
-cannot be verified, `write_unconfirmed` links to GitHub for inspection; the CLI
-does not create a duplicate. Do not delete the journal to retry uncertain writes.
+Saved journals retain historical rule-write entries, but resumed setup does not
+replay them. The CLI no longer creates or repairs GitHub rules. Keep journals so
+that pending App grants and server operations retain their original bindings.
 
 `ok: true` means a valid result, which can still be pending or blocked. Check
 `status`: `ready` and `enabled` are the successful setup outcomes. Errors include

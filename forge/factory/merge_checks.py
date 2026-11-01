@@ -10,14 +10,6 @@ from .github import GitHubUnavailable
 MERGE_POLICY = 'forge/merge-policy'
 
 
-def merge_policy_rule(app_id):
-    if type(app_id) is not int or app_id <= 0:
-        raise ValueError('The Forge App ID is required to pin forge/merge-policy')
-    return {'type': 'required_status_checks', 'parameters': {
-        'strict_required_status_checks_policy': False,
-        'required_status_checks': [{'context': MERGE_POLICY, 'integration_id': app_id}]}}
-
-
 class ReviewPullsController:
     """GitHub reads outside SQL; store admission never publishes a passing check."""
     def __init__(self, store, github, config, settings=None, *, clock=time.time):

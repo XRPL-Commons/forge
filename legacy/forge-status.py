@@ -567,12 +567,6 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected repository identity, runtime revision and review scope')
                 result = RepositorySetup(settings_service()).review_scope(**value)
                 self._send(json.dumps({**result, 'ok': True, 'controls_token': self._action_token}));return
-            if self.path == '/api/repositories/github-protection':
-                from forge.repository_setup import RepositorySetup
-                if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'mode'}:
-                    raise ValueError('Expected repository identity, current revision and GitHub protection requirement')
-                result = RepositorySetup(settings_service()).github_protection(**value)
-                self._send(json.dumps({**result, 'ok': True, 'controls_token': self._action_token}));return
             if self.path == '/api/repositories/mirror':
                 from forge.repository_setup import RepositorySetup
                 if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'denied_repositories'}:
@@ -834,19 +828,15 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,**result}))
             except (ValueError,KeyError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Execution output unavailable'}))
-        elif u.path in ('/api/repositories','/api/repositories/ruleset'):
+        elif u.path == '/api/repositories':
             from forge.repository_setup import RepositorySetup
             try:
                 query=parse_qs(u.query)
-                allowed={'repo_id','revision'} if u.path.endswith('/ruleset') else {'repo_id'}
+                allowed={'repo_id'}
                 if set(query)-allowed or any(len(v)!=1 for v in query.values()):raise ValueError('Invalid repository request')
                 repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None
                 service=RepositorySetup(settings_service())
-                if u.path.endswith('/ruleset'):
-                    if repo_id is None or 'revision' not in query:raise ValueError('Select and check a repository first')
-                    rules,filename=service.download(repo_id,query['revision'][0])
-                    self._send(json.dumps(rules,indent=2)+'\n','application/json',{'Content-Disposition':'attachment; filename="'+filename+'"'})
-                else:self._send(json.dumps({'ok':True,**service.view(repo_id),'controls_token':self._action_token}))
+                self._send(json.dumps({'ok':True,**service.view(repo_id),'controls_token':self._action_token}))
             except (OSError,ValueError,TypeError,KeyError):
                 self._send(json.dumps({'ok':False,'reason':'Repository setup changed or is unavailable. Check again.'}))
         elif u.path == '/api/settings':

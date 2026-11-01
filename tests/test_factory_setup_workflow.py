@@ -106,23 +106,14 @@ class SetupStageTests(unittest.TestCase):
         local.create_baseline.assert_not_called()
         local.grant_repository.assert_not_called()
 
-    def test_optional_repository_preparation_configures_policy_without_rules_write(self):
-        from forge.repository_setup import RepositorySetup
-        self.installations[:] = [{'id':100+i,'app_id':i,'account':{'login':'example'}} for i in range(1,5)]
-        self.github.repository.return_value = {'id':10,'name':'example/project','branch':'main','admin':True}
-        remote = Mock()
-        remote.return_value.target.return_value = 'main'
-        remote.return_value.pages.return_value = []
-        remote.return_value.protection_report.return_value = {'branch':'main','available':True,
-            'requirements':[{'id':'readable','passed':True}], 'bypass':{'status':'not_required'}}
-        with patch('forge.installation_setup.RepositorySetup',
-                   side_effect=lambda settings: RepositorySetup(settings, github_class=remote)):
-            result = self.factory.prepare_repository('example/project', apply=True, github_protection='optional')
-        self.assertEqual(result['status'], 'repository_ready', result)
-        self.assertEqual(self.setup.settings().load()['repositories'][0]['github_protection'], 'optional')
+    def test_retired_protection_option_is_rejected_before_host_or_github_actions(self):
+        with patch.object(self.factory, 'call') as call:
+            with self.assertRaises(SetupError) as error:
+                self.factory.prepare_repository('example/project', apply=True, github_protection='optional')
+        self.assertEqual(error.exception.code, 'github_protection_retired')
+        call.assert_not_called()
         self.github.create_baseline.assert_not_called()
         self.github.rulesets.assert_not_called()
-        self.assertEqual(self.setup.read()['phase'], 'setup')
 
     def test_secret_is_not_saved_in_client_journal_and_json_browser_flow_is_handoff(self):
         secret = 'synthetic-provider-credential-123456789'

@@ -38,10 +38,10 @@ def validate_plan(plan, now):
     require(plan['environment'] in ('standard', 'full'), 'invalid_environment')
     require(isinstance(plan['repositories'], list) and 1 <= len(plan['repositories']) <= 20, 'invalid_repositories')
     for row in plan['repositories']:
-        fields(row, ('target', 'merge_policy', 'allow_workflow_edits', 'github_protection'))
+        fields(row, {'target', 'merge_policy', 'allow_workflow_edits'} | ({'github_protection'} if 'github_protection' in row else set()))
         repository(row['target'])
         require(row['merge_policy'] in ('auto', 'human') and type(row['allow_workflow_edits']) is bool
-                and row['github_protection'] in ('required', 'optional'), 'invalid_repository_policy')
+                and row.get('github_protection', 'optional') in ('required', 'optional'), 'invalid_repository_policy')
     selected = [row['target'] for row in plan['repositories']]
     require(len({row['id'] for row in selected}) == len(selected)
             and len({row['name'].lower() for row in selected}) == len(selected), 'invalid_repositories')
@@ -101,7 +101,7 @@ class InstallationPrepare:
             require(not any(row['allow_workflow_edits'] for row in plan['repositories']) or allowed.get('workflow_edits') is True,
                     'workflow_permission_not_consented')
             stages = {'environment': {'label': 'Worker environment', 'status': 'pending'},
-                      'settings': {'label': 'Apply approved repository choices', 'status': 'pending'},
+                      'settings': {'label': 'Confirm approved repositories', 'status': 'pending'},
                       'access': {'label': 'Refresh GitHub App access', 'status': 'pending'}}
             for provider in plan['providers']:
                 stages['account.' + provider['id']] = {'label': 'Connect ' + provider['id'], 'status': 'pending'}
@@ -233,16 +233,6 @@ class InstallationPrepare:
         settings = self.setup.settings()
         if value['stages']['settings']['status'] != 'complete':
             self._stage(value, 'settings', 'running')
-            policies = RepositorySetup(settings)
-            for target in self.targets(plan):
-                selected = next((r for r in plan['repositories'] if r['target'] == target), None)
-                mode = selected['github_protection'] if selected else ('optional' if all(
-                    r['github_protection'] == 'optional' for r in plan['repositories']) else 'required')
-                policy = policies.protection_policy(target)
-                if policy['mode'] != mode or policy['source'] != 'explicit':
-                    with identity_effect_lock(self.store):
-                        self._guard(value)
-                        policies.set_github_protection(target, policy['revision'], mode)
             self._stage(value, 'settings', 'complete')
         if value['stages']['access']['status'] != 'complete':
             self._stage(value, 'access', 'running')

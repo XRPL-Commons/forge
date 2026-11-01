@@ -66,7 +66,7 @@ export function githubLink(url: string | null | undefined): string | undefined {
 }
 
 export function installationError(code: string): string {
-  return ({ repository_changed: 'The selected repository changed. Check setup before continuing.', readiness_failed: 'A readiness check failed. Check the setup details before retrying.', setup_changed: 'The installation changed. Refresh to load its current status.', smoke_retry_changed: 'The test status changed. Refresh before retrying.', merge_unverified: 'The test merge has not been verified on GitHub.', repository_not_ready: 'A selected repository still needs setup.', repository_policy_changed: 'Repository review rules changed. Check them before continuing.', installation_failed: 'Setup could not continue. Review the current stage and retry.' } as Record<string, string>)[code] ?? code
+  return ({ repository_changed: 'The selected repository changed. Check setup before continuing.', readiness_failed: 'A readiness check failed. Check the setup details before retrying.', setup_changed: 'The installation changed. Refresh to load its current status.', smoke_retry_changed: 'The test status changed. Refresh before retrying.', merge_unverified: 'The test merge has not been verified on GitHub.', repository_not_ready: 'A selected repository still needs setup.', repository_policy_changed: 'Repository merge policy changed. Check it before continuing.', installation_failed: 'Setup could not continue. Review the current stage and retry.' } as Record<string, string>)[code] ?? code
 }
 
 export function accountNeedsOperator(view: InstallationView): boolean {

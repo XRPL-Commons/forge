@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 
-from .contracts import NAME, SetupError, baseline, positive, require, validate_branch
+from .contracts import NAME, SetupError, positive, require, validate_branch
 
 LIMIT = 4 * 1024 * 1024
 
@@ -190,11 +190,8 @@ class GitHub:
         raise SetupError('github_inventory_limit', 'Too many rulesets to plan safely.')
 
     def create_baseline(self, name, branch, controller_app_id, merge_check_scope=None):
-        require(isinstance(name, str) and NAME.fullmatch(name))
-        value = self._request('POST', '/repos/' + name + '/rulesets', baseline(branch, controller_app_id, merge_check_scope))
-        require(isinstance(value, dict) and positive(value.get('id')), 'github_write_unconfirmed',
-                'The rule write is unconfirmed; inspect GitHub before retrying.')
-        return {'id': value['id']}
+        raise SetupError('github_protection_retired',
+                         'Forge no longer creates GitHub rulesets. Its supervisor enforces merge requirements.')
 
     def grant_repository(self, installation_id, repository_id):
         require(positive(installation_id) and positive(repository_id))

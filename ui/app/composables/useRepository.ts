@@ -2,8 +2,7 @@ import { ForgeApiError } from '~/composables/useForgeApi'
 import type { FactoryView } from '~/utils/factory'
 import {
   accessRows, actionMessage, deploymentCard, displayStatus, hintText,
-  protectionReport, requirements,
-  rulesetHref,
+  protectionReport,
   type FactoryDeployment, type RepositoriesView, type RepositoryRow,
 } from '~/utils/repositories'
 
@@ -19,7 +18,6 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   // Any POST is in flight (check, enable): polling yields until it lands.
   const busy = ref(false)
   const enabling = ref(false)
-  const downloaded = ref(false)
   const error = ref('')
   const query = ref('')
   const refreshing = ref(false)
@@ -68,7 +66,6 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   // A different repository is a different page: drop the per-repository state
   // and load again immediately instead of waiting for the next tick.
   watch(repoId, async () => {
-    downloaded.value = false
     autoCheckKey.value = ''
     autoCheckRetryAt = 0
     error.value = ''
@@ -96,7 +93,6 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   const shown = computed(() => displayStatus(row.value))
   const displayReady = computed(() => shown.value === 'ready')
   const ready = computed(() => row.value?.protection_status === 'ready')
-  const prepared = computed(() => ['ready', 'needs_setup'].includes(shown.value ?? ''))
 
   const pickerRows = computed(() => {
     const needle = query.value.trim().toLowerCase()
@@ -104,13 +100,9 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   })
   const connections = computed(() => accessRows(view.value?.connections, row.value))
   const accessDescription = computed(() => row.value
-    ? `Give each App access to ${row.value.name}. After making changes on GitHub, refresh access here.`
+    ? `Give the Forge App access to ${row.value.name}. After making changes on GitHub, refresh access here.`
     : 'Use Manage access to add your repository to a Forge App, then refresh access here.')
 
-  const failed = computed(() => requirements(report.value).filter(requirement => !requirement.passed))
-  const editUrl = computed(() => report.value?.edit_url ?? '')
-  const canDownload = computed(() => row.value?.github_protection !== 'optional' && ['ready', 'needs_setup'].includes(row.value?.protection_status ?? '') && !busy.value)
-  const downloadHref = computed(() => row.value && view.value && canDownload.value ? rulesetHref(row.value, view.value.revision) : undefined)
   const checking = computed(() => row.value?.protection_status === 'checking')
   const syncing = computed(() => refreshing.value || view.value?.sync.status === 'running')
   const hint = computed(() => row.value ? hintText(row.value) : '')
@@ -296,23 +288,6 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
-  async function updateGithubProtection(mode: 'required' | 'optional') {
-    const current = row.value
-    if (!current || !view.value || busy.value) return
-    busy.value = true; error.value = ''
-    try {
-      const next = await api.act<RepositoriesView>('/api/repositories/github-protection', {
-        repo_id: current.id, revision: view.value.revision, mode,
-      })
-      if (repoId.value === current.id) poll.replace(next)
-    } catch (failure: unknown) {
-      if (repoId.value === current.id) error.value = actionMessage(failure, 'Could not save the GitHub protection requirement. Refresh before trying again.')
-    } finally {
-      busy.value = false
-    }
-    if (repoId.value === current.id && !error.value) await check()
-  }
-
   async function updateReviewScope(scope: 'all' | 'forge') {
     const current = row.value
     if (!current?.merge_check_revision || busy.value) return
@@ -327,5 +302,5 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     } finally { busy.value = false }
   }
 
-  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, updateGithubProtection, refreshAccess }
+  return { poll, view, live, row, report, shown, displayReady, ready, pickerRows, connections, accessDescription, checking, syncing, hint, deployment, busy, enabling, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, refreshAccess }
 }

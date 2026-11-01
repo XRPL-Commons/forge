@@ -20,8 +20,6 @@ def repository_commands():
                               wait={'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 120})
         if action == 'setup':
             properties.update(apply={'type': 'boolean', 'default': False}, enable={'type': 'boolean', 'default': False})
-        if action in ('policy', 'plan', 'setup'):
-            properties['github_protection'] = {'enum': ['required', 'optional'], 'description': 'Require GitHub enforcement or use Forge merge checks without creating branch rules'}
         if action == 'policy':
             properties.update(mode={'enum':['auto','human']},revision={'type':'string','pattern':'^[a-f0-9]{64}$'},request_id={'type':'string','pattern':'^[a-f0-9]{32}$'})
         if action == 'delivery':
@@ -193,12 +191,10 @@ def parser():
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
     for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'policy'):
-        command = verb(repo, action, help={'inspect':'Read repository readiness and effective policy', 'plan':'Preview repository preparation without writes', 'setup':'Prepare repository access and verify rules', 'verify':'Refresh access and verify effective branch protection', 'enable':'Enable automation after verification', 'disable':'Disable repository automation', 'activity':'Read repository activity', 'issues':'List repository issues', 'issue':'Read one issue', 'delivery':'Read issue delivery and task history', 'policy':'Read or set the repository merge policy'}[action])
+        command = verb(repo, action, help={'inspect':'Read repository readiness and effective policy', 'plan':'Preview repository preparation without writes', 'setup':'Prepare repository access and observe external rules', 'verify':'Refresh access and observe existing GitHub rules', 'enable':'Enable automation after verification', 'disable':'Disable repository automation', 'activity':'Read repository activity', 'issues':'List repository issues', 'issue':'Read one issue', 'delivery':'Read issue delivery and task history', 'policy':'Read or set the repository merge policy'}[action])
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
-        if action in ('policy', 'plan', 'setup'):
-            command.add_argument('--github-protection', choices=('required', 'optional'), help='Require GitHub branch protection or use Forge checks without creating branch rules')
         if action == 'policy':
             command.add_argument('mode',nargs='?',choices=('auto','human'),help='Omit to inspect the effective policy')
             command.add_argument('--revision',help='Exact runtime revision to compare before writing')
@@ -406,7 +402,7 @@ def execute(args):
             target = {k: v for k, v in github.repository(args.repository).items() if k in ('id', 'name')}
             if args.repo_command == 'policy':
                 from .merge_policy import execute as merge_policy
-                return merge_policy(client,target,args.mode,revision=args.revision,request_id=args.request_id,github_protection=args.github_protection)
+                return merge_policy(client,target,args.mode,revision=args.revision,request_id=args.request_id)
             if args.repo_command == 'delivery':
                 return client.read(target, 'delivery', args.number, after=args.after, task_after=args.task_after)
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
@@ -415,7 +411,7 @@ def execute(args):
             workflow = Workflow(client, github, target, wait=getattr(args, 'wait', 120))
             return workflow.execute('setup' if args.repo_command == 'plan' else args.repo_command,
                                     apply=getattr(args, 'apply', False), enable=getattr(args, 'enable', False),
-                                    resume=getattr(args, 'resume', False), github_protection=getattr(args, 'github_protection', None))
+                                    resume=getattr(args, 'resume', False))
         repo = GitHub().repository(args.repository)
         return client.requirements({k: repo[k] for k in ('id', 'name')})
 

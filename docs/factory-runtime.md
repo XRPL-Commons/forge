@@ -95,9 +95,9 @@ flowchart TD
 
 Repository setup is also a delivery blocker. Implementation admission uses the
 same repository identity, App connection revision and fresh protection report
-shown in Settings. A missing controller bypass, an unavailable check or an
+shown in Settings. An unreadable observation or an
 expired report shows **Repository setup** on the affected issues, with a link to
-repair or recheck the repository. The ordinary setup refresh and issue
+restore access or recheck the repository. The ordinary setup refresh and issue
 observation clear this blocker after verified readiness; independent holds stay
 in place. Dispatch saves its final protection read through that same report
 boundary, so a newly discovered failure is visible immediately.
@@ -136,11 +136,12 @@ repositories require human approval unless explicitly configured otherwise.
 Changing a repository's effective policy invalidates its previous candidate
 evidence; changing another repository's policy does not.
 
-### Why the Controller has a bypass
+### GitHub enforces owner rules
 
-GitHub's review baseline requires two approvals, but Forge's read-only Review and Audit workers do not submit native approving reviews. The Controller's configured pull-request bypass lets it merge after the supervisor independently verifies the role evidence and any required human approval.
-
-That bypass covers its ruleset, so keep the baseline separate from stronger CI or organization protections. GitHub makes the final merge decision; see [Getting set up](onboarding.md#github-repository-protection) before changing review rules.
+The supervisor verifies Forge's technical evidence and required human approval
+before requesting a merge. GitHub then applies the owner's rules to that request.
+Forge does not require a baseline ruleset or bypass grant. An API rejection is
+reported as a merge blocker, without changing repository protections.
 
 ## Pause, cleanup and retries
 

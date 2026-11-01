@@ -61,9 +61,11 @@ workers. Their verdicts appear as `forge/review` and `forge/audit` checks, and
 
 ## GitHub repository protection
 
-The default repository scope requires Forge Review and Audit for all pull
+The default repository scope runs Forge Review and Audit for all pull
 requests, including human-authored ones. A repository can instead select
-Forge-created PRs only. Existing CI, signing rules and stronger protections remain
+Forge-created PRs only. Forge enforces its gates when its supervisor merges.
+Setup does not require GitHub rulesets or a paid plan for private repositories.
+Existing CI, signing rules and stronger protections remain
 in force. Workflow-file edits are a separate repository permission, disabled by
 default in the installation interview.
 

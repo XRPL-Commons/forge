@@ -153,7 +153,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
 
   const canAssign = computed(() => !!detail.value?.actions.includes('assign_reviewer'))
   const decisions = computed(() => (detail.value?.actions ?? []).filter(action => action !== 'assign_reviewer'))
-  const setupNeeded = computed(() => !!(detail.value?.setup_needed || detail.value?.merge_blocker))
+  const setupNeeded = computed(() => !!detail.value?.setup_needed)
   const plan = computed(() => (detail.value
     ? actionPlan(detail.value, { setupNeeded: setupNeeded.value, internalJob: !!internalJob.value, agent: activeJob.value?.provider ? persona(activeJob.value.provider).name : null })
     : null))

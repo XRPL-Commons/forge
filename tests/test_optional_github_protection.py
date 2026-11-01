@@ -30,25 +30,16 @@ class OptionalProtectionTests(unittest.TestCase):
         self.assertTrue(protection_ready(report))
         self.assertEqual(report['required_approvals'], 4)
         self.assertEqual(report['additional_rules'][0]['type'], 'required_signatures')
-        self.assertEqual(report['bypass']['status'], 'not_required')
+        self.assertNotIn('bypass', report)
         self.assertTrue(all(call.args[2] == 'GET' for call in reader.call.call_args_list))
         self.assertFalse(any('/rulesets/' in call.args[3] for call in reader.call.call_args_list))
 
-    def test_existing_rules_with_old_bypass_need_github_clean_state(self):
+    def test_actor_specific_github_decision_is_left_to_final_merge_api(self):
         reader = self.reader(None, [rules.rule(4)])
+        reader.pr = Mock(return_value={'mergeable_state': 'blocked'})
         candidate = dict(pr=1, base_ref='main', head='a'*40, base='b'*40, merge_request=True)
-        reader.pr = Mock(return_value=dict(mergeable=True, mergeable_state='clean',
-            head={'sha':candidate['head']}, base={'sha':candidate['base'], 'ref':'main'}))
         self.assertTrue(reader.protections(rules.RepositoryRuleTests.item, candidate))
-        initial = {k:v for k,v in candidate.items() if k != 'merge_request'}
-        reader.pr.return_value['mergeable_state'] = 'blocked'
-        self.assertTrue(reader.protections(rules.RepositoryRuleTests.item, initial))
-        for state in ('blocked', 'unknown', 'behind', 'unstable', None):
-            reader.pr.return_value['mergeable_state'] = state
-            self.assertFalse(reader.protections(rules.RepositoryRuleTests.item, candidate))
-        reader.pr.return_value['mergeable_state'] = 'clean'
-        reader.pr.return_value['head']['sha'] = 'c'*40
-        self.assertFalse(reader.protections(rules.RepositoryRuleTests.item, candidate))
+        reader.pr.assert_not_called()
 
     def test_only_explicit_plan_unavailable_is_accepted(self):
         unavailable = GitHubUnavailable('Plan', status=403, plan_required=True)
@@ -57,7 +48,7 @@ class OptionalProtectionTests(unittest.TestCase):
         self.assertTrue(protection_ready(report))
         self.assertEqual(report['plan_unavailable_sources'], ['classic', 'rulesets'])
         reader.settings.load.return_value['repositories'][0]['github_protection'] = 'required'
-        self.assertFalse(reader.protections(rules.RepositoryRuleTests.item, {'base_ref': 'main'}))
+        self.assertTrue(reader.protections(rules.RepositoryRuleTests.item, {'base_ref': 'main'}))
         for error in (GitHubUnavailable('Forbidden', status=403), GitHubUnavailable('Network'), GitHubUnavailable('Server', status=500)):
             self.assertFalse(self.reader(error, []).protections(rules.RepositoryRuleTests.item, {'base_ref': 'main'}))
             self.assertFalse(self.reader(None, error).protections(rules.RepositoryRuleTests.item, {'base_ref': 'main'}))
@@ -76,31 +67,27 @@ class OptionalProtectionTests(unittest.TestCase):
                 self.assertNotIn(message, str(raised.exception))
                 error.close()
 
-    def test_configuration_mode_invalidates_old_readiness(self):
+    def test_legacy_configuration_choice_no_longer_changes_admission(self):
         fixture = setup.RepositorySetupTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
-        service = fixture.service
-        service.check(10)
-        old = fixture.settings.load()
-        changed = service.github_protection(10, digest(old), 'optional')
-        self.assertEqual(changed['repositories'][0]['github_protection'], 'optional')
-        self.assertFalse(changed['repositories'][0]['protection_ready'])
-        self.assertNotEqual(observation_key(old, old['repositories'][0]), observation_key(fixture.settings.load(), old['repositories'][0]))
-        with self.assertRaises(ValueError):
-            service.github_protection(10, digest(old), 'required')
-        for mode in (False, None, 'auto'):
-            config = deepcopy(old); config['repositories'][0]['github_protection'] = mode
-            with self.assertRaises(ValueError): validate(config)
+        service = fixture.service; service.check(10)
+        original = fixture.settings.load()
+        for mode in ('required', 'optional'):
+            changed = deepcopy(original); changed['repositories'][0]['github_protection'] = mode
+            validate(changed); fixture.settings.save_config(changed)
+            self.assertEqual(observation_key(original, original['repositories'][0]), observation_key(changed, changed['repositories'][0]))
+            self.assertTrue(service.view(10)['repositories'][0]['protection_ready'])
+            self.assertNotIn('github_protection', service.view(10)['repositories'][0])
 
-    def test_onboarding_selection_preserves_prepared_optional_policy(self):
+    def test_onboarding_can_resume_legacy_policy_without_using_it(self):
         from tests import test_onboarding
-        from forge.repository_setup import RepositorySetup
         fixture = test_onboarding.SetupTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
         fixture.connected()
         settings = fixture.setup.settings()
-        service = RepositorySetup(settings)
-        service.set_github_protection({'id': 10, 'name': 'example/project'}, digest(settings.load()), 'optional')
+        config = settings.load()
+        config['repositories'] = [{'id': 10, 'name': 'example/project', 'enabled': False, 'github_protection': 'required'}]
+        settings.save_config(config)
         fixture.setup.select(10)
-        self.assertEqual(settings.load()['repositories'][0]['github_protection'], 'optional')
+        self.assertEqual(settings.load()['repositories'][0]['github_protection'], 'required')
 
     def test_private_plan_signing_observation_still_requires_verified_branch_and_rules(self):
         denied = AccessError('Plan', status=403, plan_required=True)
@@ -120,7 +107,7 @@ class OptionalProtectionTests(unittest.TestCase):
 
     def test_existing_baseline_can_publish_own_check_before_final_rule_admission(self):
         from forge.factory.effect_controller import EffectController
-        for final_state, expected_merges in (('clean', 1), ('blocked', 0)):
+        for final_state, expected_merges in (('clean', 1), ('blocked', 1)):
             with self.subTest(final_state=final_state):
                 fixture = merges.MergeControllerTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
                 fixture.prepare_candidate()
@@ -136,40 +123,7 @@ class OptionalProtectionTests(unittest.TestCase):
                 self.assertEqual(fixture.remote.merge_calls, expected_merges)
                 self.assertIn('publish-check', fixture.remote.reads)
 
-    def test_policy_save_cannot_race_final_merge_observation(self):
-        from forge.factory.effect_controller import EffectController
-        from forge.repository_setup import RepositorySetup
-        from forge.settings import Settings, DEFAULT
-        fixture = merges.MergeControllerTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
-        root = fixture.store.root
-        with fixture.store.write() as db:
-            db.executemany('INSERT INTO store_metadata VALUES(?,?)', [('runtime_root', str(root)), ('runtime_active', 'true')])
-        marker = root / 'state/storage'
-        marker.write_text('forge-sqlite-v1\n' + str(root) + '\n' + fixture.store.instance_id + '\n')
-        marker.chmod(0o600)
-        settings = Settings(root)
-        settings.save_config({**deepcopy(DEFAULT), 'repositories': [dict(id=1, name='owner/repo', enabled=True, github_protection='optional')]})
-        service = RepositorySetup(settings)
-        before = digest(settings.load())
-        fixture.prepare_candidate()
-        queued = fixture.controller.step('u')
-        final_phase = []
-        refused = []
-        fixture.remote.on_check = lambda: final_phase.append(True)
-        original = fixture.remote.pages
-        def pages(role, item, suffix, key=None):
-            if final_phase and suffix.endswith('/reviews'):
-                with self.assertRaises(BlockingIOError):
-                    service.set_github_protection({'id':1, 'name':'owner/repo'}, before, 'required')
-                refused.append(True)
-            return original(role, item, suffix, key)
-        fixture.remote.pages = pages
-        driver = EffectController(fixture.store, fixture.remote, admission=fixture.admission, clock=lambda: fixture.now)
-        driver.step(queued['effect_id'])
-        self.assertTrue(refused)
-        self.assertEqual(fixture.remote.merge_calls, 1)
-        self.assertEqual(settings.load()['repositories'][0]['github_protection'], 'optional')
-        service.set_github_protection({'id':1, 'name':'owner/repo'}, before, 'required')
+
 
     def test_optional_real_report_does_not_replace_review_audit(self):
         fixture = merges.MergeControllerTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
@@ -198,20 +152,9 @@ class OptionalPolicyAuthorityTests(policies.connections.Fixture):
         self.token_value = self.credentials['access_token']
         self.base = dict(repository=self.target, instance=self.credentials['connection']['instance'], generation=self.generation, policy='github_protection')
 
-    def test_pre_access_explicit_target_saves_only_disabled_intent_and_replays(self):
-        read = self.policy.request(self.token_value, dict(self.base, action='read'))
-        self.assertEqual(read['mode'], 'required')
-        request = dict(self.base, action='set', mode='optional', revision=read['revision'], request_id='c'*32)
-        from forge.factory.effect_controller import effect_lock
-        with effect_lock(self.database):
-            with self.assertRaises(BlockingIOError):
-                self.policy.request(self.token_value, request)
+    def test_retired_setting_cannot_create_or_change_repository_policy(self):
+        for action in ('read', 'set'):
+            request = dict(self.base, action=action)
+            if action == 'set': request.update(mode='optional', revision='a'*64, request_id='c'*32)
+            self.assertError('policy_retired', lambda: self.policy.request(self.token_value, request))
         self.assertEqual(self.settings.load()['repositories'], [])
-        changed = self.policy.request(self.token_value, request)
-        self.assertEqual(changed['mode'], 'optional')
-        self.assertEqual(self.settings.load()['repositories'], [{**self.target, 'enabled': False, 'github_protection': 'optional'}])
-        self.assertEqual(self.policy.request(self.token_value, request), changed)
-        self.assertError('operation_conflict', lambda: self.policy.request(self.token_value, dict(request, mode='required')))
-        self.assertError('revision_changed', lambda: self.policy.request(self.token_value, dict(request, request_id='d'*32)))
-        self.service.revoke(self.session, self.credentials['connection']['id'])
-        self.assertError('invalid_token', lambda: self.policy.request(self.token_value, request))

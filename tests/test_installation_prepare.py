@@ -59,7 +59,7 @@ class PreparationTests(unittest.TestCase):
                 if barrier: barrier.wait(timeout=3)
                 if during_report: during_report(item)
                 return {'repo_id': item['repo_id'], 'branch': 'main', 'available': True,
-                        'requirements': [{'passed': item['repo_id'] != failed_id}], 'merge_check_scope': 'all'}
+                        'requirements': [{'id': 'readable', 'passed': item['repo_id'] != failed_id}], 'merge_check_scope': 'all'}
             github.protection_report.side_effect = report
             return github
         patches = [patch.object(self.setup, 'settings', return_value=settings),
@@ -75,6 +75,13 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaises(SetupError): self.approve(changed)
         with self.assertRaises(SetupError): self.approve({**self.plan, 'personal_token': 'never'})
         self.assertNotIn('personal_token', self.service.view())
+
+    def test_new_plan_needs_no_protection_choice_and_preserves_legacy_binding(self):
+        plan = deepcopy(self.plan)
+        for row in plan['repositories']:
+            del row['github_protection']
+        self.approve(plan)
+        self.assertEqual(self.service.saved()['settings']['binding']['plan'], plan)
 
     def test_approval_requires_same_generation_and_saved_repository_consent(self):
         with self.assertRaises(SetupError):
@@ -107,15 +114,15 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(stages['account.codex']['status'], 'waiting')
         self.assertTrue(all(stages['repository.' + str(i)]['status'] == 'complete' for i in (1, 2, 3)))
 
-    def test_missing_rules_require_operator_and_do_not_block_other_reads(self):
+    def test_unreadable_rules_require_operator_and_do_not_block_other_reads(self):
         self.approve(); settings, policies, readers = self.transport(failed_id=2)
         view = self.service.tick()
         self.assertEqual(view['status'], 'preparation_needs_operator')
         self.assertEqual([item['repository']['id'] for item in view['needs_operator']], [2])
         self.assertEqual(len(readers), 3)
         policies.set_github_protection.assert_not_called()
-        # Completed reports do not repeat on idle polling; failed rules need an
-        # explicit retry after the operator fixes GitHub administration.
+        # Completed reports do not repeat on idle polling; failed observations need an
+        # explicit retry after the operator fixes GitHub access.
         self.service.tick(); self.assertEqual(len(readers), 3)
         self.assertEqual(settings.refresh.call_count, 1)
         self.service.retry(generation=self.generation)

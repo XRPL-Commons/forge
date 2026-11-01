@@ -80,7 +80,7 @@ def describe(code: str, **params) -> str:
 def repository_setup_reason(reason):
     """Explain typed readiness evidence without exposing its internal code."""
     return {
-        'protection_needs_setup': 'GitHub repository rules need attention. Open Repository setup to see which requirements need changes.',
+        'protection_needs_setup': 'GitHub repository rules could not be verified. Open Repository setup and check again.',
         'protection_unchecked': 'Repository rules need to be checked for the current setup.',
         'protection_branch_changed': 'Repository rules need to be checked for this delivery’s target branch.',
         'protection_identity_changed': 'The saved rules check belongs to a different repository. Check this repository’s setup again.',

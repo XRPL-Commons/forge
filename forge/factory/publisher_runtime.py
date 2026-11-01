@@ -108,10 +108,8 @@ class SigningCapabilities:
                 'probe_repository_id', 'target_branch', 'target_rules', 'probe_ref', 'strategy', 'commit_oid', 'tree_oid')):
             return pending
         try:
-            from ..repository_policy import github_protection
-            optional = github_protection(self.github.settings.load(), job['repo_id']) == 'optional'
             current = signing_context(lambda method, suffix: self.github.call('controller', job, method, suffix),
-                                      proof['target_branch'], optional=optional)
+                                      proof['target_branch'], optional=True)
         except QualificationError:
             return pending
         if current != proof['target_rules']:

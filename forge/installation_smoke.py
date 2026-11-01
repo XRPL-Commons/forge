@@ -378,8 +378,6 @@ class InstallationSmoke:
             row['enabled'] = False
         for selected in binding['repositories']:
             target = selected['target']
-            require(configured.get(target['id'], {}).get('github_protection', 'required') == selected.get('github_protection', 'required'),
-                    'repository_policy_changed', 'GitHub protection policy changed before handover.')
             configured[target['id']] = {**configured.get(target['id'], {}), **target, 'enabled': True}
         config['repositories'] = list(configured.values())
         validate_settings(config)

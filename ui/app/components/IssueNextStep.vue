@@ -129,7 +129,11 @@ const nextActionTime = computed(() => {
                 </li>
               </ul>
               <p v-else-if="approval" id="issue-approvals-empty" class="text-sm text-muted">No approval found on the pull request yet.</p>
-              <p v-if="detail.merge_blocker" class="text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
+              <section v-if="detail.merge_blocker" id="issue-merge-blocker" class="space-y-2 rounded-lg border border-amber-200/30 bg-panel p-3 text-sm">
+                <p class="text-amber-200">{{ detail.merge_blocker.reason }}</p>
+                <p class="text-muted">Forge will retry after GitHub allows the merge. Existing GitHub protections remain in force.</p>
+                <a v-if="candidatePull" :href="pullUrl(candidatePull.number)" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline">View pull request on GitHub ↗</a>
+              </section>
               <p v-if="reviewRequested" id="review-requested" class="text-sm text-muted">{{ reviewRequested }}</p>
               <p v-if="deployment" id="issue-deployment" class="text-sm text-muted">
                 {{ deployment.text }}

@@ -19,7 +19,7 @@ def interview():
             'hostname': 'anvil', 'owner': 'owner', 'operators': ['operator'],
             'repositories': [{'name': 'owner/one', 'merge_policy': 'human', 'allow_workflow_edits': False},
                              {'name': 'owner/two', 'merge_policy': 'auto', 'allow_workflow_edits': False}],
-            'providers': [{'id': 'codex', 'kind': 'browser'}], 'rules_repair': 'apply-if-admin',
+            'providers': [{'id': 'codex', 'kind': 'browser'}],
             'smoke_target': 'scratch', 'codex_parallel_auth': True}
 
 
@@ -113,37 +113,24 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(view['stages'][0]['status'], 'failed')
         self.assertIn('sign-in', view['stages'][0]['reason'])
 
-    def test_active_resume_applies_explicit_protection_before_verification(self):
-        self.install.state['intent']['repositories'][0]['github_protection'] = 'optional'
+    def test_active_resume_ignores_legacy_protection_without_changing_saved_intent(self):
+        self.install.state['intent']['repositories'][0]['github_protection'] = 'required'
+        self.install.state['intent']['rules_repair'] = 'apply-if-admin'
         self.install.state['inputs_digest'] = digest(self.install.state['intent'])
+        original = deepcopy(self.install.state['intent'])
         factory = Mock()
-        current = {'mode': 'required', 'revision': 'a'*64}
         calls = []
         def call(action, **parameters):
             calls.append((action, parameters))
             if action == 'status': return {'phase': 'active'}
-            if action == 'github_protection':
-                if parameters['operation'] == 'set':
-                    self.assertEqual(parameters['revision'], current['revision'])
-                    current.update(mode=parameters['mode'], revision='b'*64)
-                return deepcopy(current)
-            if action == 'verify_repository':
-                self.assertEqual(current['mode'], 'optional')
-                self.assertEqual(parameters['revision'], 'b'*64)
-            return {'revision': current['revision'], 'baseline': {'github_protection': current['mode']},
+            self.assertIn(action, ('requirements', 'verify_repository'))
+            return {'revision': 'a'*64, 'merge_requirements': {'branch': 'main', 'merge_check_scope': 'all'},
                     'readiness': {'access_ready': True, 'protection_ready': True}}
         factory.call.side_effect = call
-        target = self.install.state['intent']['repositories'][0]['target']
-        self.assertEqual(self.install.repository(factory, target)['status'], 'repository_changed')
-        self.assertEqual([action for action, _ in calls], ['status', 'requirements'])
+        target = original['repositories'][0]['target']
         self.assertEqual(self.install.repository(factory, target, apply=True)['status'], 'repository_ready')
-        writes = [parameters for action, parameters in calls
-                  if action == 'github_protection' and parameters['operation'] == 'set']
-        self.assertEqual(len(writes), 1)
-        self.assertEqual(writes[0]['mode'], 'optional')
-        self.assertEqual(self.install.repository(factory, target, apply=True)['status'], 'repository_ready')
-        self.assertEqual(sum(action == 'github_protection' and parameters['operation'] == 'set'
-                             for action, parameters in calls), 1)
+        self.assertEqual([action for action, _ in calls], ['status', 'requirements', 'verify_repository'])
+        self.assertEqual(self.install.load(), original)
 
     def test_changed_input_and_injected_secret_are_rejected_before_host_work(self):
         changed = interview(); changed['repositories'][0]['merge_policy'] = 'auto'

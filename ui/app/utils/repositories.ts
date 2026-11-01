@@ -84,12 +84,8 @@ export interface FactoryDeployment {
   error: string | null
 }
 
-interface BypassAllowances { users: string[]; teams: string[]; apps: string[] }
 export interface ProtectionSource {
   kind: 'classic' | 'ruleset'; name: string; url: string; id?: number | null; source_type?: string | null
-  // Classic sources missing the controller bypass carry the current bypass list, when GitHub exposed it.
-  bypass_allowances?: BypassAllowances | null
-  bypass_actors_visible?: boolean
 }
 export interface ProtectionRequirement { id: 'readable' | 'reviews' | 'stale'; label: string; passed: boolean; detail: string; sources: ProtectionSource[] }
 export interface ProtectionReport {
@@ -99,7 +95,6 @@ export interface ProtectionReport {
   errors: { source?: 'classic' | 'rulesets' | 'reviews'; detail: string }[]
   additional_rules: { type: string; source?: ProtectionSource }[]
   code_owner_reviews: boolean
-  bypass: { status: 'ready' | 'missing' | 'operator_review'; detail: string; sources?: ProtectionSource[]; controller_app_id?: number }
   required_approvals?: number
   edit_url?: string
 }
@@ -107,7 +102,6 @@ export interface ProtectionReport {
 export interface MirrorDeniedRepository { canonical_name: string; repository_id?: number }
 
 export interface RepositoryRow {
-  github_protection?: 'required' | 'optional'
   mirror_denied_repositories?: MirrorDeniedRepository[]
   id: number; name: string; enabled: boolean; configured: boolean
   access: Record<AppRole, RepoAccessStatus>
@@ -242,14 +236,14 @@ export function repoDescription(row: RepositoryRow, live: boolean): string {
     if (live) return 'Setup is complete and automation is enabled. No action is needed here.'
     return 'Repository setup is complete. Continue to finish setting up Forge.'
   }
-  if (row.protection_status === 'needs_setup') return row.github_protection === 'optional' ? 'Check the repository before enabling Forge. Existing GitHub rules still apply.' : 'Update the GitHub review rules below, then check again.'
-  if (row.protection_status === 'access_needed') return 'Connect the missing Apps before continuing.'
-  return 'Forge checks App access and GitHub review rules before enabling automation.'
+  if (row.protection_status === 'needs_setup') return 'Check repository access and merge policy before enabling Forge.'
+  if (row.protection_status === 'access_needed') return 'Connect the Forge App before continuing.'
+  return 'Forge checks repository access and observes existing GitHub rules before enabling automation.'
 }
 
 export function hintText(row: RepositoryRow): string {
   const status = row.protection_status
-  if (status === 'access_needed') return 'Finish connecting the Apps above to continue.'
+  if (status === 'access_needed') return 'Finish connecting the Forge App above to continue.'
   if (status === 'stale') return 'Check again to confirm the current GitHub settings before continuing.'
   if (status === 'unknown') {
     const detail = row.protection?.errors?.[0]?.detail ?? 'GitHub could not be reached. Try checking again.'
@@ -413,41 +407,8 @@ export function accessRows(connections: Partial<Record<AppRole, RoleAccess>> | u
   })
 }
 
-export function scopeText(report: ProtectionReport | null): string {
-  return `Applies to every pull request targeting ${report?.branch || 'the default branch'}. Existing organization rules and stronger protections still apply.`
-}
-
 export function branchText(report: ProtectionReport | null): string {
-  return report?.branch ? 'Default branch · ' + report.branch : 'Repository review settings'
-}
-
-// `readable` is the "could GitHub be read at all" probe, reported through the
-// hint and the errors, never as a review requirement (§3.6).
-export function requirements(report: ProtectionReport | null): ProtectionRequirement[] {
-  return (report?.requirements ?? []).filter(requirement => requirement.id !== 'readable')
-}
-
-export function bypassSourceLabel(source: ProtectionSource, branch: string | null | undefined): string {
-  if (source.kind === 'classic') return `Branch protection (classic)${branch ? ` on ${branch}` : ''}`
-  return `Ruleset “${source.name}”`
-}
-
-// Replacing `bypass_pull_request_allowances` replaces the whole list, so the
-// command keeps whoever GitHub reported as already allowed.
-export function classicBypassCommand(repo: string, branch: string, slug: string, allowances?: BypassAllowances | null): string {
-  if (!allowances || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9-]+$/.test(slug)) return ''
-  const apps = [...new Set([...allowances.apps, slug])]
-  const value = { users: allowances.users, teams: allowances.teams, apps }
-  const body = JSON.stringify({ bypass_pull_request_allowances: value }).replaceAll("'", "'\\''")
-  return `gh api -X PATCH repos/${repo}/branches/${encodeURIComponent(branch).replace(/[!'()*]/g, value => '%' + value.charCodeAt(0).toString(16).toUpperCase())}/protection/required_pull_request_reviews --input - <<< '${body}'`
-}
-
-export function rulesetHref(row: RepositoryRow, revision: string): string {
-  return `/api/repositories/ruleset?repo_id=${row.id}&revision=${encodeURIComponent(revision)}`
-}
-
-export function rulesetFilename(row: RepositoryRow): string {
-  return `forge-review-rules-${row.id}.json`
+  return report?.branch ? 'Default branch · ' + report.branch : 'Repository checks'
 }
 
 // `useForgeApi` substitutes its own generic sentence when the API answered
@@ -586,20 +547,4 @@ export function deploymentCard(
     error: [deployment.error, profile ? observed?.error : null].filter(Boolean).join(' · '),
     note: deployment.reread_requested ? 'A re-read is queued for the next cycle.' : '',
   }
-}
-
-
-export function rulesetBypassCommand(repo: string, source: ProtectionSource, appId?: number): string {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(appId) || !appId || appId < 1 || !Number.isSafeInteger(source.id) || !source.id || source.id < 1 || source.bypass_actors_visible !== true) return ''
-  const path = source.source_type === 'Repository' ? `repos/${repo}/rulesets/${source.id}`
-    : source.source_type === 'Organization' ? `orgs/${repo.split('/')[0]}/rulesets/${source.id}` : null
-  if (!path) return ''
-  const expression = 'if (.bypass_actors | type) != "array" or (.rules | type) != "array" or .target != "branch" '
-    + 'then error("Full branch ruleset and bypass list required") '
-    + 'elif any(.rules[]; .type == "required_signatures") then error("Preserve signature enforcement; separate the review rule first") else '
-    + '{bypass_actors: '
-    + '(.bypass_actors + (if any(.bypass_actors[]; .actor_type == "Integration" and .actor_id == '
-    + appId + ') then [] else [{actor_type:"Integration",actor_id:' + appId
-    + ',bypass_mode:"pull_request"}] end))} end'
-  return `forge_rules=$(gh api ${path} | jq -e '${expression}') &&\nprintf '%s\\n' "$forge_rules" | gh api --method PUT ${path} --input -`
 }

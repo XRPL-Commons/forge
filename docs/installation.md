@@ -19,8 +19,8 @@ trigger qualification of the [full job environment](job-environments.md).
 Choose the GitHub App owner to match your repositories: personal repositories
 need an App owned by your personal account. The wizard creates a private App,
 which can only be installed on its owner's account. Private repositories on
-GitHub Free can select Optional GitHub protection while retaining Forge's own
-Review, Audit and merge checks.
+GitHub Free can use Forge without enabling branch protection. The supervisor
+enforces Forge's Review, Audit, CI and approval checks before its own merges.
 
 Preflight reports progress while checking each repository and the host. If it
 finds a prerequisite to fix, it stops before installation starts. To change the
@@ -48,9 +48,9 @@ expand the GitHub permissions approved during bootstrap.
 Host installation, private networking and the initial privileged GitHub setup
 still start through the CLI. The web page does not replace those bootstrap steps.
 The CLI remains available for unattended use and recovery. After handoff, it
-observes the saved server operation without repeating bootstrap. GitHub rules
-repairs that need personal administrator access use the local CLI; the server
-never receives those credentials. Agents can follow automated work through the
+observes the saved server operation without repeating bootstrap. Setup observes
+existing GitHub rules without changing them; personal administrator credentials
+stay local. Agents can follow automated work through the
 first merge using `--json --wait SECONDS`.
 
 The first smoke issue must complete Triage, Build, Review, Audit and a verified
