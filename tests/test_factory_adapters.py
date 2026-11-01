@@ -180,10 +180,16 @@ class AdapterTests(unittest.TestCase):
         github.pages = Mock(return_value=[])
         self.assertTrue(github.protections({'repo_id':10}, {'base_ref':'main'}))
         protection['required_pull_request_reviews']['dismiss_stale_reviews'] = False
-        self.assertFalse(github.protections({'repo_id':10}, {'base_ref':'main'}))
+        self.assertTrue(github.protections({'repo_id':10}, {'base_ref':'main'}))
         protection['required_pull_request_reviews']['dismiss_stale_reviews'] = True
         protection['required_pull_request_reviews']['required_approving_review_count'] = 1
-        self.assertFalse(github.protections({'repo_id':10}, {'base_ref':'main'}))
+        self.assertTrue(github.protections({'repo_id':10}, {'base_ref':'main'}))
+
+        report = github.protection_report({'repo_id': 10}, {'base_ref': 'main'})
+        self.assertEqual(report['required_approvals'], 1)
+        self.assertEqual([row['kind'] for row in report['sources']], ['classic'])
+        self.assertNotIn('bypass', report)
+        self.assertTrue(all(call.args[2] == 'GET' for call in github.call.call_args_list))
 
     def test_forge_still_requires_its_own_current_review_and_audit_evidence(self):
         github, _, _ = self.github()
@@ -315,9 +321,13 @@ class MergeRefusalTests(unittest.TestCase):
         github, client = self.github()
         github.token = Mock(return_value='synthetic-token')
         client.request.side_effect = AccessError('GitHub returned HTTP 405; check installation access', status=405)
-        with self.assertRaisesRegex(GitHubUnavailable, r'refused to merge XRPL-Commons/hackathon#825: branch rules still block it') as caught:
+        with self.assertRaisesRegex(GitHubUnavailable, r'refused to merge XRPL-Commons/hackathon#825: .*existing rules') as caught:
             github.merge(self.item())
         self.assertEqual(caught.exception.status, 405)
+        self.assertIn('required approvals and checks', str(caught.exception))
+        self.assertNotIn('bypass', str(caught.exception))
+        client.request.assert_called_once_with('PUT', '/repos/XRPL-Commons/hackathon/pulls/825/merge',
+            'synthetic-token', {'sha': 'a' * 40, 'merge_method': github.runtime['merge_method']})
 
     def test_budget_exhaustion_defers_without_attempting_or_refusing_merge(self):
         github, client = self.github()
