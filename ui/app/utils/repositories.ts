@@ -505,6 +505,7 @@ export interface DeploymentCardModel {
   exposure: string
   domain: string            // the candidate the domain box starts from
   showDomain: boolean
+  unavailable: boolean
   actions: { confirm: boolean; reject: boolean; reread: boolean }
   observation: string
   error: string
@@ -521,6 +522,7 @@ export function deploymentCard(
   const status = deployment.status
   const proposal = status === 'proposed' ? deployment.proposal : null
   const profile = status === 'confirmed' ? deployment.profile : null
+  const unavailable = (proposal?.strategy === 'unobservable' && !proposal.proposal) || profile?.strategy === 'unobservable'
   const lines = proposal
     ? ['Strategy · ' + (STRATEGY_LABELS[proposal.strategy] ?? proposal.strategy), deployText(proposal.deploy)]
     : profile ? [profileText(profile)] : []
@@ -534,16 +536,17 @@ export function deploymentCard(
       : deployment.summary || DEPLOYMENT_SENTENCES[status] || ''
   return {
     state: status,
-    status: DEPLOYMENT_BADGES[status] ?? status,
+    status: unavailable ? 'Tracking unavailable' : DEPLOYMENT_BADGES[status] ?? status,
     sentence,
     lines,
     exposure,
     domain: proposal?.domain?.value ?? '',
-    showDomain: !!proposal,
-    actions: { confirm: !!proposal, reject: !!proposal, reread: status !== 'running' },
+    showDomain: !!proposal && !unavailable,
+    unavailable,
+    actions: { confirm: !!proposal && !unavailable, reject: !!proposal, reread: status !== 'running' },
     // An observation is only meaningful against a confirmed profile: nothing
     // is read from a domain Forge was never told to watch.
-    observation: profile ? (observationText(observed, now) || 'Nothing observed yet.') : '',
+    observation: profile && !unavailable ? (observationText(observed, now) || 'Nothing observed yet.') : '',
     error: [deployment.error, profile ? observed?.error : null].filter(Boolean).join(' · '),
     note: deployment.reread_requested ? 'A re-read is queued for the next cycle.' : '',
   }

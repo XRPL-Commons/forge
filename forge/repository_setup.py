@@ -145,6 +145,19 @@ class RepositorySetup:
                 'activation_available': self.settings.scope != 'setup',
                 'continue_url': '/onboarding' if self.settings.scope == 'setup' else '/factory'}
 
+    def merge_policy(self, repo_id, revision, mode):
+        from .factory.config import load, save
+        if type(repo_id) is not int or repo_id <= 0 or mode not in ('auto', 'human'):
+            raise ValueError('Select a repository and auto or human merge policy')
+        if not any(repo['id'] == repo_id for repo in self.settings.load()['repositories']):
+            raise ValueError('Configure this repository before changing its merge policy')
+        runtime = load(self.settings.authority.root, scope=self.settings.scope)
+        if revision != digest(runtime):
+            raise ValueError('Runtime settings changed. Reload before saving merge policy')
+        runtime['repository_merge_policies'][str(repo_id)] = mode
+        save(self.settings.authority.root, runtime, revision=revision, scope=self.settings.scope)
+        return self.view(repo_id)
+
     def review_scope(self, repo_id, revision, scope):
         from .factory.config import load, save
         if type(repo_id) is not int or repo_id <= 0 or scope not in ('all', 'forge'):

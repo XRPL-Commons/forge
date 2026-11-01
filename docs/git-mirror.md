@@ -8,7 +8,7 @@ Access requires both the assignment policy and current GitHub access. Declared r
 
 ## Restrict a project's dependencies
 
-Open **Settings → Repositories → your repository → Git dependency restrictions**. Enter one `owner/repository` per line. Optionally append its numeric GitHub repository ID after a space so the restriction also follows a rename. Save the restrictions. The form preserves existing numeric IDs and checks the settings revision before saving.
+Open **Settings → Repositories → your repository → Advanced → Dependency access**. Enter one `owner/repository` per line. Optionally append its numeric GitHub repository ID after a space so the restriction also follows a rename. Save the restrictions. The form preserves existing numeric IDs and checks the settings revision before saving.
 
 An empty list removes the project's explicit restrictions. It does not grant App permissions or expand an already frozen assignment policy. This operator control does not expand the agent connection's merge-policy capability.
 

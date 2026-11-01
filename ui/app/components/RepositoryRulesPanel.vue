@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { branchText, statusPillText, repoDescription, type RepositoryRow, type ProtectionReport } from '~/utils/repositories'
 import { TONE_BADGE } from '~/utils/tones'
-const props = defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; hint: string; idPrefix?: string }>()
+const props = defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; hint: string; idPrefix?: string; diagnosticsOnly?: boolean }>()
 const prefix = computed(() => props.idPrefix || '')
 const additionalRules = computed(() => [...new Set((props.report?.additional_rules ?? []).map(rule => rule.type.replaceAll('_', ' ')))])
 </script>
 <template>
-  <section :id="prefix + 'repository-summary'" class="mt-4 rounded-xl border border-line bg-panel p-4">
+  <section v-if="!diagnosticsOnly" :id="prefix + 'repository-summary'" class="mt-4 rounded-xl border border-line bg-panel p-4">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="break-words text-lg font-semibold text-white">{{ displayReady ? `Repository checks ready for ${row.name}` : `Check repository setup for ${row.name}` }}</h2>

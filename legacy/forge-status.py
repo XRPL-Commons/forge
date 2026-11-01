@@ -385,7 +385,7 @@ class H(BaseHTTPRequestHandler):
         if not self._session:
             # Without configured sign-in and a session, the API offers no control.
             self.send_error(401);return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/installation', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/review-scope', '/api/repositories/github-protection', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/installation', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/review-scope', '/api/repositories/merge-policy', '/api/repositories/github-protection', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -561,6 +561,12 @@ class H(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._send(json.dumps({'ok':False,'reason':str(exc)}),status=409);return
                 self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}));return
+            if self.path == '/api/repositories/merge-policy':
+                from forge.repository_setup import RepositorySetup
+                if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'mode'}:
+                    raise ValueError('Expected repository identity, runtime revision and merge policy')
+                result = RepositorySetup(settings_service()).merge_policy(**value)
+                self._send(json.dumps({**result, 'ok': True, 'controls_token': self._action_token}));return
             if self.path == '/api/repositories/review-scope':
                 from forge.repository_setup import RepositorySetup
                 if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'scope'}:

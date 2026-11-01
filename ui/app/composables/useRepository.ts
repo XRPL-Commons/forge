@@ -7,7 +7,7 @@ import {
 } from '~/utils/repositories'
 
 
-export function useRepository(repoId: import('vue').Ref<number | null>, active: import('vue').Ref<boolean> = ref(true)) {
+export function useRepository(repoId: import('vue').Ref<number | null>, active: import('vue').Ref<boolean> = ref(true), deploymentActive: import('vue').Ref<boolean> = ref(true)) {
   const UNAVAILABLE = 'Repository setup is unavailable. Return to Repositories and refresh.'
   const REFRESH_DONE = 'Access refreshed.'
   const REFRESH_UNFINISHED = 'The access check did not finish. Refresh access to try again.'
@@ -28,6 +28,8 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   const deployError = ref('')
   const environmentError = ref('')
   const mirrorError = ref('')
+  const mirrorNotice = ref('')
+  const environmentNotice = ref('')
   const environmentAction = ref<'scan' | 'confirm' | 'automatic' | null>(null)
   const rejecting = ref(false)
   const deployments = ref<Record<string, FactoryDeployment>>({})
@@ -44,7 +46,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     // What Forge last observed of a tracked deployment lives on the factory
     // view, not on this one. It is read beside the page, never in front of it:
     // the card renders from the profile whether or not it answers.
-    if (view.repositories.find(candidate => candidate.id === id)?.deployment?.status === 'confirmed') void loadDeployments()
+    if (deploymentActive.value && view.repositories.find(candidate => candidate.id === id)?.deployment?.status === 'confirmed') void loadDeployments()
     return view
   // Repository setup wants a faster tick than the rest of the app (an access
   // check lands within seconds), but never slower than the configured one —
@@ -188,6 +190,8 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
+  watch(deploymentActive, value => { if (value && row.value?.deployment?.status === 'confirmed') void loadDeployments() })
+
   async function loadDeployments() {
     if (loadingDeployments) return
     loadingDeployments = true
@@ -234,13 +238,14 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     if (!view.value || !current?.environment || busy.value) return
     busy.value = true
     environmentAction.value = action
+    environmentNotice.value = ''
     environmentError.value = ''
     try {
       const next = await api.act<RepositoriesView>('/api/repositories/environment', {
         repo_id: current.id, revision: view.value.revision,
         environment_revision: current.environment.revision, action,
       })
-      if (repoId.value === current.id) poll.replace(next)
+      if (repoId.value === current.id) { poll.replace(next); environmentNotice.value = action === 'scan' ? 'Scan requested.' : 'Saved' }
     } catch (failure: unknown) {
       if (repoId.value === current.id) environmentError.value = actionMessage(failure, 'Could not update database requirements.')
       busy.value = false
@@ -255,12 +260,12 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     const current = row.value
     if (!view.value || !current || busy.value) return
     busy.value = true
-    mirrorError.value = ''
+    mirrorError.value = ''; mirrorNotice.value = ''
     try {
       const next = await api.act<RepositoriesView>('/api/repositories/mirror', {
         repo_id: current.id, revision: view.value.revision, denied_repositories: denied,
       })
-      if (repoId.value === current.id) poll.replace(next)
+      if (repoId.value === current.id) { poll.replace(next); mirrorNotice.value = 'Saved' }
     } catch (failure: unknown) {
       if (repoId.value === current.id) mirrorError.value = actionMessage(failure, 'Could not save Git dependency restrictions.')
       busy.value = false
@@ -288,19 +293,37 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
-  async function updateReviewScope(scope: 'all' | 'forge') {
+  async function savePolicy(kind: 'merge-policy' | 'review-scope', value: string) {
     const current = row.value
-    if (!current?.merge_check_revision || busy.value) return
-    busy.value = true; error.value = ''
+    if (!current?.merge_check_revision || busy.value) throw new Error('Refresh the repository before saving.')
+    busy.value = true
     try {
-      const next = await api.act<RepositoriesView>('/api/repositories/review-scope', {
-        repo_id: current.id, revision: current.merge_check_revision, scope,
+      const next = await api.act<RepositoriesView>(`/api/repositories/${kind}`, {
+        repo_id: current.id, revision: current.merge_check_revision,
+        ...(kind === 'merge-policy' ? { mode: value } : { scope: value }),
       })
       if (repoId.value === current.id) poll.replace(next)
-    } catch (failure: unknown) {
-      error.value = actionMessage(failure, 'Could not save the review scope. Refresh before trying again.')
+    } catch (failure) {
+      busy.value = false
+      await poll.refresh()
+      throw failure
+    } finally { busy.value = false }
+  }
+  const updateMergePolicy = (mode: string) => savePolicy('merge-policy', mode)
+  const updateReviewScope = (scope: string) => savePolicy('review-scope', scope)
+
+  async function disable() {
+    if (!view.value || repoId.value === null || busy.value) return
+    busy.value = true; error.value = ''
+    try {
+      const next = await api.act<RepositoriesView>('/api/repositories/disable', { repo_id: repoId.value, revision: view.value.revision })
+      poll.replace(next)
+    } catch (failure) {
+      error.value = actionMessage(failure, 'Could not disable automation.')
+      busy.value = false
+      await poll.refresh()
     } finally { busy.value = false }
   }
 
-  return { poll, view, live, row, report, shown, displayReady, ready, pickerRows, connections, accessDescription, checking, syncing, hint, deployment, busy, enabling, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope, refreshAccess }
+  return { poll, view, live, row, report, shown, displayReady, ready, pickerRows, connections, accessDescription, checking, syncing, hint, deployment, busy, enabling, error, query, accessNote, deployError, environmentError, environmentNotice, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, mirrorNotice, updateMirrorPolicy, updateReviewScope, updateMergePolicy, disable, refreshAccess }
 }

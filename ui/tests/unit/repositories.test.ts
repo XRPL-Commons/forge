@@ -343,6 +343,20 @@ describe('deploymentCard', () => {
     expect(filed.exposure).toBe('Not exposed — issue #41 filed')
   })
 
+  it('does not offer to track an unrelated domain when deployment is unobservable', () => {
+    const card = deploymentCard(row({ deployment: deployment({ status: 'proposed', proposal: proposal({
+      strategy: 'unobservable', domain: { value: 'backend.example.com', source: 'docs', confidence: 'high' },
+      exposure: { kind: 'none', path: null, field: null, header: null }, proposal: null,
+    }) }) }), null, NOW)!
+    expect(card.status).toBe('Tracking unavailable')
+    expect(card.unavailable).toBe(true)
+    expect(card.showDomain).toBe(false)
+    expect(card.actions).toEqual({ confirm: false, reject: true, reread: true })
+    const historical = deploymentCard(row({ deployment: deployment({ status: 'confirmed', profile: profile({ strategy: 'unobservable' }) }) }), observed(), NOW)!
+    expect(historical.status).toBe('Tracking unavailable')
+    expect(historical.observation).toBe('')
+  })
+
   it('folds a confirmed profile into one line and reads the observation beside it', () => {
     const card = deploymentCard(row({ deployment: deployment({ status: 'confirmed', profile: profile() }) }), observed(), NOW)!
     expect(card.state).toBe('confirmed')
