@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "pull_requests": [
+    {
+      "key": "pr:1:999",
+      "repo_id": 1,
+      "repo": "example/anton",
+      "number": 999,
+      "title": "Review beyond the initial Activity window",
+      "url": "https://github.com/example/anton/pull/670",
+      "unit_id": "unit",
+      "candidate": {
+        "id": "current",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "base_ref": "main",
+        "pr": 670
+      },
+      "stage_code": "reviewing",
+      "state": "reviewing",
+      "status": "queued",
+      "reason": "Waiting for a review worker.",
+      "reason_code": "dependency_access",
+      "retry_at": null,
+      "active_job_id": null,
+      "created_at": 1793520000,
+      "updated_at": 1793520100,
+      "enabled": true
+    }
+  ],
+  "next": null,
+  "observed_at": 1793520100
+}

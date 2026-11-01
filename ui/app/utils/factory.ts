@@ -33,6 +33,9 @@ export interface MirrorEvidence {
   receipts_total: number; claims_total: number; receipts_truncated: boolean; claims_truncated: boolean
 }
 export interface JobView {
+  candidate_id?: string | null
+  current_candidate?: boolean
+  pull_request?: { repo_id: number; number: number; title?: string; url?: string } | null
   publication?: { intent_id: string | null; status: string; updated_at: number; claim: { code?: string; reason?: string; paths?: string[] } | null; active: boolean } | null
   mirror?: MirrorEvidence
   id: string; issue_key: string | null; repo_id: number; repo: string; issue_number: number | null
@@ -106,6 +109,10 @@ export interface FactoryView {
   repositories?: { id: number; name: string; enabled: boolean; deployment?: DeploymentRow }[]
   observation?: { at: number; errors?: ObservationError[] } | Record<string, never>
   actions?: OperatorRequest[]
+  pull_requests?: import('./pullRequests').PullRequestWork[]
+  pull_requests_next?: string | null
+  pull_requests_recent_limit?: number
+  pull_requests_recent_truncated?: boolean
   issues?: LedgerIssueView[]
   jobs?: JobView[]
   slots?: Record<string, string>
@@ -445,7 +452,7 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
   // an issue already owns is rendered once, as that issue's card.
   const active = new Set((view.issues ?? []).map(issue => issue.active).filter(Boolean))
   for (const job of view.jobs ?? []) {
-    if (!active.has(job.id)) groups.internalJobs.push(toCard(job, view, now))
+    if (!active.has(job.id) && !job.pull_request) groups.internalJobs.push(toCard(job, view, now))
   }
   return groups
 }

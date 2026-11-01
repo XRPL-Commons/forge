@@ -1,0 +1,90 @@
+{
+  "ok": true,
+  "pull_request": {
+    "key": "pr:1:670",
+    "repo_id": 1,
+    "repo": "example/anton",
+    "number": 670,
+    "title": "Correct the session loader",
+    "url": "https://github.com/example/anton/pull/670",
+    "unit_id": "unit",
+    "candidate": {
+      "id": "current",
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "base_ref": "main",
+      "pr": 670
+    },
+    "stage_code": "reviewing",
+    "state": "reviewing",
+    "status": "deferred",
+    "reason": "Dependency downloads are rate limited. Review will retry automatically.",
+    "reason_code": "dependency_access",
+    "retry_at": 1793520600,
+    "active_job_id": null,
+    "created_at": 1793520000,
+    "updated_at": 1793520100,
+    "enabled": true
+  },
+  "jobs": [
+    {
+      "id": "44444444-4444-4444-8444-444444444670",
+      "candidate_id": "current",
+      "current_candidate": true,
+      "issue_key": null,
+      "repo_id": 1,
+      "repo": "example/anton",
+      "issue_number": null,
+      "role": "review",
+      "slot": "review-1",
+      "provider": "codex",
+      "provider_id": "codex",
+      "model": null,
+      "phase": "cleaned",
+      "outcome": "deferred",
+      "cleanup": true,
+      "fenced": true,
+      "created_at": 1793520000,
+      "started_at": 1793520000,
+      "observed_at": 1793520100,
+      "deadline": 1793520500,
+      "pull_request": {
+        "repo_id": 1,
+        "repo": "example/anton",
+        "number": 670,
+        "url": "https://github.com/example/anton/pull/670"
+      }
+    }
+  ],
+  "jobs_next": "1793520000:44444444-4444-4444-8444-444444444670",
+  "gates": [],
+  "observed_at": 1793520100,
+  "selected_job": {
+    "id": "44444444-4444-4444-8444-444444444669",
+    "candidate_id": "old",
+    "current_candidate": false,
+    "issue_key": null,
+    "repo_id": 1,
+    "repo": "example/anton",
+    "issue_number": null,
+    "role": "review",
+    "slot": "review-1",
+    "provider": "codex",
+    "provider_id": "codex",
+    "model": null,
+    "phase": "cleaned",
+    "outcome": "stale_deferred",
+    "cleanup": true,
+    "fenced": true,
+    "created_at": 1793500000,
+    "started_at": 1793500000,
+    "observed_at": 1793520100,
+    "deadline": 1793520500,
+    "pull_request": {
+      "repo_id": 1,
+      "repo": "example/anton",
+      "number": 670,
+      "url": "https://github.com/example/anton/pull/670"
+    }
+  }
+}

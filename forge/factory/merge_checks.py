@@ -30,8 +30,11 @@ class ReviewPullsController:
             paused = db.execute("SELECT enabled FROM runtime_controls WHERE name='factory_paused'").fetchone()
         if paused and paused[0]:
             return {'pull_number': source['pull_number'], 'admitted': False, 'reason': 'factory_paused'}
-        return self.commands.observe(source, policy_hash=manifest_hash(policy(config, item['repo_id'], repository_name=item['repo'])),
+        result = self.commands.observe(source, policy_hash=manifest_hash(policy(config, item['repo_id'], repository_name=item['repo'])),
             scope=merge_check_scope(config, item['repo_id']), enabled=enabled, hold_labels=config['hold_labels'], expected_version=expected_version)
+        if result.get('unit_id'):
+            self.commands.refresh_progress(result['unit_id'])
+        return result
 
     def reconcile(self, item, pulls):
         """Discover candidates from a complete inventory; bound units refresh in cycle."""
@@ -63,16 +66,25 @@ class ReviewPullsController:
         from ..store.queries import _limit
         limit = _limit(limit)
         with self.store.read_snapshot() as db:
-            rows = [dict(row) for row in db.execute('SELECT p.unit_id,p.pull_number,u.version,r.id AS repo_id,r.full_name AS repo '
+            rows = [dict(row) for row in db.execute('SELECT p.unit_id,p.pull_number,u.version,u.state,r.id AS repo_id,r.full_name AS repo '
                 'FROM review_pull_requests p JOIN units u ON u.id=p.unit_id JOIN repositories r ON r.id=p.repository_id '
-                "WHERE u.state NOT IN ('closed','merged') AND p.unit_id>? ORDER BY p.unit_id LIMIT ?", (after or '', limit + 1))]
+                "WHERE (u.state NOT IN ('closed','merged') OR (u.state='closed' AND u.current_candidate_id IS NOT NULL "
+                "AND EXISTS(SELECT 1 FROM candidate_effects c JOIN external_effects e ON e.id=c.effect_id "
+                "WHERE c.candidate_id=u.current_candidate_id AND e.kind='github_check') "
+                "AND NOT EXISTS(SELECT 1 FROM candidate_effects c JOIN external_effects e ON e.id=c.effect_id "
+                "WHERE c.candidate_id=u.current_candidate_id AND e.kind='github_settle_checks'))) "
+                "AND p.unit_id>? ORDER BY p.unit_id LIMIT ?", (after or '', limit + 1))]
         items = []
         for row in rows[:limit]:
             try:
                 remote = self.github.pr(row, row['pull_number'])
                 if remote.get('number') != row['pull_number']:
                     raise GitHubUnavailable('Review PR identity changed during observation')
-                items.append(self._observe(row, remote, expected_version=row['version']))
+                if row['state'] == 'closed':
+                    source = normalize_source(remote, row['repo_id'], row['repo'])
+                    items.append(self.commands.settle_retired(row['unit_id'], source))
+                else:
+                    items.append(self._observe(row, remote, expected_version=row['version']))
             except GitHubUnavailable as error:
                 items.append({'unit_id': row['unit_id'], 'reason': 'github_unavailable', 'http_status': error.status})
             except TransitionError:

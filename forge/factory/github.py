@@ -468,6 +468,20 @@ class GitHub:
             raise GitHubUnavailable('CI evidence exceeded its size limit')
         return value
 
+    def work_details_url(self, item, selected):
+        from ..store.db import Store
+        from ..store.review_progress import details_url
+        database = getattr(self.settings, 'database', None)
+        if not isinstance(database, Store):
+            return None
+        with database.read_snapshot() as db:
+            binding = db.execute('SELECT 1 FROM review_pull_requests WHERE repository_id=? AND pull_number=? LIMIT 1',
+                                 (item.get('repo_id'), selected.get('pr'))).fetchone()
+            if binding is None:
+                return None  # Issue-backed work retains its existing navigation.
+            row = db.execute('SELECT origin FROM operator_auth_configuration WHERE singleton=1').fetchone()
+        return details_url(row['origin'], item.get('repo_id'), selected.get('pr')) if row else None
+
     def check(self, item, role, candidate_value, external_id, conclusion, summary, *, observe_only=False):
         name = 'forge/merge-policy' if role == 'controller' else 'forge/' + role
         runs = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
@@ -477,13 +491,19 @@ class GitHub:
         readable = self.app_ids(role)
         observed = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') in readable
                     and r.get('external_id') == external_id]
+        if any(r.get('head_sha') != candidate_value['head'] for r in observed):
+            if observe_only:
+                return None
+            raise GitHubUnavailable('Check publication observed another head')
         for identity in readable:
             if sum(r['app']['id'] == identity for r in observed) > 1:
                 raise GitHubUnavailable('Duplicate check publication needs reconciliation')
+        details = self.work_details_url(item, candidate_value)
         expected_status = 'completed' if conclusion else 'in_progress'
         receipts = [r for r in observed if (r['app']['id'] == app_id or conclusion is not None)
                     and r.get('head_sha') == candidate_value['head'] and r.get('status') == expected_status and r.get('conclusion') == conclusion
-                    and (r.get('output') or {}).get('summary') == summary[:60000]]
+                    and (r.get('output') or {}).get('summary') == summary[:60000]
+                    and (details is None or r.get('details_url') == details or r['app']['id'] != app_id)]
         if len(receipts) > 1:
             raise GitHubUnavailable('Duplicate check publication needs reconciliation')
         if receipts:
@@ -499,11 +519,13 @@ class GitHub:
             return own[0]['id']
         payload = {'name': name, 'external_id': external_id,
                    'status': 'completed' if conclusion else 'in_progress',
-                   'output': {'title': name + (': ' + conclusion if conclusion else ': waiting'),
+                   'output': {'title': name + (': ' + conclusion if conclusion else ': in progress'),
                               'summary': summary[:60000]}}
+        if details is not None:
+            payload['details_url'] = details
         if conclusion:
             payload['conclusion'] = conclusion
-        if own and own[0].get('head_sha') == candidate_value['head'] and own[0].get('status') == payload['status'] and own[0].get('conclusion') == conclusion and (own[0].get('output') or {}).get('summary') == payload['output']['summary']:
+        if own and own[0].get('head_sha') == candidate_value['head'] and own[0].get('status') == payload['status'] and own[0].get('conclusion') == conclusion and (own[0].get('output') or {}).get('summary') == payload['output']['summary'] and (details is None or own[0].get('details_url') == details):
             return own[0]['id']
         if observe_only:
             return None
@@ -517,7 +539,9 @@ class GitHub:
         after = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
         verified = [r for r in after if r.get('name') == name and r.get('app', {}).get('id') == app_id
                     and r.get('external_id') == external_id and r.get('head_sha') == candidate_value['head']
-                    and r.get('status') == payload['status'] and (not conclusion or r.get('conclusion') == conclusion)]
+                    and r.get('status') == payload['status'] and (not conclusion or r.get('conclusion') == conclusion)
+                    and (details is None or r.get('details_url') == details)
+                    and (conclusion is not None or (r.get('output') or {}).get('summary') == payload['output']['summary'])]
         if len(verified) != 1:
             raise GitHubUnavailable('Published check has not been verified')
         return verified[0]['id']
@@ -742,7 +766,8 @@ class GitHub:
             raise ValueError('Review policy observation requires bounded exact effect identities')
         head=item['candidate']['head'];app_id=self.connection('controller')['app_id']
         runs=self.pages('controller',item,f"/commits/{head}/check-runs?filter=all",'check_runs')
-        owned=[run for run in runs if run.get('name')=='forge/merge-policy' and (run.get('app') or {}).get('id')==app_id]
+        owned=[run for run in runs if run.get('name')=='forge/merge-policy' and (run.get('app') or {}).get('id')==app_id
+               and run.get('external_id') not in item.get('retired_policy_ids', [])]
         if not owned:return False
         latest=max(owned,key=lambda run:run['id'])
         return (latest.get('external_id') in external_ids and latest.get('head_sha')==head

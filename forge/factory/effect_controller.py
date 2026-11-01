@@ -202,7 +202,7 @@ class EffectController:
                 self.commands.record(effect_id, 'confirmed', receipt={'check_id': check_id})
             elif effect['kind'] == 'github_check':
                 payload = effect['payload']
-                check_id = self.github.check(effect, payload['role'], effect['candidate'], effect_id,
+                check_id = self.github.check(effect, payload['role'], effect['candidate'], payload.get('check_external_id', effect_id),
                                              payload['conclusion'], payload['summary'])
                 if type(check_id) is not int or check_id < 1:
                     raise GitHubUnavailable('Published check has no verified identity')
@@ -268,7 +268,7 @@ class EffectController:
             check_id=self.github.verdict(self.jobs.job(effect['job_id']),effect['payload']['report'],observe_only=True)
         elif effect['kind']=='github_check':
             payload=effect['payload']
-            check_id=self.github.check(effect,payload['role'],effect['candidate'],effect['id'],payload['conclusion'],payload['summary'],observe_only=True)
+            check_id=self.github.check(effect,payload['role'],effect['candidate'],payload.get('check_external_id',effect['id']),payload['conclusion'],payload['summary'],observe_only=True)
         if type(check_id) is int and check_id>0:
             self.commands.record(effect['id'],'confirmed',receipt={'check_id':check_id})
             self._resolve_fault(effect)
@@ -304,9 +304,12 @@ class EffectController:
             if run.get('status') != 'completed':
                 if observe_only:
                     return
-                self.github.call(role, effect, 'PATCH', '/check-runs/' + str(run['id']), {
-                    'status': 'completed', 'conclusion': 'cancelled',
-                    'output': {'title': run['name'] + ': stopped', 'summary': effect['payload']['summary']}})
+                payload = {'status': 'completed', 'conclusion': 'cancelled',
+                    'output': {'title': run['name'] + ': stopped', 'summary': effect['payload']['summary']}}
+                url = self.github.work_details_url(effect, effect['candidate']) if hasattr(self.github, 'work_details_url') else None
+                if isinstance(url, str):
+                    payload['details_url'] = url
+                self.github.call(role, effect, 'PATCH', '/check-runs/' + str(run['id']), payload)
         after = self.github.pages('controller', effect, path, 'check_runs')
         verified = {run['id'] for run in after if run.get('id') in expected
                     and run.get('head_sha') == effect['candidate']['head'] and run.get('status') == 'completed'

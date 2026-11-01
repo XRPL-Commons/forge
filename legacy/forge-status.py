@@ -629,7 +629,7 @@ class H(BaseHTTPRequestHandler):
             self.send_error(403);return
         u = urlparse(self.path)
         store = None
-        if u.path in {'/api/factory', '/api/issues', '/api/delivery'}:
+        if u.path in {'/api/factory', '/api/issues', '/api/delivery', '/api/pull-requests'}:
             from forge.store.runtime import required
             try:
                 store = required(WD)
@@ -768,6 +768,25 @@ class H(BaseHTTPRequestHandler):
                 self._cached(('issues',)+tuple(sorted(args.items())), lambda: service.view(**args))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
+        elif u.path == '/api/pull-requests':
+            try:
+                from forge.factory.control import public_views
+                query = parse_qs(u.query, keep_blank_values=True)
+                if (set(query)-{'repo_id','number','before','job'}
+                        or any(len(value)!=1 or not value[0] for value in query.values())):
+                    raise ValueError('Invalid pull request view')
+                before = query.get('before', [''])[0]
+                if set(query) <= {'before'}:
+                    self._cached(('pull-requests',before),lambda: public_views(WD).pull_requests(before=before))
+                else:
+                    if not {'repo_id','number'} <= set(query):
+                        raise ValueError('Expected repository and pull request number')
+                    repo_id, number = int(query['repo_id'][0]), int(query['number'][0])
+                    job = query.get('job', [None])[0]
+                    self._cached(('pull-request',repo_id,number,before,job),
+                        lambda: public_views(WD).pull_request(repo_id,number,before=before,job=job))
+            except (ValueError,KeyError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Pull request work is unavailable. Refresh to try again.'}),status=404)
         elif u.path == '/api/delivery':
             from forge.store.models import DeliveryPlanChanged
             try:

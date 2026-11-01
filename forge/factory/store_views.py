@@ -432,9 +432,48 @@ class PipelineViews:
             return dict(issues=rows,total=total,page=page,pages=max(1,math.ceil(total/50)),repositories=scopes,
                         complete=all(scope['complete'] and scope['fresh'] for scope in scopes if repo_id is None or scope['id']==repo_id),actions=self._actions(db))
 
+    @projection
+    def pull_requests(self, *, before=''):
+        from .pull_request_views import listing_in
+        from .changes import cursor
+        if not isinstance(before,str) or len(before)>200:
+            raise ValueError('Invalid pull request cursor')
+        with self.store.read_snapshot() as db:
+            return {**listing_in(db,self.clock(),before=before), 'cursor':cursor(self.store,db), 'observed_at':self.clock()}
+
+    @projection
+    def pull_request(self, repo_id, number, *, before='', job=None):
+        from .pull_request_views import latest_in, row_in, jobs_in
+        from .changes import cursor
+        from .contracts import identifier
+        if type(repo_id) is not int or repo_id <= 0 or type(number) is not int or number <= 0:
+            raise ValueError('Invalid pull request identity')
+        if not isinstance(before, str) or len(before) > 200:
+            raise ValueError('Invalid pull request history cursor')
+        if job is not None:
+            identifier(job)
+        with self.store.read_snapshot() as db:
+            unit = latest_in(db, repo_id, number)
+            row, gates = row_in(db, unit, self.clock())
+            ids, next_cursor = jobs_in(db, repo_id, number, before)
+            def project(job_id):
+                result = self.job(job_id)
+                result['current_candidate'] = (result['unit_id'] == unit['id'] and
+                    result['candidate_id'] == unit['current_candidate_id'])
+                return result
+            selected = None
+            if job is not None:
+                found = db.execute('SELECT 1 FROM jobs j JOIN review_pull_requests p ON p.unit_id=j.unit_id '
+                    'WHERE j.id=? AND p.repository_id=? AND p.pull_number=?', (job, repo_id, number)).fetchone()
+                if not found:
+                    raise KeyError('Execution does not belong to this pull request')
+                selected = project(job)
+            return dict(pull_request=row, gates=gates, jobs=[project(key) for key in ids],
+                jobs_next=next_cursor, selected_job=selected, cursor=cursor(self.store, db), observed_at=self.clock())
+
     def job(self, job_id):
         with self.store.read_snapshot() as db:
-            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,e.observed_at,e.observed_status,e.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name '
+            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,e.observed_at,e.observed_status,e.started_at,p.source_phase,p.source_fenced,u.repository_id,u.current_candidate_id,r.full_name '
                 'FROM jobs j LEFT JOIN job_launches l ON l.job_id=j.id LEFT JOIN job_execution_state e ON e.job_id=j.id '
                 'LEFT JOIN job_public_metadata p ON p.job_id=j.id JOIN units u ON u.id=j.unit_id JOIN repositories r ON r.id=u.repository_id WHERE j.id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
@@ -446,6 +485,13 @@ class PipelineViews:
                 'FROM job_tasks j JOIN delivery_tasks t ON t.id=j.task_id '
                 'JOIN delegation_plans p ON p.id=j.plan_id WHERE j.job_id=?',(job_id,)).fetchone()
             singular=members[0] if len(members)==1 else None
+            review_pull = db.execute('SELECT pull_number FROM review_pull_requests WHERE unit_id=?', (row['unit_id'],)).fetchone()
+            pull = (dict(repo_id=row['repository_id'], repo=row['full_name'], number=review_pull['pull_number'],
+                         url=f"https://github.com/{row['full_name']}/pull/{review_pull['pull_number']}") if review_pull else None)
+            current_candidate = row['candidate_id'] is not None and row['candidate_id'] == row['current_candidate_id']
+            if review_pull and current_candidate:
+                from .pull_request_views import latest_in
+                current_candidate = latest_in(db, row['repository_id'], review_pull['pull_number'])['id'] == row['unit_id']
             from ..store.resource_usage import read_in as resources_in
             from ..store.mirror import view_in as mirror_in
             from ..store.job_evidence import publication_in
@@ -453,7 +499,8 @@ class PipelineViews:
                     'phase':row['source_phase'] or row['phase'],'execution_phase':row['phase'],
                     'cleanup':bool(row['cleanup']),'fenced':bool(row['source_fenced'] if row['source_fenced'] is not None else row['fenced']),
                     'execution_fenced':bool(row['fenced']),'issue_key':singular['issue_key'] if singular else None,
-                    'unit_id':row['unit_id'],'members':members,
+                    'unit_id':row['unit_id'],'members':members,'pull_request':pull,
+                    'candidate_id':row['candidate_id'],'current_candidate':current_candidate,
                     'builder_id':task['builder_id'] if task else assignment['builder_id'] if assignment else None,
                     'builder_stage':'task' if task else assignment['stage'] if assignment else None,
                     'parent_job_id':task['parent_job_id'] if task else None,
@@ -646,6 +693,9 @@ class PipelineViews:
             failed_count=db.execute("SELECT COUNT(DISTINCT candidate_id) FROM deployment_observations d WHERE status='failure' AND NOT EXISTS(SELECT 1 FROM deployment_observations s WHERE s.candidate_id=d.candidate_id AND s.status='success')").fetchone()[0]
             waiting_count=db.execute("SELECT COUNT(*) FROM units u JOIN deployment_profiles p ON p.repository_id=u.repository_id WHERE u.state='merged' AND p.status='confirmed' AND NOT EXISTS(SELECT 1 FROM deployment_observations d WHERE d.candidate_id=u.current_candidate_id AND d.status IN ('success','failure'))").fetchone()[0]
             actions=self._actions(db)
+            from .pull_request_views import board_in
+            pull_view = board_in(db, self.clock(), completed=section=='completed') if issue is None and section != 'runners' else dict(pull_requests=[],pull_requests_next=None,pull_requests_recent_limit=0,pull_requests_recent_truncated=False)
+            pull_requests = pull_view['pull_requests']
         jobs=[self.job(identifier) for identifier in job_ids]
         if not config['enabled']:
             operator=dict(title='Factory is paused',detail='Enable the factory to resume eligible work.',action_url='/settings',action_label='Review settings')
@@ -654,7 +704,7 @@ class PipelineViews:
         elif any(row['attention_kind'] for row in issues):
             target=next(row for row in issues if row['attention_kind'])
             operator=dict(title='An issue needs your attention',detail=target['reason'],action_url='/issues?issue='+target['key'],action_label='Review issue')
-        elif not issues and not runner_count:
+        elif not issues and not runner_count and not pull_requests:
             operator=dict(title='Waiting for a ready issue',detail='Queue an issue to start work.',action_url='/issues',action_label='Choose an issue',empty=True)
         else:operator=None
         summary=dict(completed_count=completed_count,runner_count=runner_count,runners_running=running,
@@ -664,5 +714,5 @@ class PipelineViews:
         with self.store.read_snapshot() as db:
             current_cursor = change_cursor(self.store, db)
         return dict(cursor=current_cursor,active=True,operator=operator,repositories=repositories,observation=observation,actions=actions,
-            issues=issues,jobs=jobs,slots=slots,deployments=deployments,runtime=config,runtime_revision=digest(config),
+            issues=issues,**pull_view,jobs=jobs,slots=slots,deployments=deployments,runtime=config,runtime_revision=digest(config),
             coding_accounts=accounts,summary=summary,next=cursor)

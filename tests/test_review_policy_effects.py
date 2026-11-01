@@ -41,7 +41,7 @@ class ReviewPolicyTests(unittest.TestCase):
         return check_id
 
     def policy_current(self,item,external_ids):
-        runs=[(effect_id,value) for effect_id,value in self.policy_runs.items() if value[1]==item['candidate']['head']]
+        runs=[(effect_id,value) for effect_id,value in self.policy_runs.items() if value[1]==item['candidate']['head'] and effect_id not in item.get('retired_policy_ids', [])]
         if not runs:return False
         effect_id,(_,_,conclusion)=max(runs,key=lambda row:row[1][0])
         return effect_id in external_ids and conclusion=='success'
@@ -237,7 +237,7 @@ class ReviewPolicyTests(unittest.TestCase):
                 else:self.remotes[8]['head']['sha']='c'*40
                 self.observer.observe(normalize_source(self.remotes[8],repo_id=1,repo='owner/repo'),policy_hash=self.policy)
                 fresh=controller.step(first['unit_id'])['effect_id']
-                self.assertNotEqual(fresh,old)
+                self.assertEqual(fresh,old)  # The original candidate check remains authoritative.
                 self.assertEqual(self.driver.step(fresh)['status'],'confirmed')
                 self.assertEqual(controller.step(first['unit_id'])['effect_id'],fresh)
 
@@ -249,7 +249,7 @@ class ReviewPolicyTests(unittest.TestCase):
         for _ in range(3):
             self.assertEqual(controller.step(first['unit_id'])['effect_id'],one)
             self.assertEqual(controller.step(second['unit_id'])['effect_id'],two)
-        self.assertEqual(len(self.policy_runs),4)
+        self.assertEqual(len(self.policy_runs),2)
 
     def test_latest_policy_observation_requires_exact_current_app_head_and_effect(self):
         from forge.factory.github import GitHub

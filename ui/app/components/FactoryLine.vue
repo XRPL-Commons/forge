@@ -30,7 +30,10 @@ const router = useRouter()
 const state = computed(() => lineState(props.view, props.now, props.groups))
 const info = computed(() => state.value ? lineAnalyse(state.value) : null)
 const { accounts } = useCodingAccounts()
-const parts = computed<HeadlinePart[]>(() => info.value ? lineHeadline(info.value, accountsHeadline(accounts.value)) : [])
+const parts = computed<HeadlinePart[]>(() => info.value ? [
+  ...(props.view?.pull_requests?.length ? [{ t: 'Issues: ', c: 'muted' } as HeadlinePart] : []),
+  ...lineHeadline(info.value, accountsHeadline(accounts.value)),
+] : [])
 const label = computed(() => lineHeadlineText(parts.value))
 const summary = computed(() => state.value && info.value ? lineSummary(state.value, info.value) : '')
 const links = computed(() => (state.value?.items ?? []).map(item => ({

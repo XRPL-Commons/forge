@@ -63,6 +63,26 @@ WORDING: dict[str, tuple[str, str | None]] = {
 }
 
 
+REVIEW_CAUSES = {
+    'dependency_access': 'Dependency downloads are unavailable.',
+    'missing_service': 'A required test service is unavailable.',
+    'environment': 'The review environment needs attention.',
+    'resources': 'The worker needs additional resources.',
+    'forge_problem': 'Forge could not prepare or run this review.',
+    'provider_login_expired': 'The coding account needs sign-in.',
+    'provider_usage_limit': 'The coding account has reached its usage limit.',
+    'approval_required': 'Waiting for human approval.',
+    'verification_human': 'Waiting for human verification.',
+    'verification_ci': 'Waiting for required verification checks.',
+    'label_hold': 'A hold label pauses this pull request.',
+    'pull_draft': 'This pull request is a draft.',
+    'repository_disabled': 'Automation is disabled for this repository.',
+    'operator_pause': 'An operator paused this work.',
+    'technical_rejection': 'Review or Audit requested changes.',
+    'verdict_failed': 'Review or Audit requested changes.',
+}
+
+
 def describe(code: str, **params) -> str:
     """The plain sentence for a code. Unknown codes are a programming error."""
     try:
@@ -118,6 +138,12 @@ def github_rule(details):
 def describe_gate(gate):
     """Common wording for a gate, including its typed dependency distinction."""
     details = json.loads(gate['details_json'])
+    if gate['code'] == 'review_source' and details.get('reason') == 'review_unavailable':
+        role = 'Audit' if details.get('role') == 'audit' else 'Review'
+        cause = REVIEW_CAUSES.get(details.get('cause'), 'The worker could not finish this revision.')
+        retry = ('Forge will retry this revision.' if details.get('retry_at') else
+                 'Retries are exhausted. Update the pull request or ask the operator to investigate.')
+        return f'{role} is deferred. {cause} {retry}'
     if gate['code'] == 'forge_problem' and details.get('source') == 'execution':
         return 'Forge could not complete the worker execution; waiting for a qualified runner update. No issue attempt was charged'
     if gate['code'] == 'forge_problem' and details.get('source') == 'scheduling':
