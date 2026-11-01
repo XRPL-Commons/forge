@@ -10,8 +10,9 @@ watch(() => route.query.setup, value => { if (value === '1') wizard.value = true
 const { poll, live, row, report, displayReady, hint, busy, checking, error, deployment, deployError, environmentError, environmentNotice, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, mirrorNotice, updateMirrorPolicy, updateReviewScope, updateMergePolicy, disable } = useRepository(repoId, computed(() => !wizard.value), deploymentOpen)
 const disabling = ref(false)
 async function confirmDisable() { await disable(); if (!row.value?.enabled) disabling.value = false }
-const environmentSummary = computed(() => row.value?.environment?.profile?.services.length
-  ? row.value.environment.profile.services.join(', ') : 'Automatic')
+const environmentSummary = computed(() => row.value?.environment?.external_verification
+  ? 'Mac required for Xcode checks' : row.value?.environment?.profile?.services.length
+    ? row.value.environment.profile.services.join(', ') : 'Linux workers')
 async function closed() { wizard.value = false; await navigateTo(`/settings/repositories/${props.repoId}`, { replace: true }); await poll.refresh() }
 </script>
 <template>
@@ -27,6 +28,7 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
         <NuxtLink :to="`/planning/${repoId}`" class="text-sm text-sky-200">Plan work →</NuxtLink>
       </div>
       <p v-if="hint" class="mt-3 text-sm text-amber-200" role="status">{{ hint }}</p>
+      <p v-if="row.environment?.external_verification" id="repository-platform-notice" class="mt-3 text-sm text-amber-200" role="status">This repository contains an Xcode project. Forge can prepare changes here; required Xcode builds and simulator tests need verification on a Mac before Forge can merge.</p>
       <section class="mt-5 space-y-6 rounded-xl border border-line bg-panel p-5 text-sm" aria-labelledby="automation-heading">
         <h2 id="automation-heading" class="text-lg font-semibold text-white">Automation</h2>
         <div v-if="live">

@@ -13,6 +13,8 @@ type ProtectionStatus = 'unchecked' | 'checking' | 'unknown' | 'stale' | 'ready'
 
 interface EnvironmentRequirements { services: string[]; evidence: string[]; head: string }
 export interface RepositoryEnvironment {
+  worker_capabilities?: { os: 'linux'; xcode: boolean; ios_simulator: boolean }
+  external_verification?: { capability: 'xcode'; head: string; evidence: string[] } | null
   profile: (EnvironmentRequirements & { confirmed_at: number }) | null
   proposal: (EnvironmentRequirements & { revision: string }) | null
   status: 'idle' | 'running' | 'complete' | 'failed'

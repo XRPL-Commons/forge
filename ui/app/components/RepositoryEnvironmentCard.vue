@@ -19,15 +19,24 @@ const unavailable = computed(() => !!props.environment.proposal?.services.length
 
 <template>
   <section id="test-databases" class="text-sm" aria-labelledby="test-databases-title">
+    <div class="mb-5 rounded-lg border border-line p-3">
+      <h3 class="font-semibold text-white">Worker capabilities</h3>
+      <p class="mt-1 text-muted">Workers run Linux. Xcode and the iOS Simulator require a Mac and cannot run in either worker tier.</p>
+      <p class="mt-2 text-muted">Forge can prepare code changes. Required checks that cannot run here need a passing result from trusted configured CI or explicit human verification for the current change before Forge merges.</p>
+      <div v-if="environment.external_verification" class="mt-3 text-amber-200">
+        <p>Xcode project detected at version {{ environment.external_verification.head.slice(0, 12) }}. Mac verification may be needed for this work.</p>
+        <ul class="mt-2 space-y-1 text-xs"><li v-for="file in environment.external_verification.evidence" :key="file" class="break-words">{{ file }}</li></ul>
+      </div>
+    </div>
     <h2 id="test-databases-title" class="text-sm font-semibold text-white">Database requirements</h2>
-    <p class="mt-1 text-sm text-muted">The supervisor chooses an environment for each issue using its description and automatic repository scans. No repository approval is needed.</p>
+    <p class="mt-1 text-sm text-muted">The supervisor chooses an environment for each issue. Repository scans provide evidence for planning. No repository approval is needed.</p>
 
     <div class="mt-3 text-sm" role="status" aria-live="polite">
       <template v-if="environment.profile">
         <p class="font-medium text-mint-200">Repository default: {{ environment.profile.services.length ? databases(environment.profile.services) : 'Standard environment' }}</p>
         <p class="mt-1 text-muted">{{ environment.profile.services.length ? 'This optional default is used when the issue does not identify a more specific environment.' : 'The supervisor uses automatic selection for issues in this repository.' }}</p>
       </template>
-      <p v-else class="text-muted">Automatic selection is enabled. Scans run when Forge assigns work; you can refresh the evidence here.</p>
+      <p v-else class="text-muted">Automatic selection is enabled. Scan requirements to inspect the repository's database and platform evidence.</p>
       <p v-if="scanning" class="mt-2 text-sky-200">Scanning dependency, test and CI files…</p>
     </div>
 

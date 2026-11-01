@@ -93,6 +93,28 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             probe(github, {'repo': 'example/project', 'repo_id': 1})
 
+    def test_xcode_requirement_uses_project_paths_without_reading_large_files(self):
+        github = Mock()
+        github.target.return_value = 'main'
+        paths = ['App.xcodeproj/project.pbxproj', 'App.xcworkspace/contents.xcworkspacedata',
+                 'vendor/ThirdParty.xcodeproj/project.pbxproj']
+        github.call.side_effect = [{'sha': 'a' * 40}, {'tree': [
+            {'path': path, 'type': 'blob', 'mode': '100644', 'size': 100000} for path in paths]}]
+        value = probe(github, {'repo': 'example/project', 'repo_id': 1})
+        self.assertEqual(value['external_verification'], {
+            'capability': 'xcode', 'head': 'a' * 40, 'evidence': paths[:2]})
+        self.assertEqual(github.call.call_count, 2)
+        self.assertEqual(value['services'], [])
+
+    def test_swift_package_or_project_symlink_does_not_imply_xcode_requirement(self):
+        github = Mock()
+        github.target.return_value = 'main'
+        github.call.side_effect = [{'sha': 'a' * 40}, {'tree': [
+            {'path': 'Package.swift', 'type': 'blob', 'mode': '100644'},
+            {'path': 'App.xcodeproj/project.pbxproj', 'type': 'blob', 'mode': '120000'}]}]
+        value = probe(github, {'repo': 'example/project', 'repo_id': 1})
+        self.assertNotIn('external_verification', value)
+
 
 class ServiceResultTests(unittest.TestCase):
     def test_services_result_requires_a_nonempty_supported_list(self):

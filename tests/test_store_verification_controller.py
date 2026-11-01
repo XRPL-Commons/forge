@@ -89,6 +89,24 @@ class VerificationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM candidate_evidence WHERE kind='review'").fetchone()[0], 0)
         self.assertIsNotNone(self.reserve('review'))
 
+    def test_ios_verification_waits_for_matching_trusted_mac_ci_and_still_needs_review(self):
+        self.allowed = [{'name': 'ios-simulator', 'app_id': 73}]
+        job = self.reserve('review', context={'verification_checks': deepcopy(self.allowed)})
+        self.capture(job, self.report(job, 'needs_human_verification', verification={
+            'what': 'Run xcodebuild test for the App scheme on an iOS Simulator and confirm all tests pass.',
+            'why': 'The Linux worker has no Xcode or iOS Simulator.', 'checks': ['ios-simulator']}))
+        self.controller.step(job)
+        gate_id = self.view()['current_blocker']['id']
+        # Successful Linux API tests do not satisfy the requested Mac check.
+        self.assertIn('pending', self.verifier.step(gate_id))
+        self.assertIsNone(self.status(gate_id)[0]['resolved_at'])
+        self.snapshot['checks'][helpers.HEAD][0]['name'] = 'ios-simulator'
+        self.verifier.step(gate_id)
+        self.assertEqual(self.view()['state'], 'reviewing')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM candidate_evidence WHERE kind='review'").fetchone()[0], 0)
+        self.assertIsNotNone(self.reserve('review'))
+
     def test_verification_can_release_during_audit(self):
         job = self.reserve('review')
         self.capture(job, self.report(job))

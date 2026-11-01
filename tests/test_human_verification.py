@@ -17,6 +17,16 @@ VERIFY = {'what': 'Build the release image, POST synthetic input to /api/export-
 
 
 class VerificationContractTests(unittest.TestCase):
+    def test_apple_checks_are_external_verification_in_every_worker_tier(self):
+        for role in ('build', 'review', 'audit', 'recovery'):
+            for tier in ('standard', 'full'):
+                job = WorkerContractTests().note(role)
+                job['runner_config'] = {'environment_tier': tier}
+                note = assignment_note(job)
+                self.assertEqual(note['worker_capabilities'], {'os': 'linux', 'xcode': False, 'ios_simulator': False})
+                self.assertIn('Xcode, Apple SDKs and the iOS Simulator are unavailable', note['instructions'])
+                self.assertIn('do not report an unrun check as passed', note['instructions'])
+
     def test_operator_ci_configuration_requires_a_connected_repository_and_current_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
