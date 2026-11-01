@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.repository_setup import RepositorySetup, ruleset, RULESET_NAME, observation_key
+from forge.repository_setup import RepositorySetup, observation_key
 from forge.factory.config import validate as runtime_config
 from forge.deployments import Deployments
 from forge.factory.github import GitHubUnavailable
@@ -58,27 +58,15 @@ class RepositorySetupTests(unittest.TestCase):
             'bypass': {'status':'operator_review'}}
         self.service = RepositorySetup(self.settings, github_class=self.github)
 
-    def test_check_is_read_only_and_download_uses_verified_branch(self):
-        revision = digest(self.settings.load())
-        self.service.check(10, revision)
+    def test_check_observes_verified_branch_without_creating_or_exporting_rules(self):
+        self.service.check(10, digest(self.settings.load()))
         row = self.service.view(10)['repositories'][0]
         self.assertTrue(row['protection_ready'])
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
-        payload, filename = self.service.download(10, revision)
-        self.assertEqual(payload['conditions']['ref_name']['include'], ['refs/heads/release/v2'])
-        controller = self.settings.load()['connections']['controller']['app_id']
-        self.assertEqual(payload['bypass_actors'], [
-            {'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'},
-            {'actor_id': controller, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
-        ])
-        self.assertEqual(payload['rules'][0]['type'], 'pull_request')
-        # Scope 'all' is the default: the Forge App's merge-policy check is required on every PR.
-        self.assertEqual(payload['rules'][1]['parameters']['required_status_checks'],
-                         [{'context': 'forge/merge-policy', 'integration_id': controller}])
-        self.assertEqual(filename, 'forge-review-rules-10.json')
-        self.assertEqual(row['protection']['bypass']['status'], 'operator_review')
-        self.assertEqual(self.settings.load()['repositories'][0]['enabled'], True)
+        self.assertEqual(row['protection']['branch'], 'release/v2')
+        self.assertFalse(hasattr(self.service, 'download'))
         self.github.return_value.call.assert_not_called()
+        self.github.return_value.pages.assert_not_called()
 
     def test_review_scope_defaults_all_and_requires_current_runtime_revision(self):
         from forge.factory.config import load, save
@@ -116,8 +104,6 @@ class RepositorySetupTests(unittest.TestCase):
             self.assertEqual(row['protection_previous_status'], 'ready')
             self.assertEqual(row['protection'], original)
             self.assertFalse(row['protection_ready'])
-            with self.assertRaises(ValueError):
-                self.service.download(10, digest(self.settings.load()))
             raise ValueError('Unavailable')
         self.github.return_value.target.side_effect = during_check
         self.service.check(10)
@@ -129,28 +115,22 @@ class RepositorySetupTests(unittest.TestCase):
         self.settings.save_config(config)
         self.assertIsNone(self.service.view(10)['repositories'][0]['protection_last_known'])
 
-    def test_stale_wrong_identity_and_config_changes_cannot_download(self):
-        revision=digest(self.settings.load())
-        self.service.check(10, revision)
-        for identifier, rev in [(99,revision),(10,'old')]:
-            with self.assertRaises(ValueError): self.service.download(identifier, rev)
-        self.now+=301
-        self.assertEqual(self.service.view(10)['repositories'][0]['protection_status'],'stale')
-        with self.assertRaises(ValueError): self.service.download(10, revision)
-        self.now-=301
-        config=self.settings.load();config['connections']['build']['app_id']=99
-        self.settings.save_config(config)
-        with self.assertRaises(ValueError): self.service.download(10,revision)
-
-    def test_existing_ruleset_links_to_edit_and_missing_requirements_download(self):
-        report=self.github.return_value.protection_report.return_value
-        report['requirements'][1]['passed']=False
-        self.github.return_value.pages.return_value=[{'id':21,'name':RULESET_NAME,'source_type':'Repository'}]
+    def test_stale_observations_and_config_changes_require_fresh_reads(self):
         self.service.check(10)
-        row=self.service.view(10)['repositories'][0]
-        self.assertEqual(row['protection_status'],'needs_setup')
-        self.assertEqual(row['protection']['edit_url'],'https://github.com/example/project/settings/rules/21')
-        self.service.download(10,digest(self.settings.load()))
+        self.now += 301
+        self.assertEqual(self.service.view(10)['repositories'][0]['protection_status'], 'stale')
+        self.now -= 301
+        config = self.settings.load(); config['connections']['build']['app_id'] = 99
+        self.settings.save_config(config)
+        self.assertEqual(self.service.view(10)['repositories'][0]['protection_status'], 'access_needed')
+
+    def test_legacy_missing_baseline_does_not_block_fresh_readiness(self):
+        self.github.return_value.protection_report.return_value['requirements'][1]['passed'] = False
+        self.service.check(10)
+        row = self.service.view(10)['repositories'][0]
+        self.assertTrue(row['protection_ready'])
+        self.assertNotIn('edit_url', row['protection'])
+        self.github.return_value.pages.assert_not_called()
 
     def test_unknown_observation_cannot_download_or_look_ready(self):
         self.github.return_value.target.side_effect=ValueError('Unavailable')
@@ -158,7 +138,6 @@ class RepositorySetupTests(unittest.TestCase):
         row=self.service.view(10)['repositories'][0]
         self.assertEqual(row['protection_status'],'unknown')
         self.assertFalse(row['protection_ready'])
-        with self.assertRaises(ValueError): self.service.download(10,digest(self.settings.load()))
 
     def test_repeated_checks_are_coalesced_and_interrupted_checks_expire(self):
         with self.settings.locked('repository-check'):
@@ -183,8 +162,7 @@ class RepositorySetupTests(unittest.TestCase):
         self.github.return_value.target.return_value='next'
         self.github.return_value.protection_report.return_value['branch']='next'
         self.service.check(11)
-        payload,_=self.service.download(11,digest(self.settings.load()))
-        self.assertEqual(payload['conditions']['ref_name']['include'],['refs/heads/next'])
+        self.assertEqual(self.service.view(11)['repositories'][0]['protection']['branch'], 'next')
 
     def test_unrelated_repository_enablement_keeps_fresh_observation(self):
         self.service.check(10)
@@ -270,7 +248,7 @@ class RepositorySetupTests(unittest.TestCase):
         config=self.settings.load();config['repositories']=[];self.settings.save_config(config)
         revision=digest(config)
         for available, passed in [(False,True),(True,False)]:
-            self.github.return_value.protection_report.return_value.update(available=available, requirements=[{'id':'reviews','passed':passed}])
+            self.github.return_value.protection_report.return_value.update(available=available, requirements=[{'id':'readable','passed':passed}])
             self.service.check(10)
             with self.assertRaises(ValueError):self.service.enable(10,revision)
             self.assertEqual(self.settings.load(),config)
@@ -483,40 +461,19 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertNotIn('deployment', setup.load()['repositories'][0])
         self.assertNotIn('deployment', self.settings.load()['repositories'][0])
 
-    def test_missing_bypass_blocks_enablement_and_cached_ready_state(self):
-        report = self.github.return_value.protection_report.return_value
-        report['bypass'] = {'status': 'missing', 'detail': 'Add the controller bypass.'}
+    def test_legacy_missing_bypass_does_not_block_enablement(self):
+        self.github.return_value.protection_report.return_value['bypass'] = {'status': 'missing'}
         self.service.check(10)
-        row = self.service.view(10)['repositories'][0]
-        self.assertEqual(row['protection_status'], 'needs_setup')
-        self.assertFalse(row['protection_ready'])
-        self.assertFalse(self.settings.view()['repositories'][0]['dispatch_allowed'])
-        self.service.download(10, digest(self.settings.load()))
-        # Evidence from before this release cannot keep a known blocker ready.
-        data = self.service.read()
-        data['repositories']['10']['status'] = 'ready'
+        self.assertTrue(self.service.view(10)['repositories'][0]['protection_ready'])
+        data = self.service.read(); data['repositories']['10']['status'] = 'needs_setup'
         self.service.save_observation(10, data)
-        self.assertEqual(self.service.view(10)['repositories'][0]['protection_status'], 'needs_setup')
+        self.assertTrue(self.service.view(10)['repositories'][0]['protection_ready'])
         self.service.disable(10, digest(self.settings.load()))
-        with self.assertRaisesRegex(ValueError, 'finish repository setup'):
-            self.service.enable(10, digest(self.settings.load()))
-        report['bypass']['status'] = 'ready'
-        self.service.check(10)
         self.service.enable(10, digest(self.settings.load()))
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
 
-    def test_generated_rules_pass_the_real_reader(self):
-        from tests.test_repository_rules import RepositoryRuleTests
-        payload=ruleset('main', 4)
-        reader=RepositoryRuleTests().reader(None,payload['rules'])
-        self.assertTrue(reader.protections({'repo_id':10,'repo':'example/project'},{'base_ref':'main'}))
 
-    def test_template_does_not_add_forge_checks_or_exclusive_permissions(self):
-        payload=ruleset('main', 4)
-        self.assertEqual([r['type'] for r in payload['rules']],['pull_request'])
-        self.assertFalse(payload['rules'][0]['parameters']['require_code_owner_review'])
-        self.assertEqual(payload['enforcement'],'active')
-        with self.assertRaises(ValueError):ruleset('main\ninvalid', 4)
+
 
 
 class RepositoryHTTPTests(unittest.TestCase):
@@ -569,13 +526,11 @@ class RepositoryHTTPTests(unittest.TestCase):
                 environment.return_value.act.assert_not_called()
                 self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
 
-    def test_download_is_attachment_and_does_not_start_a_check(self):
+    def test_retired_ruleset_download_does_not_generate_rules(self):
         with patch('forge.repository_setup.RepositorySetup') as cls:
-            cls.return_value.download.return_value=(ruleset('main', 4),'forge-review-rules-10.json')
             h=self.handler('/api/repositories/ruleset?repo_id=10&revision=r');h.do_GET()
-            cls.return_value.download.assert_called_once_with(10,'r')
-            cls.return_value.start_check.assert_not_called()
-            self.assertIn('attachment',h._send.call_args.args[2]['Content-Disposition'])
+            cls.assert_not_called()
+            h.send_error.assert_called_once_with(404)
 
     def test_deployment_decisions_carry_one_action_and_the_current_revision(self):
         with patch('forge.repository_setup.RepositorySetup') as cls:

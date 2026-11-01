@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 
-const RULESET = '/api/repositories/ruleset?repo_id=2&revision=settings-rev-1'
 const posted = path => entry => entry.method === 'POST' && entry.path === path
 async function waitText(page, text) {
   await page.waitForFunction(text => document.body.innerText.includes(text), text)
@@ -65,7 +64,7 @@ export default async function (page, { base, scenario, requests }) {
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
   await waitStep(page, 'App access')
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
-  await waitStep(page, 'Review rules')
+  await waitStep(page, 'Merge policy')
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
   await waitStep(page, 'Enable')
   assert.equal(await dialog.locator('#deployment-title, #test-databases').count(), 0)
@@ -77,25 +76,18 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(enables.length, 1)
   assert.deepEqual(enables[0].body, { repo_id: 2, revision: 'settings-rev-1' })
 
-  // Existing blockers and generated review-rule downloads remain available in the modal.
+  // Repository verification observes owner rules without offering imports or bypass repairs.
   await scenario('needs-setup')
   await page.goto(base + '/settings/repositories/2?setup=1')
-  await waitStep(page, 'Review rules')
+  await waitStep(page, 'Merge policy')
   dialog = page.getByRole('dialog')
-  assert.equal(await dialog.locator('[data-requirement-fix]').count(), 2)
-  assert.equal(await dialog.locator('#download').getAttribute('href'), RULESET)
-  assert.equal(await dialog.locator('#download').getAttribute('download'), 'forge-review-rules-2.json')
-  assert.equal(await dialog.locator('#github').getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/settings/rules')
-  const header = await page.evaluate(url => fetch(url).then(r => r.headers.get('content-disposition')), RULESET)
-  assert.equal(header, 'attachment; filename="forge-review-rules-2.json"')
-  const [saved] = await Promise.all([page.waitForEvent('download'), dialog.locator('#download').click()])
-  assert.equal(saved.suggestedFilename(), 'forge-review-rules-2.json')
+  assert.equal(await dialog.locator('[data-requirement-fix], [data-rule-fix], #download, #github-protection').count(), 0)
+  assert.match(await dialog.innerText(), /The supervisor merges Forge work after CI, independent Review and Audit pass/)
+  assert.equal(await dialog.getByRole('link', { name: 'View GitHub rules ↗' }).getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/settings/rules')
   await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
   const checks = await posts(requests, '/api/repositories/check')
   assert.equal(checks.length, 1)
   assert.deepEqual(checks[0].body, { repo_id: 2, revision: 'settings-rev-1' })
-  await dialog.getByRole('button', { name: 'Setup details' }).click()
-  await waitText(page, 'Bypass permissions need your review.')
   await page.setViewportSize({ width: 390, height: 844 })
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
   const button = await dialog.getByRole('button', { name: 'Check again', exact: true }).boundingBox()
@@ -112,69 +104,18 @@ export default async function (page, { base, scenario, requests }) {
   await page.waitForTimeout(700)
   assert.equal((await requests()).filter(posted('/api/repositories/check')).length, 1)
 
-  // One ruleset produces one actionable card. Commands are the default;
-  // the same card reports fixed after Check again observes the repair.
-  await page.goto('about:blank'); await scenario('bypass-missing')
-  await page.goto(base + '/settings/repositories/2?setup=1')
-  await waitStep(page, 'Review rules')
-  dialog = page.getByRole('dialog')
-  assert.equal(await dialog.locator('[data-rule-fix]').count(), 1)
-  const rulesetFix = dialog.locator('#bypass-rulesets')
-  assert.match(await rulesetFix.locator('#bypass-command').innerText(), /gh api --method PUT repos\/XRPL-Commons\/hackathon\/rulesets\/10/)
-  assert.equal(await rulesetFix.getByRole('tab', { name: 'Command', exact: true }).getAttribute('aria-selected'), 'true')
-  await rulesetFix.getByRole('tab', { name: 'Manual steps' }).click()
-  assert.match(await rulesetFix.innerText(), /For pull requests only/)
-  assert.equal(await rulesetFix.locator('#bypass-edit').getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/rules/10')
-  assert.equal(await dialog.locator('#bypass-classic').count(), 0)
-  assert.ok(!(await dialog.innerText()).includes('Importing another ruleset'))
-  for (const width of [390, 1440]) {
-    await page.setViewportSize({ width, height: 1000 })
-    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+  // Existing classic and ruleset observations are read-only even when old cached
+  // observations include a missing bypass. No generated mutation command is shown.
+  for (const name of ['bypass-missing', 'bypass-classic']) {
+    await page.goto('about:blank'); await scenario(name)
+    await page.goto(base + '/settings/repositories/2?setup=1')
+    await waitStep(page, 'Merge policy')
+    dialog = page.getByRole('dialog')
+    assert.equal(await dialog.locator('[data-rule-fix], #bypass-command, #download').count(), 0)
+    assert.match(await dialog.locator('#github-rules').innerText(), /Repository owners manage these rules/)
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
   }
-  // Publish the repaired observation as the requested check completes. If it
-  // arrives before the click, normal polling correctly turns this into Continue.
-  await page.route('**/api/repositories/check', async route => {
-    await scenario('bypass-ready')
-    await route.continue()
-  })
-  await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
-  await until(() => rulesetFix.innerText(), text => text.includes('Fixed'))
-  await page.unroute('**/api/repositories/check')
-  assert.match(await rulesetFix.innerText(), /Fixed/)
-  assert.equal(await dialog.locator('[data-rule-fix]').count(), 1)
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-
-  // Classic protection retains its command and existing actors, with short
-  // manual steps in a second tab.
-  await page.goto('about:blank'); await scenario('bypass-classic')
-  await page.goto(base + '/settings/repositories/2?setup=1')
-  await waitStep(page, 'Review rules')
-  dialog = page.getByRole('dialog')
-  const classicFix = dialog.locator('#bypass-classic')
-  assert.equal(await dialog.locator('[data-rule-fix]').count(), 1)
-  assert.equal(await dialog.locator('#bypass-command').innerText(),
-    `gh api -X PATCH repos/XRPL-Commons/hackathon/branches/main/protection/required_pull_request_reviews --input - <<< '{"bypass_pull_request_allowances":{"users":[],"teams":[],"apps":["release-bot","forge-controller-2d9a0cef"]}}'`)
-  await dialog.locator('#bypass-copy').click()
-  await until(() => dialog.locator('#bypass-copy').innerText(), text => text !== 'Copy command')
-  assert.match(await dialog.locator('#bypass-copy').innerText(), /Copied|Select and copy/)
-  await classicFix.getByRole('tab', { name: 'Manual steps' }).click()
-  assert.match(await classicFix.innerText(), /edit the main rule/)
-  assert.match(await classicFix.innerText(), /Allow specified actors to bypass required pull requests/)
-  assert.match(await classicFix.innerText(), /Add App forge-controller-2d9a0cef/)
-  assert.equal(await classicFix.getByRole('link', { name: 'Branch protection settings ↗' }).getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/settings/branches')
-  assert.equal(await dialog.locator('#download, #download-step, #github, #bypass-rulesets').count(), 0)
-  await page.setViewportSize({ width: 390, height: 844 })
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
-  await page.setViewportSize({ width: 1440, height: 1000 })
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-  await dialog.waitFor({ state: 'detached' })
-
-  await page.goto('about:blank'); await scenario('bypass-ready')
-  await page.goto(base + '/settings/repositories/2')
-  await page.getByRole('button', { name: 'Setup details' }).click()
-  await waitText(page, 'The Forge controller can merge approved work past these rules.')
-  assert.equal(await page.locator('#repo-bypass-missing').count(), 0)
-  assert.ok(!(await page.locator('body').innerText()).includes('Bypass permissions need your review.'))
 
   // A refused check is retried: the page shows the reason, and once the server
   // accepts checks again (same payload, no reload) the next tick asks again.

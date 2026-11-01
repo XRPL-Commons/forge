@@ -170,19 +170,18 @@ class PresentationTests(unittest.TestCase):
         self.assertIn('open https://github.com/owner/project', output)
         self.assertNotIn('Apply with:', output)
 
-    def test_optional_interview_explains_choices_before_prompts_and_skips_repair(self):
+    def test_interview_explains_supervisor_policy_without_protection_or_repair_choice(self):
         events = []
-        answers = iter(['', '', '', 'owner/one', 'auto', '', 'optional', '', '', '', '', ''])
+        answers = iter(['', '', '', 'owner/one', 'auto', '', '', '', '', '', ''])
         github = Mock(); github.identity.return_value = {'login': 'owner'}
         def ask(prompt): events.append(('ask', prompt)); return next(answers)
         with patch('forge_client.installation.shutil.which', return_value=None):
             result = wizard('anvil', github, ask=ask, tell=lambda line: events.append(('tell', line)))
-        self.assertEqual(result['rules_repair'], 'skip')
-        self.assertEqual(result['repositories'][0]['github_protection'], 'optional')
+        self.assertNotIn('rules_repair', result)
+        self.assertNotIn('github_protection', result['repositories'][0])
         self.assertFalse(any('Rules repair' in text for kind, text in events if kind == 'ask'))
         for explanation, question in (('private GitHub App', 'GitHub App owner'),
                                       ('Human merge policy', 'merge policy ['),
-                                      ('Required protection', 'GitHub branch protection ['),
                                       ('first-merge test', 'Smoke target')):
             self.assertLess(next(i for i, (kind, text) in enumerate(events) if kind == 'tell' and explanation in text),
                             next(i for i, (kind, text) in enumerate(events) if kind == 'ask' and question in text))

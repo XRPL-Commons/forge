@@ -64,7 +64,7 @@ class Workflow:
         return self.client.requirements(target)
 
     def protection(self, target, **parameters):
-        return self.client.request('policy', target, policy='github_protection', **parameters)
+        raise SetupError('github_protection_retired', 'Forge no longer configures GitHub protection settings.')
 
     def operation(self, action, target, revision):
         request = self.state.get('operation')
@@ -118,8 +118,9 @@ class Workflow:
         binding = {'instance': connection['instance'], 'generation': connection['generation'],
                    'client': connection['id'], 'target': self.target,
                    'apps': connection_identity(observed), 'action': action, 'enable': enable}
-        if github_protection is not None:
-            binding['github_protection'] = github_protection
+        require(github_protection is None, 'github_protection_retired', 'Forge no longer configures GitHub protection settings.')
+        if resume and saved and 'github_protection' in saved['binding']:
+            binding['github_protection'] = saved['binding']['github_protection']
         if resume:
             require(saved is not None, 'no_operation', 'Start repository setup before requesting --resume.')
             require(saved['binding'] == binding, 'connection_changed',
@@ -131,7 +132,7 @@ class Workflow:
             self.state = {'version': 1, 'id': uuid.uuid4().hex, 'binding': binding,
                           'operation': None, 'local_write': None, 'completed': []}
         preparation = Preparation(self.github, self, instance=binding['instance'], generation=binding['generation'],
-                                  apps=binding['apps'], progress=self.progress, github_protection=github_protection)
+                                  apps=binding['apps'], progress=self.progress)
         if action == 'setup' and not apply:
             require(not resume, 'apply_required', 'Resume setup with --apply and the original --enable intent.')
             return preparation.setup(self.target['name'])
@@ -146,14 +147,10 @@ class Workflow:
             if action in ('setup', 'verify'):
                 observed = self.verify(self.target, self.requirements(self.target)['revision'])
             if uncertain:
-                if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass', 'github.ruleset.repair_baseline'):
-                    from .rules import confirmed
-                    if not confirmed(self.github, self.github.repository(self.target['name']), uncertain):
-                        return self.result({'status': 'write_unconfirmed', 'next_actions': [{'kind': 'inspect_previous_bypass_write'}]})
-                if uncertain['kind'] == 'github.ruleset.ensure_baseline' and not observed['readiness']['protection_ready']:
-                    return self.result({'status': 'write_unconfirmed', 'next_actions': [{
-                        'kind': 'open_url', 'url': 'https://github.com/' + self.target['name'] + '/settings/rules',
-                        'reason': 'Inspect the previous rule write and repair it before resuming; Forge will not create a duplicate.'}]})
+                if uncertain['kind'].startswith(('github.ruleset.', 'github.classic.')):
+                    # Preserve the previous attempted write as history. It is
+                    # never replayed or treated as a new setup prerequisite.
+                    self.state.setdefault('retired_rule_writes', []).append(uncertain)
                 self.state['local_write'] = None
                 self.journal.save(self.state)
             if action == 'setup':
@@ -174,7 +171,7 @@ class Workflow:
         if result.get('status') in ('blocked', 'verification_pending') and 'next_actions' not in result:
             result = {**result, 'next_actions': [{'kind': 'open_url',
                 'url': self.client.base + '/settings/repositories/' + str(self.target['id']),
-                'reason': 'Inspect App access and review rules, repair the reported requirement, then resume setup.'}]}
+                'reason': 'Inspect App access and existing GitHub constraints, then resume setup.'}]}
         return {**result, 'workflow_id': self.state['id'],
                 'operation_id': (self.state.get('operation') or {}).get('id') or self.state.get('last_operation'),
                 'repository_url': self.client.base + '/settings/repositories/' + str(self.target['id'])}

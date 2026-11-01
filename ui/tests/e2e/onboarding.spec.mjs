@@ -140,7 +140,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.getByRole('button', { name: 'Technical checks' }).click()
   await waitForText(page, 'Worker stop, cleanup and reuse')
   const checks = await text(page)
-  assert.ok(checks.includes('Repository permissions and protection'), checks)
+  assert.ok(checks.includes('Repository access and existing rules'), checks)
   assert.ok(checks.includes('Coding account connections and isolation'))
   assert.ok(checks.includes('Not checked'))
 

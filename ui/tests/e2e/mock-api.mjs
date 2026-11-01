@@ -464,11 +464,7 @@ const server = http.createServer(async (req, res) => {
     if (base === 'factory' && query.section === 'completed' && query.limit && fixture.ok !== false) {
       return send(res, 200, withToken(completedPage(fixture, query)))
     }
-    const headers = {}
-    if (base === 'repositories-ruleset') {
-      headers['content-disposition'] = `attachment; filename="forge-review-rules-${query.repo_id ?? ''}.json"`
-    }
-    return send(res, 200, withToken(fixture), headers)
+    return send(res, 200, withToken(fixture))
   }
 
   if (req.method === 'POST') {

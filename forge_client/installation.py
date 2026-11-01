@@ -22,12 +22,13 @@ def intent(value, github):
     value = deepcopy(value)
     smoke_issue = value.pop('smoke_issue', None)
     fields(value, ('version', 'ssh', 'name', 'revision', 'host_key', 'hostname', 'owner', 'operators',
-                   'repositories', 'providers', 'rules_repair', 'smoke_target', 'codex_parallel_auth'))
+                   'repositories', 'providers', 'smoke_target', 'codex_parallel_auth',
+                   *(['rules_repair'] if 'rules_repair' in value else [])))
     require(value['version'] == 1 and isinstance(value['ssh'], str), 'invalid_intent')
     require(isinstance(value['name'], str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', value['name']), 'invalid_intent')
     require(value['host_key'] is None or isinstance(value['host_key'], str) and re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', value['host_key']), 'invalid_host_key')
     require(isinstance(value['hostname'], str) and re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', value['hostname']), 'invalid_hostname')
-    require(value['rules_repair'] in ('apply-if-admin', 'print-commands', 'skip') and type(value['codex_parallel_auth']) is bool, 'invalid_intent')
+    require(value.get('rules_repair') in (None, 'apply-if-admin', 'print-commands', 'skip') and type(value['codex_parallel_auth']) is bool, 'invalid_intent')
     require(isinstance(value['operators'], list) and 1 <= len(value['operators']) <= 20, 'invalid_intent')
     require(isinstance(value['repositories'], list) and 1 <= len(value['repositories']) <= 20, 'invalid_intent')
     require(isinstance(value['providers'], list) and 1 <= len(value['providers']) <= 3, 'invalid_intent')
@@ -278,12 +279,6 @@ class Install:
                 retried = factory.call('smoke_retry', proposal_id=retry_smoke)
                 require(retried.get('status') in ('smoke_retry_queued', 'smoke_pending'), 'invalid_host_response')
                 factory.call('prepare', plan=self.state['server_preparation']['plan'])
-            observed = self.state['stages']['preparation']['receipt']
-            if (observed['status'] == 'preparation_needs_operator' and observed.get('needs_operator')
-                    and selected['rules_repair'] == 'apply-if-admin'):
-                factory = FactorySetup(self.installation, github=self.github)
-                factory.call('status')
-                self.repair_preparation(factory, observed)
             return self.status()
         # Revalidate at each invocation/resume, but polling pending work in this
         # process does not restart every completed bootstrap check. Host operations
@@ -405,8 +400,6 @@ class Install:
         observed = install_prepare.observe(self.state, factory, observed)
         require(observed['available'], 'preparation_changed')
         self.state['server_preparation']['registered'] = True
-        if observed['status'] == 'preparation_needs_operator' and self.state['intent']['rules_repair'] == 'apply-if-admin':
-            observed = self.repair_preparation(factory, observed)
         install_prepare.record(self.state, observed, self.clock()); self.save()
         origin = self.state['stages']['identity']['receipt']['origin']
         url = origin.rstrip('/') + '/installation'
@@ -415,27 +408,6 @@ class Install:
                      'instruction': 'Continue setup in Forge. The server keeps working when you close this terminal.'})
         if observed.get('ready') and self.reconcile_completion(): return self.status()
         return self.status()
-
-    def repair_preparation(self, factory, observed):
-        """Use local administrator access only for the approved repository repairs."""
-        from . import install_prepare
-        approved = self.state['server_preparation']['plan']
-        targets = [row['target'] for row in approved['repositories']] + [approved['smoke_repository']]
-        repaired = bool(observed['needs_operator'])
-        for item in observed['needs_operator']:
-            target = next((row for row in targets if row == item['repository']), None)
-            require(target is not None, 'repository_changed')
-            name = 'repository.' + str(target['id'])
-            self.validated_stages.discard(name)
-            response = self.stage(name,
-                lambda target=target: self.repository(factory, target),
-                lambda _, target=target: self.repository(factory, target, apply=True),
-                complete=lambda row: row.get('status') == 'repository_ready')
-            repaired = repaired and response.get('status') == 'repository_ready'
-        if repaired:
-            observed = install_prepare.observe(self.state, factory, factory.call('prepare', plan=approved))
-        install_prepare.record(self.state, observed, self.clock()); self.save()
-        return observed
 
     def write_report(self):
         """Observe versions once after handover; status itself stays offline."""
@@ -453,29 +425,16 @@ class Install:
         saved.save(install_report.build(self.state, versions=versions))
 
     def repository(self, factory, target, *, apply=False):
-        selected = next((row for row in self.load()['repositories'] if row['target']['id'] == target['id']), None)
-        mode = selected.get('github_protection') if selected else ('optional' if all(row.get('github_protection') == 'optional' for row in self.load()['repositories']) else None)
         if factory.call('status')['phase'] != 'active':
-            result = factory.prepare_repository(target['name'], initial=False, apply=apply,
-                                                 repair=self.load()['rules_repair'], github_protection=mode)
+            result = factory.prepare_repository(target['name'], initial=False, apply=apply)
             if result.get('status') == 'planned' and not result['plan']['steps'] and not result['plan']['blockers']:
                 return {'status': 'repository_ready', 'repository': target}
             return result
         identity = {key: target[key] for key in ('id', 'name')}
         result = factory.call('requirements', repository=identity)
-        policy_matches = mode is None or result['baseline'].get('github_protection', 'required') == mode
         if apply:
-            if not policy_matches:
-                current = factory.call('github_protection', repository=identity, operation='read')
-                factory.call('github_protection', repository=identity, operation='set', mode=mode,
-                             revision=current['revision'], request_id=digest({
-                                 'intent': self.state['inputs_digest'], 'repository': identity,
-                                 'mode': mode, 'revision': current['revision']})[:32])
-                result = factory.call('requirements', repository=identity)
-                policy_matches = result['baseline'].get('github_protection', 'required') == mode
             result = factory.call('verify_repository', repository=identity, revision=result['revision'])
-            policy_matches = mode is None or result['baseline'].get('github_protection', 'required') == mode
-        ready = policy_matches and result['readiness']['access_ready'] and result['readiness']['protection_ready']
+        ready = result['readiness']['access_ready'] and result['readiness']['protection_ready']
         return {'status': 'repository_ready' if ready else 'repository_changed', 'repository': target,
                 'readiness': result['readiness']}
 
@@ -549,12 +508,11 @@ def interview(ssh, github, *, ask=input, tell=None):
     repos = ask('Repositories (OWNER/REPO, separated by spaces): ').strip().split()
     rows = []
     tell('Human merge policy waits for your approval after Forge Review and Audit. Auto merges when Forge checks and existing GitHub rules pass.')
-    tell('Required protection installs GitHub branch rules; private personal repositories need GitHub Pro for this. Optional keeps Forge Review and Audit without requiring GitHub enforcement for other writers. Existing rules remain in force.')
+    tell('Forge enforces Review and Audit before merging. Existing GitHub rules also apply; setup does not create or change them.')
     for name_in_repo in repos:
         mode = ask(name_in_repo + ' merge policy [human/auto; human]: ').strip() or 'human'
         workflows = ask(name_in_repo + ' allow workflow edits? [y/N]: ').strip().lower() in ('y', 'yes')
-        protection = ask(name_in_repo + ' GitHub branch protection [required/optional; required]: ').strip() or 'required'
-        rows.append({'name': name_in_repo, 'merge_policy': mode, 'allow_workflow_edits': workflows, 'github_protection': protection})
+        rows.append({'name': name_in_repo, 'merge_policy': mode, 'allow_workflow_edits': workflows})
     providers = ask('Providers (codex, claude, grok; space-separated) [codex]: ').strip().split() or ['codex']
     accounts = []
     for provider in providers:
@@ -563,15 +521,13 @@ def interview(ssh, github, *, ask=input, tell=None):
         accounts.append({'id': provider, 'kind': kind})
     hostname = re.sub('[^a-z0-9-]+', '-', name.lower()).strip('-')[:63]
     hostname = ask('Tailnet hostname [' + hostname + ']: ').strip() or hostname
-    repair = 'skip' if rows and all(row['github_protection'] == 'optional' for row in rows) else (
-        ask('Rules repair [apply-if-admin/print-commands/skip; apply-if-admin]: ').strip() or 'apply-if-admin')
     tell('The first-merge test runs a small issue through Build, Review, Audit and merge. Scratch creates a private test repository; choosing a project runs the test there. A separate private repository tests signed publication.')
     smoke = ask('Smoke target [scratch or chosen OWNER/REPO; scratch]: ').strip() or 'scratch'
     tell('Known SSH host keys are required. For a new VM, use forge setup host-key and verify its fingerprint with the provider.')
     fingerprint = ask('Verified ED25519 fingerprint (leave empty to use known_hosts): ').strip() or None
     return {'version': 1, 'ssh': ssh, 'name': name, 'revision': None, 'host_key': fingerprint, 'hostname': hostname,
             'owner': owner, 'operators': operators, 'repositories': rows, 'providers': accounts,
-            'rules_repair': repair, 'smoke_target': smoke, 'codex_parallel_auth': True}
+            'smoke_target': smoke, 'codex_parallel_auth': True}
 
 
 def execute(args):
@@ -727,11 +683,11 @@ def schemas():
         'device_login': {'start_or_observe': 'forge account login codex --ssh HOST --json',
                          'retry': 'forge account login codex --ssh HOST --retry --json',
                          'effect': 'Returns a browser URL and one-time code; retry starts a new attempt only after failure, expiry or disconnection.'},
-        'authority': 'explicit saved host identity and local GitHub administrator; smoke-only activation, then configured handover',
+        'authority': 'explicit saved host identity and GitHub App owner consent; smoke-only activation, then configured handover',
         'intent_schema': {
             'type': 'object', 'additionalProperties': False,
             'required': ['version', 'ssh', 'name', 'revision', 'host_key', 'hostname', 'owner', 'operators',
-                         'repositories', 'providers', 'rules_repair', 'smoke_target', 'codex_parallel_auth'],
+                         'repositories', 'providers', 'smoke_target', 'codex_parallel_auth'],
             'properties': {
                 'version': {'const': 1}, 'ssh': {'type': 'string'}, 'name': {'type': 'string'},
                 'revision': {'type': ['string', 'null'], 'description': 'Exact commit, or null to resolve the latest prepared release once'},
@@ -742,13 +698,11 @@ def schemas():
                     'type': 'object', 'additionalProperties': False,
                     'required': ['name', 'merge_policy', 'allow_workflow_edits'],
                     'properties': {'name': {'type': 'string'}, 'merge_policy': {'enum': ['human', 'auto']},
-                                   'allow_workflow_edits': {'type': 'boolean'},
-                                   'github_protection': {'enum': ['required', 'optional'], 'default': 'required'}}}},
+                                   'allow_workflow_edits': {'type': 'boolean'}}}},
                 'providers': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'items': {
                     'type': 'object', 'additionalProperties': False, 'required': ['id', 'kind'],
                     'properties': {'id': {'enum': ['codex', 'claude', 'grok']},
                                    'kind': {'enum': ['browser', 'api_key', 'token']}}}},
-                'rules_repair': {'enum': ['apply-if-admin', 'print-commands', 'skip']},
                 'smoke_target': {'type': 'string', 'description': 'scratch or a selected OWNER/REPO'},
                 'smoke_issue': {'type': ['integer', 'null'], 'minimum': 1, 'description': 'Optional existing issue in the selected smoke repo; omitted creates a smoke issue'},
                 'codex_parallel_auth': {'type': 'boolean', 'description': 'Allow parallel jobs with the host-managed Codex login'}

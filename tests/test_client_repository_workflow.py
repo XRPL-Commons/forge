@@ -82,10 +82,10 @@ class WorkflowTests(unittest.TestCase):
         b = self.boundary
         result = self.workflow().execute('setup', apply=True, enable=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(len(b.writes), 5)
+        self.assertEqual(len(b.writes), 4)
         self.assertTrue(b.settings.view()['repositories'][0]['dispatch_allowed'])
         self.assertEqual(self.workflow().execute('setup', apply=True, enable=True)['status'], 'enabled')
-        self.assertEqual(len(b.writes), 5)
+        self.assertEqual(len(b.writes), 4)
         self.assertNotIn(SECRET, json.dumps(self.requests))
         for file in [*b.root.rglob('*.json'), b.database.path]:
             self.assertNotIn(SECRET.encode(), file.read_bytes())
@@ -130,27 +130,25 @@ class WorkflowTests(unittest.TestCase):
         result = self.workflow().execute('setup', apply=True, enable=True, resume=True)
         self.assertEqual(result['status'], 'enabled')
         self.assertEqual(self.service._get(identifier)['status'], 'complete')
-        self.assertEqual(len(self.boundary.writes), 5)
-
-    def test_interrupted_create_does_not_duplicate_and_independent_verification_recovers(self):
-        broker = self.boundary.broker
-        original = broker.create_baseline
-        def crash(*args):
-            original(*args)
-            raise KeyboardInterrupt()
-        with patch.object(broker, 'create_baseline', side_effect=crash):
-            with self.assertRaises(KeyboardInterrupt): self.workflow().execute('setup', apply=True, enable=True)
-        self.assertIsNotNone(self.journal.read()['local_write'])
-        result = self.workflow().execute('setup', apply=True, enable=True, resume=True)
-        self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(len(self.boundary.writes), 5)
-
-    def test_uncertain_absent_rule_is_not_blindly_recreated(self):
-        with patch.object(self.boundary.broker, 'create_baseline', side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt): self.workflow().execute('setup', apply=True)
-        result = self.workflow().execute('setup', apply=True, resume=True)
-        self.assertEqual(result['status'], 'write_unconfirmed')
         self.assertEqual(len(self.boundary.writes), 4)
+
+    def test_legacy_uncertain_rule_write_is_retained_as_history_without_replay(self):
+        result = self.workflow().execute('setup', apply=True)
+        self.assertEqual(result['status'], 'ready')
+        state = self.journal.read()
+        historical = {'kind': 'github.ruleset.ensure_baseline'}
+        state['local_write'] = historical
+        state['binding']['github_protection'] = 'required'
+        self.journal.save(state)
+        writes = deepcopy(self.boundary.writes)
+        with patch.object(self.boundary.broker, 'create_baseline', side_effect=AssertionError('retired write')):
+            result = self.workflow().execute('setup', apply=True, resume=True)
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual(self.boundary.writes, writes)
+        saved = self.journal.read()
+        self.assertEqual(saved['retired_rule_writes'], [historical])
+        self.assertEqual(saved['binding'], state['binding'])
+        self.assertIsNone(saved['local_write'])
 
     def test_browser_grant_handoff_and_resume(self):
         with patch.object(self.boundary.broker, 'grant_repository', side_effect=SetupError('github_request_failed', SECRET)):
@@ -160,7 +158,7 @@ class WorkflowTests(unittest.TestCase):
         self.boundary.granted = {1, 2, 3, 4}
         result = self.workflow().execute('setup', apply=True, enable=True, resume=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(len(self.boundary.writes), 1)
+        self.assertEqual(len(self.boundary.writes), 0)
 
     def test_changed_intent_and_generation_cannot_resume(self):
         self.service.launch = lambda fn: None
@@ -240,7 +238,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_enable_checks_fresh_protection_even_after_verified(self):
         self.workflow().execute('setup', apply=True)
-        self.boundary.github_rules.clear()
+        self.boundary.app_github.return_value.protection_report.side_effect = lambda *_: {
+            'branch': 'main', 'available': False, 'requirements': [{'id': 'readable', 'passed': False}]}
         with self.assertRaises(SetupError): self.workflow().execute('enable')
         self.assertFalse(self.boundary.settings.view()['repositories'][0]['enabled'])
 

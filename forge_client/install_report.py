@@ -131,7 +131,7 @@ def build(state, *, versions=None):
         local = local_stages.get(name, {})
         changes = local.get('rule_changes', rule_changes(local.get('receipt') or {}))
         repositories.append({'repository': pick(target, 'id', 'name'),
-            'merge_policy': selected['merge_policy'], 'github_protection': selected.get('github_protection', 'required'), 'allow_workflow_edits': selected['allow_workflow_edits'],
+            'merge_policy': selected['merge_policy'], **({'legacy_github_protection': selected['github_protection']} if 'github_protection' in selected else {}), 'allow_workflow_edits': selected['allow_workflow_edits'],
             'stage_status': stage.get('status', 'unknown'), 'environment_tier': observed.get('env_tier'),
             'environment_observed_at': (state.get('preflight') or {}).get('observed_at'),
             'rules': {'signed_commits_required': observed.get('signed_commits_required'),

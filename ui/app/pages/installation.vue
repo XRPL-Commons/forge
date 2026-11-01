@@ -73,7 +73,7 @@ const accountConnected = computed(() => view.value?.account?.status === 'connect
             <UButton class="mt-2" :to="setupPath(item.path) || '/settings/repositories'" color="neutral" variant="outline">Review repository setup</UButton>
           </li>
         </ul>
-        <p class="mt-4 text-sm text-muted">Changes to GitHub rules require the local Forge CLI, which holds your administrative access. Follow the repository's setup instructions, then return here and choose Continue setup to check again.</p>
+        <p class="mt-4 text-sm text-muted">Review the reported repository access or merge blocker, then choose Continue setup to check again. Forge keeps existing GitHub protections in force.</p>
       </section>
       <section class="mt-6 overflow-hidden rounded-xl border border-line bg-panel" aria-label="Installation checklist">
         <h2 class="border-b border-line px-5 py-4 text-lg font-semibold">Setup checklist</h2>

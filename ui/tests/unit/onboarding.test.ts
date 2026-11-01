@@ -158,13 +158,13 @@ describe('step3', () => {
     })
   })
 
-  it('sends the operator to the repository rules when protection is not ready', () => {
+  it('sends the operator to repository verification when checks are not ready', () => {
     const result = step3(view({ repository_setup: repository({ protection_ready: false }) }), now)
     expect(result.title).toBe('Prepare your repository')
-    expect(result.intro).toBe('Check the review requirements and download a ready-to-import ruleset if anything is missing.')
+    expect(result.intro).toBe('Check repository access and the Forge merge policy before continuing.')
     expect(result.primary).toEqual({
       label: 'Prepare repository →', action: 'link', to: '/settings/repositories/1?setup=1',
-      help: 'You apply the rules on GitHub. Forge only reads them.',
+      help: 'Forge enforces its own merge checks and observes existing GitHub rules.',
     })
   })
 
@@ -209,7 +209,7 @@ describe('step3', () => {
       help: 'Verifies accounts and worker isolation. This includes small model requests that may incur provider charges.',
     })
     expect(step3(view({ qualification_fresh: true }), now).primary?.help)
-      .toBe('Rechecks repository access and protection using your recent account and worker verification.')
+      .toBe('Rechecks repository access and existing rules using your recent account and worker verification.')
   })
 })
 
@@ -245,7 +245,7 @@ describe('signature', () => {
 describe('technicalChecks', () => {
   it('labels the three checks and reads "Not checked" before an attempt', () => {
     expect(technicalChecks(view())).toEqual([
-      { id: 'github', label: 'Repository permissions and protection', value: 'Not checked', busy: false },
+      { id: 'github', label: 'Repository access and existing rules', value: 'Not checked', busy: false },
       { id: 'provider', label: 'Coding account connections and isolation', value: 'Not checked', busy: false },
       { id: 'runner', label: 'Worker stop, cleanup and reuse', value: 'Not checked', busy: false },
     ])
@@ -293,7 +293,7 @@ describe('repositoryProblem', () => {
     const problem = repositoryProblem(view({ error: 'x', checks: { github: 'failed' }, repository_check: two as any }))!
     expect(problem.title).toBe('2 repository settings need attention')
     const unavailable = repositoryProblem(view({ error: 'x', checks: { github: 'failed' }, repository_check: { ...report, available: false, requirements: [] } as any }))!
-    expect(unavailable.title).toBe('Repository protection could not be verified')
+    expect(unavailable.title).toBe('Repository access could not be verified')
     expect(unavailable.passedSummary).toBe('')
   })
 })

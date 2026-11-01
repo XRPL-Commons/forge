@@ -1,15 +1,14 @@
-"""Read-only repository preparation. The operator imports generated rules on GitHub."""
+"""Read-only repository access and external merge-rule observations."""
 import threading
 import time
 import json
 
 from .settings import digest
 from .factory.github import GitHub, GitHubUnavailable
-from .repository_policy import protection_ready, github_protection
+from .repository_policy import protection_ready
 
 MAX_AGE = 300
 CHECK_TIMEOUT = 120
-RULESET_NAME = 'Forge review baseline'
 DEPLOYMENT_LABEL = 'forge:deployment'
 
 
@@ -25,15 +24,8 @@ def scope_matches(report, config, runtime, repo_id):
 
 
 
-def ruleset(branch, controller_app_id, merge_check_scope=None):
-    # The standalone client and server download must produce the same policy.
-    from forge_client.contracts import baseline
-    return baseline(branch, controller_app_id, merge_check_scope)
-
-
 def observation_key(config, row):
-    return digest({'connections': config['connections'], 'repo_id': row['id'], 'name': row['name'],
-                   'github_protection': github_protection(config, row['id'])})
+    return digest({'connections': config['connections'], 'repo_id': row['id'], 'name': row['name']})
 
 
 class RepositorySetup:
@@ -115,12 +107,12 @@ class RepositorySetup:
                 status = 'unknown'
             elif status != 'checking' and not fresh:
                 status = 'stale' if report else 'unchecked'
-            if status == 'ready' and not protection_ready(report):
-                status = 'needs_setup'
+            if status in ('ready', 'needs_setup'):
+                status = 'ready' if protection_ready(report) else 'needs_setup'
             if not row.get('access_ready'):
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
-            result.append({**row, 'github_protection': github_protection(config, row['id']), 'mirror_denied_repositories': denied.get(row['id'], []), 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
+            result.append({**{key: value for key, value in row.items() if key != 'github_protection'}, 'mirror_denied_repositories': denied.get(row['id'], []), 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
                            'merge_check_scope': merge_check_scope(runtime, row['id']), 'merge_check_revision': digest(runtime),
                            'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
@@ -152,41 +144,6 @@ class RepositorySetup:
                 'connections': connections, 'sync': settings['sync'],
                 'activation_available': self.settings.scope != 'setup',
                 'continue_url': '/onboarding' if self.settings.scope == 'setup' else '/factory'}
-
-    def protection_policy(self, target):
-        from forge_client.contracts import repository
-        repository(target)
-        config = self.settings.load()
-        row = next((r for r in config['repositories'] if r['id'] == target['id']), None)
-        if row and row['name'].lower() != target['name'].lower():
-            raise ValueError('Repository identity changed')
-        return {'repository': target, 'mode': github_protection(config, target['id']),
-                'revision': digest(config),
-                'source': 'explicit' if row and 'github_protection' in row else 'default'}
-
-    def set_github_protection(self, target, revision, mode):
-        # Trusted callers bind target identity before invoking this local helper.
-        from forge_client.contracts import repository
-        repository(target)
-        if mode not in ('required', 'optional'):
-            raise ValueError('GitHub protection must be required or optional')
-        config = self.settings.load()
-        if revision != digest(config):
-            raise ValueError('Repository settings changed. Reload before saving.')
-        row = next((r for r in config['repositories'] if r['id'] == target['id']), None)
-        if row is None:
-            row = dict(target, enabled=False)
-            config['repositories'].append(row)
-        elif row['name'].lower() != target['name'].lower():
-            raise ValueError('Repository identity changed')
-        row['github_protection'] = mode
-        self.settings.save(config, revision)
-        return self.protection_policy(target)
-
-    def github_protection(self, repo_id, revision, mode):
-        row = self.view(repo_id)['repositories'][0]
-        self.set_github_protection({'id': row['id'], 'name': row['name']}, revision, mode)
-        return self.view(repo_id)
 
     def review_scope(self, repo_id, revision, scope):
         from .factory.config import load, save
@@ -345,21 +302,13 @@ class RepositorySetup:
                               'observed_at': self.settings.clock(), 'requirements': [], 'errors': []}
                     try:
                         if not row['access_ready']:
-                            raise ValueError('All four Apps need access. Refresh GitHub access first.')
+                            raise ValueError('The Forge App needs access. Refresh GitHub access first.')
                         from .factory.config import load as runtime_config
                         github = self.github_class(self.settings, runtime_config(self.settings.authority.root,scope=self.settings.scope), clock=self.settings.clock)
                         github.deadline = time.monotonic() + 60
                         item = {'repo_id': row['id'], 'repo': row['name']}
                         branch = github.target(item)
                         report = github.protection_report(item, {'base_ref': branch})
-                        # Inventory is for a helpful edit link, never proof of enforcement.
-                        try:
-                            inventory = github.pages('controller', item, '/rulesets?includes_parents=true')
-                            managed = [r for r in inventory if r.get('name') == RULESET_NAME and r.get('source_type') == 'Repository' and type(r.get('id')) is int]
-                            if len(managed) == 1:
-                                report['edit_url'] = f"https://github.com/{row['name']}/settings/rules/{managed[0]['id']}"
-                        except GitHubUnavailable:
-                            pass
                     except (GitHubUnavailable, ValueError, OSError):
                         report['errors'] = [{'detail': 'Could not check this repository. Refresh GitHub access and try again.'}]
                     report['observed_at'] = self.settings.clock()
@@ -381,17 +330,3 @@ class RepositorySetup:
             except (ValueError, OSError):
                 pass  # A concurrent config/reset invalidates the old operation.
         threading.Thread(target=run, daemon=True).start()
-
-    def download(self, repo_id, revision):
-        view = self.view(repo_id)
-        if view['revision'] != revision:
-            raise ValueError('Repository settings changed. Check again before downloading.')
-        row = view['repositories'][0]
-        report = row.get('protection') or {}
-        if row['protection_status'] not in ('ready', 'needs_setup') or not report.get('branch'):
-            raise ValueError('Check this repository before downloading its rules.')
-        controller = self.settings.load()['connections'].get('controller', {})
-        from .factory.config import load as runtime_config, merge_check_scope
-        scope = merge_check_scope(runtime_config(self.settings.authority.root, scope=self.settings.scope), repo_id)
-        return (ruleset(report['branch'], controller.get('app_id'), scope),
-                'forge-review-rules-' + str(repo_id) + '.json')

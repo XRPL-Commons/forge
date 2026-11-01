@@ -120,8 +120,6 @@ class Access:
         # An operator must connect the target first.
         require(len(matches) == 1, 'target_repository_not_configured')
         repository_id = matches[0].get('id', matches[0].get('repo_id'))
-        from .repository_policy import github_protection
-        self.optional_protection = github_protection(configured, repository_id) == 'optional'
         connection = self.github.connection('controller', repository_id)
         installation = self.client.request('GET', '/app/installations/' + str(connection['installation_id']), self.client.jwt(connection))
         require(installation.get('id') == connection['installation_id'] and installation.get('app_id') == connection['app_id']
@@ -356,8 +354,8 @@ class Qualification:
         require(not check_workflow or saved and saved.get('stage') == 'qualified', 'workflow_check_requires_qualified_receipt')
         target, scratch, connection = self.access.open(target_name, scratch_name, write=apply and (not saved or check_workflow))
         target_branch, probe_ref = branch(target_branch or target['default_branch']), branch(probe_ref or scratch['default_branch'])
-        target_rules = signing_context(self.access.target, target_branch, optional=getattr(self.access, 'optional_protection', False) is True)
-        probe_rules = signing_context(self.access.scratch, probe_ref, optional=getattr(self.access, 'optional_protection', False) is True)
+        target_rules = signing_context(self.access.target, target_branch, optional=True)
+        probe_rules = signing_context(self.access.scratch, probe_ref, optional=True)
         require(not target_rules or all(row in probe_rules for row in target_rules), 'probe_signing_rules_do_not_match_target')
         context = dict(repository=target_name, repository_id=target['id'], target_branch=target_branch,
             probe_repository=scratch_name, probe_repository_id=scratch['id'], probe_node_id=scratch['node_id'], probe_ref=probe_ref,
@@ -379,7 +377,7 @@ class Qualification:
                     receipt['rest_unsigned'] = True
                     self.operation(receipt, 'graphql')
             self.reconcile(receipt)
-            self.verify(receipt, signing_context(self.access.target, target_branch, optional=getattr(self.access, 'optional_protection', False) is True), signing_context(self.access.scratch, probe_ref, optional=getattr(self.access, 'optional_protection', False) is True))
+            self.verify(receipt, signing_context(self.access.target, target_branch, optional=True), signing_context(self.access.scratch, probe_ref, optional=True))
             proof = {key: receipt[key] for key in ('repository_id', 'app_id', 'installation_id', 'probe_repository_id', 'commit_oid', 'tree_oid',
                                                   'target_branch', 'target_rules', 'probe_ref', 'strategy')}
             proof.update(version=2, probe_receipt_id=receipt['id'], verified=True, exact_ref=True,

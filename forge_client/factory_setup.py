@@ -72,7 +72,8 @@ class FactorySetup:
                     'next_action': {'instruction': 'Use --apply to prepare the signed-in GitHub registration handoff.'}}
         return self.call('app', role=role, owner=chosen)
 
-    def prepare_repository(self, name, *, apply=False, initial=True, repair='apply-if-admin', github_protection=None):
+    def prepare_repository(self, name, *, apply=False, initial=True, repair=None, github_protection=None):
+        require(github_protection is None, 'github_protection_retired', 'Forge no longer configures GitHub protection settings.')
         view = self.call('status')
         require(view['phase'] == 'setup', 'setup_complete', 'Use forge repo setup after initial setup.')
         resolved = self.github.repository(name)
@@ -90,17 +91,16 @@ class FactorySetup:
         observed = remote.requirements(target)
         binding = self.state['factory_binding']
         preparation = Preparation(self.github, remote, instance=binding['instance'], generation=binding['generation'],
-                                  apps=connection_identity(observed), repair=repair, github_protection=github_protection,
+                                  apps=connection_identity(observed), repair=repair,
                                   progress=lambda phase, step: self.repository_progress(phase, step, target=target))
         writes = self.state.setdefault('repository_writes', {})
         uncertain = writes.get(str(target['id'])) or (self.state.get('repository_write') if self.state.get('first_repository') == target else None)
         if uncertain:
-            if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass', 'github.ruleset.repair_baseline'):
-                from .rules import confirmed
-                ready = confirmed(self.github, resolved, uncertain)
+            if uncertain['kind'].startswith(('github.ruleset.', 'github.classic.')):
+                self.state.setdefault('retired_rule_writes', []).append({'repository': target, 'write': uncertain})
+                ready = True
             else:
-                ready = observed['readiness']['protection_ready'] if uncertain['kind'] == 'github.ruleset.ensure_baseline' else (
-                    observed['roles'][uncertain['role']]['access'] == 'ready')
+                ready = observed['roles'][uncertain['role']]['access'] == 'ready'
             if not ready:
                 return {'status': 'write_unconfirmed', 'next_action': {'instruction': 'Inspect the previous GitHub write, then resume. It will not be repeated blindly.'}}
             writes.pop(str(target['id']), None)
@@ -232,7 +232,7 @@ class SetupRepository:
         return self.factory.call('requirements', repository=target)
 
     def protection(self, target, **parameters):
-        return self.factory.call('github_protection', repository={k: target[k] for k in ('id', 'name')}, operation=parameters.pop('action'), **parameters)
+        raise SetupError('github_protection_retired', 'Forge no longer configures GitHub protection settings.')
 
     def verify(self, target, revision):
         return self.factory.call('verify_repository', repository=target, revision=revision)

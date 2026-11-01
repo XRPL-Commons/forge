@@ -55,7 +55,7 @@ GitHub edits executed later through durable effect identities. See
 [repository planning](repository-planning.md) and
 [delivery execution](delivery-execution.md) for their execution contracts.
 
-Verify the shared two-review and stale-approval baseline before dispatch.
+Verify repository identity, App access and current rule observations before dispatch.
 Persist the assignment and reserve capacity before launching. An assigned member cannot receive replacement work while its old execution has
 unverified cleanup. Independent member work may continue when its own gates and
 the shared budget permit it. A
@@ -162,20 +162,19 @@ approval from configured humans and rejecting active requests for changes.
 Approval must be newer than acceptance of the current candidate; same-head
 requirements/policy changes cannot inherit an old human decision.
 
-Head changes invalidate prior approvals; require GitHub stale-approval dismissal.
+Head changes invalidate prior Forge approval evidence.
 Before merge, verify current named-check producers/results, exact head/base,
 requirements, policy, and native protections again. Merge with an expected head
-through the normal merge endpoint. The generated review baseline permits the
-controller App to bypass its two-review rule through pull requests only; Forge's
-technical and human gates still apply. Only a verified GitHub merge establishes `merged`.
+through the normal merge endpoint, which enforces the owner's GitHub rules.
+Forge neither requires a baseline ruleset nor configures bypass grants.
+Only a verified GitHub merge establishes `merged`.
 
-For human-escalated automatic merges, the first adapter additionally requires a
-native wildcard CODEOWNERS rule containing only configured humans and required
-code-owner reviews. This lets GitHub reject a merge when approval is dismissed
-during the controller's final read/request race. This native rule is repository-wide;
-Required code-owner reviews can come from classic protection or active rulesets.
-More selective CODEOWNERS/team and merge-queue variants need explicit verified adapters.
-Unsupported policy is held rather than assumed equivalent.
+Human-escalated automatic merges use the same eligible, current-candidate human
+approval checks. Forge re-reads those approvals immediately before requesting the
+merge. This read and GitHub's merge API are separate operations; the expected
+head prevents a changed commit from merging but does not atomically bind a review.
+Owners can use GitHub protections for additional enforcement. Forge does not
+require a wildcard CODEOWNERS rule or configure owner protections.
 
 ## Failure rule
 

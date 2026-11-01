@@ -16,7 +16,7 @@ def finding(identifier, status, detail, *, command=None, repository=None, waivab
             'repository': repository, 'waivable': waivable}
 
 
-def repository(github, target, *, allow_workflow_edits=False, github_protection='required'):
+def repository(github, target, *, allow_workflow_edits=False, github_protection=None):
     """Pin source evidence while reusing Forge's non-executing dependency scan."""
     from forge.factory.environments import probe
     current = github.repository(target['name'])
@@ -28,12 +28,12 @@ def repository(github, target, *, allow_workflow_edits=False, github_protection=
             require(method == 'GET')
             return github._request('GET', '/repos/' + current['name'] + suffix)
     environment = probe(LocalSource(), {'repo_id': current['id'], 'repo': current['name']})
-    require(github_protection in ('required', 'optional'))
+    require(github_protection in (None, 'required', 'optional'))
     def protection_read(operation, absent):
         try:
             return operation()
         except SetupError as error:
-            if github_protection != 'optional' or error.code != 'github_plan_required':
+            if error.code != 'github_plan_required':
                 raise
             return absent
     effective = protection_read(lambda: branch_rules(github, current), [])
@@ -51,13 +51,9 @@ def repository(github, target, *, allow_workflow_edits=False, github_protection=
         if key in seen: continue
         seen.add(key)
         kind, identifier = key
-        editable = current['admin'] if kind == 'Repository' else False
-        if kind == 'Organization':
-            membership = optional(github, '/user/memberships/orgs/' + current['name'].split('/')[0]) or {}
-            editable = membership.get('state') == 'active' and membership.get('role') == 'admin'
         details = github._request('GET', '/repos/' + current['name'] + '/rulesets/' + str(identifier))
         require(isinstance(details, dict), 'github_invalid_response')
-        sources.append({'type': kind, 'id': identifier, 'editable': editable,
+        sources.append({'type': kind, 'id': identifier,
                         'conditions': details.get('conditions'), 'enforcement': details.get('enforcement')})
     return {'target': current, 'environment': environment, 'env_tier': 'full' if environment['services'] else 'standard',
             'signed_commits_required': any(row['type'] == 'required_signatures' for row in effective)
@@ -112,10 +108,10 @@ def observe(intent, installation, github, *, run=run_bounded, progress=None):
         name = selected['target']['name']
         announce('Checking ' + name + ': access, branch rules and test dependencies…', repository=name)
         try:
-            row = repository(github, selected['target'], allow_workflow_edits=selected['allow_workflow_edits'], github_protection=selected.get('github_protection', 'required'))
+            row = repository(github, selected['target'], allow_workflow_edits=selected['allow_workflow_edits'])
             repos.append(row)
-            items.append(finding('repository.' + str(row['target']['id']), 'pass' if row['target']['admin'] else 'needs_you',
-                                 'Repository administration is required for preparation.', repository=name))
+            items.append(finding('repository.' + str(row['target']['id']), 'pass',
+                                 'Repository access verified. Forge will request App installation consent if needed.', repository=name))
             items.append(finding('signing.' + str(row['target']['id']), 'pass',
                                  'Verified signatures are required; the publisher must satisfy this rule. No signing bypass is planned.' if row['signed_commits_required'] else 'No effective signed-commit requirement observed.', repository=name))
             items.append(finding('workflows.' + str(row['target']['id']), 'will_fix_automatically' if selected['allow_workflow_edits'] else 'pass',

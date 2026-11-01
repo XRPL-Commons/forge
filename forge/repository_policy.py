@@ -2,17 +2,10 @@
 
 
 def protection_ready(report):
-    # Hidden bypass details are not evidence that a bypass is missing. Keep the
-    # explicit operator-review warning; never certify the full bypass list.
-    return bool(report and report.get('available') and report.get('requirements')
-                and all(row['passed'] for row in report['requirements'])
-                and (report.get('bypass') or {}).get('status') != 'missing')
-
-
-def github_protection(config, repo_id):
-    """External enforcement is explicit per repository; Forge gates are separate."""
-    row = next((r for r in config['repositories'] if r['id'] == repo_id), {})
-    return row.get('github_protection', 'required')
+    # External rules are observations, not a Forge-managed minimum policy.
+    # Legacy baseline/bypass verdicts do not govern supervisor admission.
+    return bool(report and report.get('available') and not report.get('errors')
+                and all(row['passed'] for row in report.get('requirements', []) if row.get('id') == 'readable'))
 
 
 def plan_unavailable(error):

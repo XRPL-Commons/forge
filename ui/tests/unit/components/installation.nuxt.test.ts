@@ -108,16 +108,16 @@ describe('installation progress', () => {
     expect(wrapper.text()).toContain('This sign-in attempt expired or failed.')
     wrapper.unmount()
   })
-  it('keeps repository configuration available and explains local CLI work', async () => {
+  it('keeps repository configuration available and explains the reported blocker', async () => {
     setup()
     state.current.view.value.preparation = { status: 'needs_operator', stages: [], providers: [], ready: false,
-      needs_operator: [{ repository: { id: 1, name: 'owner/project' }, reason: 'Required GitHub checks are missing.', path: '/settings/repositories?repo=1' }] }
+      needs_operator: [{ repository: { id: 1, name: 'owner/project' }, reason: 'Repository access needs refreshing.', path: '/settings/repositories?repo=1' }] }
     const wrapper = await mountSuspended(InstallationPage)
     expect(wrapper.get('a[href="/settings/repositories"]').text()).toBe('Configure repositories')
     const section = wrapper.get('section[aria-label="Repository setup needs attention"]')
-    expect(section.text()).toContain('Required GitHub checks are missing.')
+    expect(section.text()).toContain('Repository access needs refreshing.')
     expect(section.get('a[href="/settings/repositories?repo=1"]').text()).toBe('Review repository setup')
-    expect(section.text()).toContain('Changes to GitHub rules require the local Forge CLI')
+    expect(section.text()).toContain('Forge keeps existing GitHub protections in force')
     expect(section.text()).toContain('Continue setup to check again')
     wrapper.unmount()
   })

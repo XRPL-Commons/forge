@@ -99,7 +99,7 @@ export const RESETTING_SCREEN = {
 // Rendered next to step 3's `secondary` link; the pair is fixed (§3.8
 // "Failed-request links").
 export const PROTECTION_HELP_LINK = {
-  label: 'Repository protection instructions',
+  label: 'Repository setup help',
   to: '/setup-help#github-repository-protection',
 }
 
@@ -196,7 +196,7 @@ export function step3(view: OnboardingView, now: number): Step3View {
   const checking = Boolean(view.operation)
   const ready = view.can_start
   const connected = view.provider_connected
-  const needsRules = Boolean(view.repository_setup) && !view.repository_setup!.protection_ready
+  const needsRepositoryCheck = Boolean(view.repository_setup) && !view.repository_setup!.protection_ready
   const waiting = waitingService(view, now)
   const failed = Boolean(view.error)
   const inlineReport = Boolean(view.repository_check) && view.checks?.github === 'failed'
@@ -205,7 +205,7 @@ export function step3(view: OnboardingView, now: number): Step3View {
   const title = waiting ? 'Waiting for the Forge service'
     : checking ? (view.operation!.action === 'start' ? 'Starting Forge' : 'Verifying setup')
       : ready ? 'Ready to start Forge'
-        : needsRules ? 'Prepare your repository'
+        : needsRepositoryCheck ? 'Prepare your repository'
           : !connected ? 'Connect a coding account'
             : failed ? 'Setup needs attention'
               : 'Verify your repository'
@@ -213,7 +213,7 @@ export function step3(view: OnboardingView, now: number): Step3View {
   const intro = waiting ? 'Your setup is saved. The service has not picked up this request yet. Check that the Forge supervisor is running on the server.'
     : checking ? 'Forge is checking access, coding accounts and worker cleanup. This does not start issue processing.'
       : ready ? 'Verification passed. You decide when issue processing begins.'
-        : needsRules ? 'Check the review requirements and download a ready-to-import ruleset if anything is missing.'
+        : needsRepositoryCheck ? 'Check repository access and the Forge merge policy before continuing.'
           : !connected ? 'Connect at least one coding account before verifying this repository.'
             : failed ? (inlineReport
               ? 'Update the repository settings listed below, then check again. Your coding accounts do not need reconnecting.'
@@ -222,9 +222,9 @@ export function step3(view: OnboardingView, now: number): Step3View {
                 : 'Your coding accounts are connected. Repository verification is still required before starting.'
 
   const help = ready ? 'Starts processing eligible ready issues. Forge creates PRs and merges them when required checks and approvals pass.'
-    : needsRules ? 'You apply the rules on GitHub. Forge only reads them.'
+    : needsRepositoryCheck ? 'Forge enforces its own merge checks and observes existing GitHub rules.'
       : connected ? (view.qualification_fresh
-        ? 'Rechecks repository access and protection using your recent account and worker verification.'
+        ? 'Rechecks repository access and existing rules using your recent account and worker verification.'
         : 'Verifies accounts and worker isolation. This includes small model requests that may incur provider charges.')
         : ''
 
@@ -240,7 +240,7 @@ export function step3(view: OnboardingView, now: number): Step3View {
       : { label: 'Verification in progress… You can leave and return later.', busy: false }
   } else if (ready) {
     result.primary = withHelp({ label: 'Start Forge', action: 'start' })
-  } else if (needsRules) {
+  } else if (needsRepositoryCheck) {
     result.primary = withHelp({ label: 'Prepare repository →', action: 'link', to: `/settings/repositories/${view.selected?.id}?setup=1` })
   } else if (connected) {
     result.primary = withHelp({ label: failed ? 'Check again' : 'Verify repository', action: 'check' })
@@ -256,7 +256,7 @@ export function step3(view: OnboardingView, now: number): Step3View {
 }
 
 const CHECK_LABELS: Record<CheckKey, string> = {
-  github: 'Repository permissions and protection',
+  github: 'Repository access and existing rules',
   provider: 'Coding account connections and isolation',
   runner: 'Worker stop, cleanup and reuse',
 }
@@ -296,7 +296,7 @@ export function repositoryProblem(view: OnboardingView): RepositoryProblem | nul
   return {
     title: report.available
       ? `${missing.length} repository setting${missing.length === 1 ? ' needs attention' : 's need attention'}`
-      : 'Repository protection could not be verified',
+      : 'Repository access could not be verified',
     branch: `Branch: ${report.branch}`,
     to: `/settings/repositories/${view.selected?.id}?setup=1`,
     missing,

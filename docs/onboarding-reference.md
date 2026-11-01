@@ -6,26 +6,18 @@ Detailed setup and repository protection reference. For the everyday walkthrough
 (see [installation](installation.md)). Then open /onboarding on the trusted private
 dashboard address. It has three steps: GitHub, Repository and Start.
 
-1. **GitHub.** Connect GitHub. Enter your organization (or personal account) name. Create and
-   install each of the four Apps in the guided GitHub flow. Choose the same
-   repositories for every installation. Return to Forge after installation;
-   Refresh access verifies connections without granting additional access.
-2. **Repository.** Choose one shared repository. This saves a draft, without
-   starting work. Then prepare it. Forge checks its default branch using read-only GitHub
-   access. If a review setting is missing, download the ruleset, import it on
-   GitHub using your own account, then return and press Check setup. Repositories
-   that already meet the requirements skip the import step.
-3. **Start.** Coding accounts (Codex, Claude Code, Grok Build) are connected from
-   the VM terminal; the Coding accounts screen (/settings/harnesses) provides
-   copyable commands. Verification checks the connected accounts and isolated
-   worker lifecycle; small model requests may incur provider charges. Press
-   Verify repository. Recent account and worker evidence
-   can be reused for fifteen minutes if credentials and runtime settings have not
-   changed. Repository-only rechecks do not repeat those model probes. Press
-   Start Forge once verification passes. This explicitly authorizes eligible
-   issue processing and policy-gated merges.
+1. **GitHub.** Register and install one Forge App through the guided flow.
+   Select the repositories it may access, then refresh access in Forge.
+2. **Repository.** Choose a repository and prepare it. Forge verifies App access
+   and reads existing GitHub rules without changing them. Choose Forge's merge
+   policy and whether Review and Audit cover all PRs or Forge-created PRs.
+3. **Start.** Connect a coding account and follow the installation page's checks.
+   Provider verification makes small model requests that may incur charges.
+   Recent account and worker evidence can be reused when credentials and runtime
+   settings have not changed. The page shows the smoke issue's progress through
+   Build, Review, Audit and merge. Activation explicitly enables eligible work.
 
-You own the Apps. Forge does not request a personal administrator token. GitHub
+You own the App. Forge does not request a personal administrator token. GitHub
 requires a human to approve each App registration and installation. App private
 keys arrive through GitHub's manifest exchange and are stored as private files in
 credentials/, with references in configuration. Installation IDs supplied by a
@@ -39,138 +31,47 @@ reopening the GitHub registration URL alone does not resend the manifest form.
 ## Maintain GitHub access
 
 Open GitHub access from onboarding or settings (/settings/github). This operator
-view shows the four Forge role Apps and a simple list of repositories. Each
+view shows the Forge App connection and a list of repositories. Each
 repository is Not enabled, Enabled, or Needs attention. Choose Enable to open its
 setup checklist, or Resolve to repair an enabled repository. Add repository opens
 the same wizard with a searchable repository picker.
 
-The wizard keeps repository access, review rules, and final activation together.
-It shows which Apps already have access and provides Manage access or Install App
-links for the missing ones. After making changes on GitHub, refresh access in the
-wizard. Repositories invisible to all Apps appear after granting at least one App
-access and refreshing. App registration happens once in Forge's initial setup;
-new repositories reuse those Apps.
+The wizard keeps repository access, Forge merge policy and final activation
+together. Manage GitHub access opens the App installation settings. Refresh
+access after granting another repository. New repositories reuse the existing App.
 
-Only incomplete steps ask for action. When access and review rules are verified,
-Enable automation confirms activation. Checking, downloading rules, or leaving
-the page never enables a repository. The server rejects activation with missing,
-unknown, or expired checks, including direct settings writes. Initial onboarding
-can still store a repository selection as a non-live draft; its Start action has
-its own readiness checks.
+Only incomplete steps ask for action. Enable automation confirms activation;
+checking access or leaving the page never enables a repository. Activation
+requires current repository identity, App access and readable rule observations.
+GitHub's plan restriction on private repository rules does not block setup.
 
-Check enabled repositories runs read-only checks. Results expire after five
-minutes or when the relevant App connections or repository identity change.
-Forge rechecks access and protection before starting work. After a rules repair,
-Forge releases only holds caused by missing review settings, preserving failure
-budgets, explicit holds and human approval waits. Setup details remain available
-inside the repository page. Forge manages credentials; operators do not need to
-edit identifiers, credential references, or JSON configuration.
-
-All four installations need access to the same selected repositories. GitHub also
-provides an API for adding individual repository grants, but that endpoint requires
-a classic personal access token with repo scope and repository admin access; App
-tokens and fine-grained PATs cannot grant it. Forge does not store an administrator
-PAT or grant itself additional repository access.
+Checks expire after five minutes or when the relevant App connection or
+repository identity changes. Forge refreshes these observations before starting
+work. Resolving an access or observation failure releases its setup hold while
+preserving explicit holds, failure budgets and human approval waits.
 
 ## GitHub repository protection
 
-An administrator must configure the default branch before Start can pass. Forge's
-Controller has read-only Administration access and cannot configure its own gates.
-Forge shares repositories with developers. The onboarding baseline is:
+Forge's supervisor governs merges performed by Forge. It requires current
+independent Review and Audit evidence, CI, any required human approval and the
+exact candidate head and base. A changed candidate invalidates earlier evidence.
+Forge does not require a GitHub ruleset, a native approval count, stale-approval
+dismissal or a bypass grant as a setup prerequisite. Private repositories can be
+used without a GitHub Pro subscription.
 
-- Require pull requests and at least two approving reviews.
-- Dismiss stale approvals when new commits are pushed.
+The repository's `human` merge policy requires an eligible operator approval;
+`auto` allows the supervisor to merge after the other gates pass. Review and
+Audit cover all PRs by default, with a Forge-created PRs option. That scope
+controls Forge's review work; it does not prevent people from merging on GitHub.
 
-Developers keep their existing branch, pull request and merge access. Repository
-owners choose CI checks, push restrictions, administrator enforcement and bypass
-permissions. Forge does not require exclusive Controller access, globally required
-Forge checks, or up-to-date branches as an installation prerequisite.
+Existing owner and organization protections remain in force. Forge reads them
+without changing them, and GitHub makes the final decision on each merge request.
+If GitHub rejects a merge, Forge shows the reason on the affected PR. The owner
+can satisfy the rule or change their policy independently of Forge setup.
 
-Open Settings → Repositories and choose Add repository, or Prepare repository
-during onboarding. The wizard guides you through Repository, App access, Review
-rules and Enable, with Back and Cancel available throughout. Deployment tracking
-and test database evidence live on the repository’s details page. The download targets the default branch observed by Forge. It adds
-the two review requirements above and a pull-request-only bypass for the verified
-controller App, plus an always-allowed bypass for repository administrators
-(`RepositoryRole` ID `5`). This keeps the added baseline from blocking admin
-merges allowed by your existing rules. It does not copy custom or maintainer
-bypasses from other rulesets. GitHub does not count the read-only Review and Audit Apps toward
-its native approval count. Forge verifies their evidence before the controller
-merges. Developers without a bypass still need the repository's required approvals.
-All other matching rulesets and branch protections still apply. Updating Forge
-changes future downloads; it does not modify baselines already imported on GitHub.
-
-On GitHub, open the repository's Settings → Rules → Rulesets and choose New
-ruleset → Import a ruleset. Select the downloaded JSON, review it and save. If
-GitHub's navigation differs, follow [GitHub's import guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository#importing-prebuilt-rulesets).
-If Forge finds an existing “Forge review baseline” ruleset, it links to editing
-that ruleset instead. Existing classic branch protection can also satisfy the
-baseline without importing anything, provided its review bypass allows the controller. If import is unavailable for your plan or
-role, a repository administrator can configure the same review requirements.
-
-Return to Forge and press Check again. Downloading the file or opening GitHub
-never counts as a successful check. Review requirements verified confirms only
-the observed baseline. A confirmed missing controller bypass prevents readiness.
-If GitHub hides the bypass details, Forge asks for an operator review instead of
-claiming they were verified. Organization
-rules and stronger protections remain in effect, with source links in the details.
-
-Forge still publishes its review, audit and merge-policy checks on its own PRs.
-Its supervisor requires current evidence from the assigned Reviewer and Auditor
-Apps before requesting a merge. GitHub applies the repository's configured rules
-at merge time. Stronger repository-wide enforcement is an owner choice; making
-Forge checks globally required also affects developers' PRs.
-
-When an auditor asks for human approval, the merge gate stays closed until the
-required human evidence for the current candidate exists. The repository's human
-CODEOWNERS protection must be configured for that gate; see factory-runtime.md.
-Changing code invalidates the earlier review and audit evidence.
-
-Forge reads classic branch protection and active rulesets, including inherited
-organization rules. The same review baseline is checked during setup, dispatch
-and merge. Unavailable observations never count as passing. GitHub may hide
-bypass permissions: review those on GitHub yourself. A baseline pass does not
-certify bypass permissions or waive additional repository rules.
-
-### Repair an existing controller bypass
-
-Open the rule linked by Forge, add the controller App shown in the warning to
-its bypass list, select **For pull requests only**, save, and check again in
-Forge. Update every applicable rule that blocks the controller. Importing a
-second ruleset cannot repair the first: GitHub combines applicable rules.
-Keep unrelated actors and stronger rules. If the rule also contains CI,
-CODEOWNERS, or other restrictions, review those before granting a bypass; a
-ruleset bypass applies to that entire ruleset. Prefer keeping the Forge review
-baseline separate from those restrictions.
-
-For an administrator using the GitHub CLI, these are the equivalent API calls
-(use the owner, repository and ruleset ID from Forge's link):
-
-```sh
-gh api --hostname github.com repos/OWNER/REPO/rulesets/RULESET_ID \
-  --jq '{name,target,enforcement,conditions,rules,bypass_actors}' > reviewed-ruleset.json
-```
-
-Review the saved file and add only this entry to its existing `bypass_actors`,
-replacing `12345` with the controller App ID shown by Forge:
-
-```json
-{"actor_id": 12345, "actor_type": "Integration", "bypass_mode": "pull_request"}
-```
-
-If GitHub omitted the bypass list, obtain ruleset administrator access before
-editing it. Preserve all existing actors, conditions and rules. Re-read the rule
-before submitting if someone else may have changed it. Then apply the reviewed
-file and check again in Forge:
-
-```sh
-gh api --hostname github.com --method PUT \
-  repos/OWNER/REPO/rulesets/RULESET_ID --input reviewed-ruleset.json
-```
-
-The GitHub CLI uses local administrator credentials. Forge receives none of them.
-See [GitHub's ruleset API](https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset)
-for organization rules and the permissions required to edit them.
+Setup does not generate or import rulesets, add bypass actors, or repair owner
+rules. Upgrading also does not delete rulesets created by an older Forge version;
+removing those is an explicit owner decision.
 
 ## Deployment profile
 

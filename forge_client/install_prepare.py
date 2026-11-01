@@ -6,14 +6,22 @@ from .contracts import digest, require
 def plan(state, targets, report):
     selected = state['intent']
     identity = lambda target: {key: target[key] for key in ('id', 'name')}
-    return {'intent_digest': state['inputs_digest'], 'started_at': state['started_at'],
-            'repositories': [{**row, 'target': identity(row['target']),
-                              'github_protection': row.get('github_protection', 'required')}
+    approved = {'intent_digest': state['inputs_digest'], 'started_at': state['started_at'],
+            'repositories': [{'target': identity(row['target']), 'merge_policy': row['merge_policy'],
+                              'allow_workflow_edits': row['allow_workflow_edits']}
                              for row in selected['repositories']],
             'smoke_repository': identity(targets['smoke']), 'smoke_issue': selected.get('smoke_issue'),
             'publication_repository': identity(targets['publication']),
             'environment': 'full' if any(row['env_tier'] == 'full' for row in report['repositories']) else 'standard',
             'providers': deepcopy(selected['providers'])}
+    saved = state.get('server_preparation')
+    if saved:
+        current = deepcopy(saved['plan'])
+        for row in current['repositories']:
+            row.pop('github_protection', None)
+        require(current == approved, 'preparation_changed')
+        return deepcopy(saved['plan'])  # Retain the exact historical binding.
+    return approved
 
 
 def observe(state, factory, value):
@@ -31,6 +39,10 @@ def observe(state, factory, value):
             and value.get('started_at') == expected['started_at']
             and value.get('repositories') == expected['repositories']
             and value.get('smoke_repository') == expected['smoke_repository'], 'preparation_changed')
+    targets = [row['target'] for row in expected['repositories']] + [expected['smoke_repository']]
+    require(isinstance(value.get('needs_operator'), list) and all(
+        isinstance(row, dict) and row.get('repository') in targets
+        for row in value['needs_operator']), 'repository_changed')
     smoke = value.get('smoke')
     if smoke:
         selected = next((r for r in expected['repositories'] if r['target'] == expected['smoke_repository']), None)

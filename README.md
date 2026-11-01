@@ -72,12 +72,10 @@ asks Forge to verify readiness before enabling automation. Omit `--enable` to st
 at readiness, or `--apply` to return a plan. See [repository operations](docs/agent-connections.md#repository-operations)
 and the bundled [agent skill](forge_client/skills/forge-repositories/SKILL.md).
 
-GitHub branch protection is configurable per repository. For private personal
-repositories without GitHub Pro, add `--github-protection optional`, or choose
-**Optional** under the repository's **GitHub branch protection** setting in the UI.
-Forge still requires its Review, Audit and merge checks; existing GitHub rules
-remain in force. Changing this setting through the CLI requires an approved
-policy grant. See [optional protection](forge_client/README.md#optional-github-branch-protection).
+Forge's supervisor enforces Review, Audit, CI and operator approval for its own
+merges. Setup does not create GitHub rulesets, require branch protection, or
+require GitHub Pro. Repository owners manage their own GitHub protections;
+Forge respects those rules and reports when GitHub blocks a merge.
 
 ### Forge server
 

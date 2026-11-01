@@ -3,9 +3,9 @@ import {
   ACCESS_LABELS, ACCESS_STATUS_NAMES, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES,
   actionMessage, checkedAtText, connectionAction, connectionCards, hintText,
   lastRefreshText, repoDescription, repoStage, repositoryRows, rowState,
-  statusPillText, deploymentCard, bypassSourceLabel, classicBypassCommand,
+  statusPillText, deploymentCard,
   type DeploymentProfile, type DeploymentProposal, type DeploymentRow, type FactoryDeployment,
-  type ProtectionReport, type ProtectionSource, type RepositoryRow, type RoleAccess, type SettingsView,
+  type ProtectionReport, type RepositoryRow, type RoleAccess, type SettingsView,
 } from '../../app/utils/repositories'
 
 function row(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
@@ -14,7 +14,7 @@ function row(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
     access: { build: 'ready', review: 'ready', audit: 'ready', controller: 'ready' },
     access_ready: true, dispatch_allowed: false,
     protection_status: 'ready', protection_ready: true,
-    protection: { repo_id: 2, branch: 'main', observed_at: 1790000000, available: true, requirements: [], sources: [], errors: [], additional_rules: [], code_owner_reviews: false, bypass: { status: 'operator_review', detail: 'Bypass list must be reviewed manually on GitHub.' } },
+    protection: { repo_id: 2, branch: 'main', observed_at: 1790000000, available: true, requirements: [], sources: [], errors: [], additional_rules: [], code_owner_reviews: false },
     protection_previous_status: null, protection_last_known: null,
     rules_url: 'https://github.com/XRPL-Commons/hackathon/settings/rules',
     setup_url: '/settings/repositories/2?setup=1',
@@ -44,7 +44,7 @@ describe('repoStage', () => {
   it('is 0 with no repository', () => expect(repoStage(null, true)).toBe(0))
   it('is 1 while App access is incomplete', () =>
     expect(repoStage(row({ access_ready: false, protection_status: 'access_needed', protection_ready: false }), true)).toBe(1))
-  it('is 2 while the review rules are not in place', () =>
+  it('is 2 while repository checks are not complete', () =>
     expect(repoStage(row({ protection_status: 'needs_setup', protection_ready: false }), true)).toBe(2))
   it('is 3 when the repository is ready but not enabled', () => expect(repoStage(row(), true)).toBe(3))
   it('is 4 when the repository is enabled on a live factory', () => expect(repoStage(row({ enabled: true }), true)).toBe(4))
@@ -76,15 +76,15 @@ describe('repoDescription', () => {
     expect(repoDescription(row({ enabled: true }), true)).toBe('Setup is complete and automation is enabled. No action is needed here.'))
   it('sends the operator back to setup when the factory is not live', () =>
     expect(repoDescription(row(), false)).toBe('Repository setup is complete. Continue to finish setting up Forge.'))
-  it('asks for the review rules', () =>
+  it('asks for repository verification', () =>
     expect(repoDescription(row({ protection_status: 'needs_setup', protection_ready: false }), true))
-      .toBe('Update the GitHub review rules below, then check again.'))
+      .toBe('Check repository access and merge policy before enabling Forge.'))
   it('asks for the missing Apps', () =>
     expect(repoDescription(row({ access_ready: false, protection_status: 'access_needed', protection_ready: false }), true))
-      .toBe('Connect the missing Apps before continuing.'))
+      .toBe('Connect the Forge App before continuing.'))
   it('explains the check while it is unknown', () =>
     expect(repoDescription(row({ protection_status: 'unknown', protection_ready: false }), true))
-      .toBe('Forge checks App access and GitHub review rules before enabling automation.'))
+      .toBe('Forge checks repository access and observes existing GitHub rules before enabling automation.'))
 })
 
 describe('statusPillText', () => {
@@ -100,7 +100,7 @@ describe('statusPillText', () => {
 
 describe('hintText', () => {
   it('points at the Apps when access is missing', () =>
-    expect(hintText(row({ protection_status: 'access_needed', protection_ready: false }))).toBe('Finish connecting the Apps above to continue.'))
+    expect(hintText(row({ protection_status: 'access_needed', protection_ready: false }))).toBe('Finish connecting the Forge App above to continue.'))
   it('asks for a fresh check when the report is stale', () =>
     expect(hintText(row({ protection_status: 'stale', protection_ready: false })))
       .toBe('Check again to confirm the current GitHub settings before continuing.'))
@@ -406,22 +406,5 @@ describe('connectionCards recommendations', () => {
     expect(controller.errors).toEqual([])
     expect(controller.recommendation).toBe('Recommended deployments: read')
     expect(cards.find(card => card.role === 'build')!.recommendation).toBe('')
-  })
-})
-
-describe('controller bypass guidance', () => {
-  const classic: ProtectionSource = { kind: 'classic', name: 'Branch protection', url: 'https://github.com/XRPL-Commons/hackathon/settings/branches' }
-  const ruleset: ProtectionSource = { kind: 'ruleset', name: 'Forge review baseline', url: 'https://github.com/XRPL-Commons/hackathon/rules/10', id: 10 }
-  const report = (bypass: ProtectionReport['bypass']): ProtectionReport => ({ ...row().protection!, bypass })
-
-  it('names each source with its kind', () => {
-    expect(bypassSourceLabel(classic, 'main')).toBe('Branch protection (classic) on main')
-    expect(bypassSourceLabel(ruleset, 'main')).toBe('Ruleset “Forge review baseline”')
-  })
-
-  it('builds a classic bypass command that keeps the reported allowances', () => {
-    expect(classicBypassCommand('XRPL-Commons/hackathon', 'main', 'forge-controller-2d9a0cef')).toBe('')
-    expect(classicBypassCommand('o/r', 'release/1', 'forge', { users: ['maintainer'], teams: ['core'], apps: ['other', 'forge'] })).toBe(
-      `gh api -X PATCH repos/o/r/branches/release%2F1/protection/required_pull_request_reviews --input - <<< '{"bypass_pull_request_allowances":{"users":["maintainer"],"teams":["core"],"apps":["other","forge"]}}'`)
   })
 })

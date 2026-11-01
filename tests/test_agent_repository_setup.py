@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import Mock
 
 from forge.repository_requirements import describe
-from forge.repository_setup import RepositorySetup, ruleset
+from forge.repository_setup import RepositorySetup
 from forge.settings import digest
-from forge_client.contracts import SetupError, baseline, connection_identity, requirements
+from forge_client.contracts import SetupError, connection_identity, requirements, validate_branch
 from forge_client.github import GitHub, run_bounded
 from forge_client.preparation import Preparation
 from tests.test_repository_setup import settings_setup
@@ -45,8 +45,7 @@ class BoundaryTests(unittest.TestCase):
         self.app_github.return_value.protection_report.side_effect = lambda *_: {
             'repo_id': 10, 'branch': self.repo['default_branch'], 'available': True,
             'merge_check_scope': merge_check_scope(runtime_config(self.root),10),
-            'requirements': [{'id': 'reviews', 'passed': bool(self.github_rules)},
-                             {'id': 'stale', 'passed': bool(self.github_rules)}]}
+            'requirements': [{'id': 'readable', 'passed': True}]}
         self.service = RepositorySetup(self.settings, github_class=self.app_github)
         test = self
         class Forge:
@@ -98,41 +97,33 @@ class BoundaryTests(unittest.TestCase):
         if method == 'PUT' and path.startswith('/user/installations/'):
             self.granted.add(int(path.split('/')[3]) - 100)
             return b''
-        if method == 'POST' and path == '/repos/example/project/rulesets':
-            self.github_rules.append({'id': 75, 'name': payload['name'], 'source_type': 'Repository',
-                                      'unrelated_secret': SECRET})
-            return b'{"id":75}'
         raise AssertionError((method, path))
 
     def test_one_setup_request_grants_checks_prepares_and_enables(self):
         result = self.preparation.setup('example/project', apply=True, enable=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(len(self.writes), 5)
-        self.assertEqual(len(result['completed']), 5)
+        self.assertEqual(len(self.writes), 4)
+        self.assertEqual(len(result['completed']), 4)
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
 
-    def test_baseline_scope_is_pinned_in_plan_and_written_by_local_cli(self):
-        result=self.preparation.setup('example/project',apply=True)
-        self.assertEqual(result['status'],'ready')
-        created=next(body for method,path,body in self.writes if method=='POST' and path.endswith('/rulesets'))
-        self.assertEqual(created,baseline('main',4,'all'))
-        self.assertEqual(created['rules'][1]['parameters']['required_status_checks'],
-                         [{'context':'forge/merge-policy','integration_id':4}])
+    def test_scope_is_reported_without_creating_github_checks(self):
+        from forge.factory.config import save
+        for scope in ('all', 'forge'):
+            save(self.root, {'repository_merge_check_scopes': {'10': scope}})
+            self.assertEqual(self.preparation.setup('example/project', apply=True)['status'], 'ready')
+            observed = requirements(describe(self.settings, self.target))
+            self.assertEqual(observed['merge_requirements'], {'branch': 'main', 'merge_check_scope': scope})
+        self.assertTrue(all('/installations/' in path for _, path, _ in self.writes))
 
-    def test_explicit_forge_scope_is_preserved_and_scope_change_invalidates_plan(self):
+    def test_scope_change_needs_no_github_rule_action(self):
         from forge.factory.config import save
         self.prepare_access()
-        save(self.root,{'repository_merge_check_scopes':{'10':'forge'}})
-        plan=self.preparation.plan('example/project')
-        self.assertEqual(plan['steps'],[{'kind':'github.ruleset.ensure_baseline','merge_check_scope':'forge'}])
-        save(self.root,{})
-        with self.assertRaises(SetupError) as caught:self.preparation.apply(plan)
-        self.assertEqual(caught.exception.code,'plan_stale')
-        self.assertFalse(any(method=='POST' for method,_,_ in self.writes))
-        save(self.root,{'repository_merge_check_scopes':{'10':'forge'}})
-        self.preparation.apply(self.preparation.plan('example/project'))
-        created=next(body for method,path,body in self.writes if method=='POST')
-        self.assertEqual(created,baseline('main',4,'forge'))
+        save(self.root, {'repository_merge_check_scopes': {'10': 'forge'}})
+        plan = self.preparation.plan('example/project')
+        self.assertEqual(plan['steps'], [])
+        save(self.root, {})
+        self.assertEqual(self.preparation.apply(plan)['status'], 'ready')
+        self.assertEqual(len(self.writes), 4)
 
     def test_one_app_contract_accepts_exact_aliases_and_grants_one_installation_once(self):
         from forge.app_access import APP_PERMISSIONS
@@ -162,7 +153,7 @@ class BoundaryTests(unittest.TestCase):
         ticks = itertools.count(1000, 0.1)
         plan = self.preparation.plan('example/project')
         self.assertEqual(plan['expires_at'] - plan['created_at'], 600)
-        self.assertEqual(self.preparation.apply(plan)['status'], 'verification_pending')
+        self.assertEqual(self.preparation.apply(plan)['status'], 'ready')
 
     def test_default_setup_only_plans_even_if_enable_is_requested(self):
         result = self.preparation.setup('example/project', enable=True)
@@ -170,41 +161,14 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(self.writes, [])
         self.assertFalse(any(r[0] in ('enable', 'verify') for r in self.requests))
 
-    def test_unknown_protection_surfaces_local_plan_prerequisite_without_writes(self):
+    def test_repository_rules_are_observed_by_server_without_local_admin_reads(self):
         self.granted = {1, 2, 3, 4}
         self.settings.refresh()
-        readiness = describe(self.settings, self.target)['readiness']
-        self.assertTrue(readiness['access_ready'])
-        self.assertFalse(readiness['protection_ready'])
-        self.assertNotEqual(readiness['protection_status'], 'needs_setup')
-        reads = []
-        def run(argv, *, payload=None):
-            if '/rulesets?' in argv[10]:
-                reads.append(argv[10])
-                response = {'message': 'Upgrade to GitHub Pro or make this repository public to enable this feature.',
-                            'status': '403', 'private_diagnostic': SECRET}
-                return run_bounded([sys.executable, '-c',
-                    'import sys;print(' + repr(json.dumps(response)) + ');sys.exit(1)'])
-            return self.run_gh(argv, payload=payload)
-        self.broker.run = run
+        self.repo['permissions']['admin'] = False
         result = self.preparation.setup('example/project', apply=True)
-        self.assertEqual(result['status'], 'blocked')
-        self.assertEqual(result['completed'], [])
-        self.assertEqual([b['code'] for b in result['blockers']], ['github_plan_required'])
-        self.assertIn('--github-protection optional', result['blockers'][0]['reason'])
-        self.assertNotIn(SECRET, json.dumps(result))
-        self.assertTrue(reads)
+        self.assertEqual(result['status'], 'ready')
         self.assertEqual(self.writes, [])
-        self.assertFalse(any(r[0] in ('enable', 'verify') for r in self.requests))
-
-    def test_successful_local_inventory_does_not_replace_remote_protection_verification(self):
-        self.granted = {1, 2, 3, 4}
-        self.settings.refresh()
-        self.github_rules = [{'id':75, 'name':'Existing rules', 'source_type':'Repository'}]
-        plan = self.preparation.plan('example/project')
-        self.assertEqual(plan['blockers'], [{'code':'protection_unverified'}])
-        self.assertEqual(plan['steps'], [])
-        self.assertEqual(self.writes, [])
+        self.assertTrue(any(row[0] == 'verify' for row in self.requests))
 
     def test_stronger_existing_rules_are_preserved(self):
         self.granted = {1, 2, 3, 4}
@@ -268,7 +232,7 @@ class BoundaryTests(unittest.TestCase):
         plan = self.preparation.plan('example/project')
         self.assertEqual(len(plan['steps']), 4)
         result = self.preparation.apply(plan)
-        self.assertEqual(result['status'], 'verification_pending')
+        self.assertEqual(result['status'], 'ready')
         self.assertEqual(len(self.writes), 4)
 
     def test_undiscovered_repository_reaches_enabled_through_independent_verification(self):
@@ -278,15 +242,14 @@ class BoundaryTests(unittest.TestCase):
         self.prepare_access()
         self.assertEqual(self.settings.load()['repositories'], [])
         plan = self.preparation.plan('example/project')
-        self.assertEqual(plan['steps'], [{'kind': 'github.ruleset.ensure_baseline','merge_check_scope':'all'}])
+        self.assertEqual(plan['steps'], [])
         result = self.preparation.apply(plan, enable=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(self.writes[-1][2], ruleset('main', 4, 'all'))
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
         # A repeat does no additional GitHub administrative writes.
         repeated = self.preparation.apply(self.preparation.plan('example/project'), enable=True)
         self.assertEqual(repeated['status'], 'enabled')
-        self.assertEqual(len(self.writes), 5)
+        self.assertEqual(len(self.writes), 4)
         self.assertNotIn(SECRET, json.dumps(self.requests))
         self.assertNotIn(SECRET, json.dumps([initial, plan, result, repeated]))
         for path in self.root.rglob('*'):
@@ -357,30 +320,15 @@ class BoundaryTests(unittest.TestCase):
             self.repo[field] = original
         self.assertEqual(self.writes, [])
 
-    def test_preserves_existing_baseline_on_conflict(self):
+    def test_old_baseline_name_does_not_create_a_requirement_or_write(self):
         self.prepare_access()
         self.github_rules.append({'id': 91, 'name': 'Forge review baseline', 'source_type': 'Organization'})
         plan = self.preparation.plan('example/project')
-        self.assertEqual(plan['blockers'], [{'code': 'ruleset_conflict', 'ruleset_ids': [91]}])
-        self.assertEqual(self.preparation.apply(plan)['status'], 'blocked')
+        self.assertEqual(plan['blockers'], [])
+        self.assertEqual(plan['steps'], [])
+        self.assertEqual(self.preparation.apply(plan)['status'], 'ready')
         self.assertEqual(len(self.writes), 4)
         self.assertEqual(self.github_rules[0]['source_type'], 'Organization')
-
-    def test_uncertain_rule_create_is_not_retried(self):
-        self.prepare_access()
-        original = self.broker.create_baseline
-        def uncertain(*args):
-            original(*args)
-            raise SetupError('github_timeout', 'Timeout.')
-        self.broker.create_baseline = uncertain
-        plan = self.preparation.plan('example/project')
-        self.assertEqual(self.preparation.apply(plan)['status'], 'write_unconfirmed')
-        with self.assertRaises(SetupError):
-            self.preparation.apply(plan)
-        self.assertEqual(len(self.writes), 5)
-        self.remote.verify(self.target, plan['revision'])
-        self.assertEqual(self.preparation.apply(self.preparation.plan('example/project'))['status'], 'ready')
-        self.assertEqual(len(self.writes), 5)
 
     def test_enable_remains_subject_to_real_server_checks(self):
         revision = digest(self.settings.load())
@@ -400,10 +348,6 @@ class BoundaryTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    def test_baseline_matches_existing_server_policy(self):
-        for branch in ('main', 'release/v2', 'feature.some-change'):
-            self.assertEqual(baseline(branch, 4), ruleset(branch, 4))
-
     def test_branch_patterns_and_bad_identifiers_are_rejected(self):
         from forge_client.contracts import repository
         for name in ('//github.com/evil', 'owner/repo?x=1', 'owner/repo/../../other', 'o/..'):
@@ -411,7 +355,7 @@ class ContractTests(unittest.TestCase):
         for identifier in (True, 0, -1, 2**53, '1'):
             with self.assertRaises(SetupError): repository({'id': identifier, 'name': 'o/r'})
         for branch in ('*', 'a[bc]', 'a\nb', '../main', ''):
-            with self.assertRaises(SetupError): baseline(branch, 4)
+            with self.assertRaises(SetupError): validate_branch(branch)
 
 
 class BrokerTests(unittest.TestCase):
@@ -465,18 +409,3 @@ class BrokerTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
-
-class ControllerBaselineTests(unittest.TestCase):
-    def test_invalid_controller_identity_cannot_produce_a_ruleset(self):
-        for app_id in (None, True, 0, -1, '4959034', 2**53):
-            with self.subTest(app_id=app_id), self.assertRaises(ValueError):
-                ruleset('main', app_id)
-
-    def test_admin_bypass_and_pinned_controller_are_shared_by_download_and_client(self):
-        for app_id in (4, 4959034):
-            value = baseline('main', app_id)
-            self.assertEqual(value, ruleset('main', app_id))
-            self.assertEqual(value['bypass_actors'], [
-                {'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'},
-                {'actor_id': app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
-            ])

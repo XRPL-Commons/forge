@@ -3,7 +3,7 @@
 // operator is on; stage 4 means every step is done and none is current.
 const props = defineProps<{ stage: 0 | 1 | 2 | 3 | 4; activationAvailable: boolean; blocked?: boolean }>()
 
-const steps = computed(() => ['Repository', 'App access', 'Review rules', props.activationAvailable ? 'Enable' : 'Finish setup'])
+const steps = computed(() => ['Repository', 'App access', 'Merge policy', props.activationAvailable ? 'Enable' : 'Finish setup'])
 </script>
 
 <template>

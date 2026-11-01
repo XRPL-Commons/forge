@@ -7,18 +7,17 @@ repository identity/revision to its Forge interface.
 from copy import deepcopy
 import time
 
-from .contracts import SetupError, baseline, connection_identity, digest, fields, require, requirements
+from .contracts import SetupError, connection_identity, digest, fields, require, requirements
 
 
 class Preparation:
-    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None, repair='apply-if-admin', github_protection=None):
+    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None, repair=None, github_protection=None):
         self.github, self.forge, self.clock = github, forge, clock
         self.instance, self.generation, self.apps = instance, generation, deepcopy(apps)
         self.progress = progress or (lambda phase, step: None)
-        require(repair in ('apply-if-admin', 'print-commands', 'skip'))
-        self.repair = repair
-        require(github_protection in (None, 'required', 'optional'))
-        self.github_protection = github_protection
+        require(repair in (None, 'apply-if-admin', 'print-commands', 'skip'))
+        require(github_protection is None, 'github_protection_retired',
+                'Forge enforces its merge policy in the supervisor. GitHub protection settings are no longer configured by Forge.')
 
     def _authorize(self, target, capability):
         self.forge.authorize(self.instance, self.generation,
@@ -40,15 +39,6 @@ class Preparation:
         target = self.github.repository(name)
         value = self._requirements(target)
         steps, blockers = [], []
-        mode = value['baseline'].get('github_protection', 'required')
-        if self.github_protection is not None and self.github_protection != mode:
-            self._authorize(target, 'repositories:policy')
-            policy = self.forge.protection({'id': target['id'], 'name': target['name']}, action='read')
-            steps.append({'kind': 'forge.github_protection', 'mode': self.github_protection,
-                          'revision': policy['revision']})
-            # Commit the explicit policy before planning any GitHub rule writes.
-            mode = self.github_protection
-
         for role, app in value['roles'].items():
             if app['access'] == 'ready':
                 continue
@@ -58,38 +48,6 @@ class Preparation:
                                   'installation_id': app['installation_ids'][0]})
             else:
                 blockers.append({'code': 'app_access_unverified', 'role': role})
-        readiness = value['readiness']
-        if mode == 'required' and not steps and readiness['access_ready'] and not readiness['protection_ready']:
-            try:
-                inventory = self.github.rulesets(target['name'])
-            except SetupError as error:
-                if error.code != 'github_plan_required':
-                    raise
-                blockers.append({'code': 'github_plan_required', 'reason':
-                    'GitHub does not support rulesets on this repository with its current plan. '
-                    'Use --github-protection optional with an approved policy grant to keep Forge checks without GitHub enforcement, '
-                    'or enable a GitHub plan that supports private-repository rulesets. Its visibility will not be changed by Forge.'})
-            else:
-                from .rules import inspect
-                repair = inspect(self.github, target, self.apps['controller']['app_id'])
-                if self.repair == 'apply-if-admin':
-                    steps.extend(repair['steps'])
-                elif repair['steps']:
-                    blockers.append({'code': 'rules_repair_not_authorized', 'policy': self.repair,
-                                     'reason': 'Review the repository rule guidance in Forge, or authorize narrow repair in a new preparation plan.'})
-                blockers.extend(repair['blockers'])
-                if not repair['steps'] and not repair['blockers']:
-                    if readiness['protection_status'] == 'needs_setup':
-                        require(value['baseline']['branch'] == target['branch'], 'default_branch_changed',
-                                'Forge and GitHub observed different default branches; verify again.')
-                        collisions = [r for r in inventory
-                                      if r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']]
-                        if collisions:
-                            blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
-                        else:
-                            steps.append({'kind': 'github.ruleset.ensure_baseline',**({'merge_check_scope':value['baseline']['merge_check_scope']} if 'merge_check_scope' in value['baseline'] else {})})
-                    else:
-                        blockers.append({'code': 'protection_unverified'})
         if any(step['kind'].startswith('github.') for step in steps) and not target['admin']:
             blockers.append({'code': 'github_admin_required'})
         created_at = self.clock()
@@ -131,13 +89,6 @@ class Preparation:
             fresh = self._requirements(target)
             self._authorize(target, 'repositories:prepare')
             require(fresh['revision'] == plan['revision'], 'plan_stale', 'Forge settings changed; create a new plan.')
-            if step['kind'] == 'forge.github_protection':
-                self._authorize(target, 'repositories:policy')
-                self.forge.protection({'id': target['id'], 'name': target['name']}, action='set', mode=step['mode'], revision=step['revision'],
-                                      request_id=digest({'plan': plan['id'], 'step': step})[:32])
-                completed.append(deepcopy(step))
-                return {'status': 'verification_pending', 'completed': completed,
-                        'policy_changed': True, 'next_actions': [{'kind': 'forge.repositories.verify'}]}
             if step['kind'] == 'github.installation.add_repository':
                 if fresh['roles'][step['role']]['access'] != 'ready':
                     try:
@@ -149,34 +100,8 @@ class Preparation:
                                     'kind': 'open_url',
                                     'url': self.github.installation_url(target, step['installation_id']),
                                     'reason': 'Check this App installation and grant the repository access.'}]}
-            elif step['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass', 'github.ruleset.repair_baseline'):
-                from .rules import apply as repair
-                require(fresh['readiness']['access_ready'], 'app_access_unverified',
-                        'Verify the current Forge App installation before changing branch protections.')
-                try:
-                    self.progress('started', step)
-                    repair(self.github, target, step, self.apps['controller']['app_id'])
-                except SetupError as error:
-                    return {'status': 'write_unconfirmed', 'code': error.code, 'completed': completed,
-                            'next_actions': [{'kind': 'forge.repositories.verify'}]}
             else:
-                require(step['kind'] == 'github.ruleset.ensure_baseline')
-                require(fresh['baseline']['branch'] == target['branch'], 'default_branch_changed')
-                require(fresh['baseline'].get('merge_check_scope')==step.get('merge_check_scope'),
-                        'plan_stale', 'Merge check scope changed; create a new plan.')
-                if not fresh['readiness']['protection_ready']:
-                    # A failed/uncertain create is never blindly repeated. A
-                    # same-name rule from a previous attempt becomes a conflict
-                    # until Forge independently verifies its effective rules.
-                    require(not any(r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']
-                                    for r in self.github.rulesets(target['name'])),
-                            'ruleset_conflict', 'A baseline already exists; verify it before retrying.')
-                    try:
-                        self.progress('started', step)
-                        self.github.create_baseline(target['name'], target['branch'], self.apps['controller']['app_id'],step.get('merge_check_scope'))
-                    except SetupError as error:
-                        return {'status': 'write_unconfirmed', 'code': error.code,
-                                'completed': completed, 'next_actions': [{'kind': 'forge.repositories.verify'}]}
+                raise SetupError('retired_preparation_action', 'This saved GitHub rule action is retired. Create a new preparation plan.')
             completed.append(deepcopy(step))
             self.progress('completed', step)
         # No raw GitHub result or local authentication data crosses this boundary.
@@ -204,26 +129,5 @@ class Preparation:
         require(type(apply) is bool and type(enable) is bool)
         if not apply:
             return {'status': 'planned', 'plan': self.plan(name)}
-        completed = []
-        refreshed = False
-        for _ in range(4):
-            plan = self.plan(name)
-            if plan['blockers'] and not refreshed and all(
-                    b['code'] in ('protection_unverified', 'ruleset_conflict') for b in plan['blockers']):
-                self._requirements(plan['target'])
-                self._authorize(plan['target'], 'repositories:prepare')
-                self.forge.verify({'id': plan['target']['id'], 'name': plan['target']['name']}, plan['revision'])
-                refreshed = True
-                continue
-            result = self.apply(plan, enable=enable)
-            completed.extend(result['completed'])
-            result['completed'] = deepcopy(completed)
-            if result['status'] != 'verification_pending':
-                return result
-            if result.get('policy_changed'):
-                continue
-            fresh = self._requirements(plan['target'])
-            if fresh['readiness']['protection_status'] != 'needs_setup':
-                return result
-        return {'status': 'verification_pending', 'completed': completed,
-                'next_actions': [{'kind': 'forge.repositories.verify'}]}
+        plan = self.plan(name)
+        return self.apply(plan, enable=enable)

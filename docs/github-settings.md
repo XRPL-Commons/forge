@@ -57,9 +57,9 @@ The one App has these repository grants; Metadata read is implicit:
 | Administration | Read |
 | Workflows | Write only when selected repository policy requires it |
 
-Administration write is not requested. The CLI uses the operator's local GitHub
-credentials for approved repository-rule changes. An App installation grants
-access; it does not enable repository automation.
+Administration write is not requested. Repository rules are observed read-only.
+The CLI keeps personal GitHub credentials local for approved App access changes.
+An App installation grants access; it does not enable repository automation.
 
 Build, Review, Audit and Controller remain separate roles using this shared
 connection. Independent workers produce Review and Audit verdicts. The controller
@@ -74,17 +74,14 @@ policy denies them.
 ## Repository rules and first merge
 
 The default merge-check scope is **all pull requests**. Human-authored PRs receive
-Forge's independent Review and Audit too. The baseline requires `forge/merge-policy`
-from the exact Forge App. A repository can instead select Forge-created PRs only.
-The Forge review baseline also requires pull requests, two native approvals and
-dismissal of stale approvals, with an App pull-request bypass: Forge checks its
-independent Review and Audit evidence before its own merges.
+Forge's independent Review and Audit too. A repository can instead select
+Forge-created PRs only. The supervisor enforces technical checks, CI and any
+required human approval before Forge requests a merge of the exact candidate.
 
-Keep the baseline separate from unrelated CI and signing protections. A bypass
-applies to an entire ruleset. The installation checks effective protections,
-preserves stronger rules and refuses a repair that would bypass required signing.
-Private repositories need a GitHub plan that supports the required rules; preflight
-reports unavailable protections before setup proceeds.
+Setup does not create rulesets, require GitHub approvals or grant a bypass.
+Private repositories do not need a paid plan for Forge's own merge policy.
+Existing owner and organization rules still apply at GitHub's merge endpoint;
+Forge reports rejected merges without modifying those rules.
 
 The CLI verifies signed publication with a separate private probe repository.
 Installation work stays limited to the smoke issue until accepted triage, Build,

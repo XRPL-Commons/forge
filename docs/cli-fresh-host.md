@@ -141,7 +141,6 @@ Example intent:
     {"name": "OWNER/REPO", "merge_policy": "human", "allow_workflow_edits": false}
   ],
   "providers": [{"id": "codex", "kind": "browser"}],
-  "rules_repair": "apply-if-admin",
   "smoke_target": "scratch",
   "codex_parallel_auth": true
 }
@@ -207,17 +206,12 @@ a clean **Forge reinstall on the existing OS**. Provisioning or rebuilding the V
 itself remains a provider operation. After `reset_complete`, run `forge install`
 again. Old GitHub App registrations remain visible and can be retired separately.
 
-When the new App reuses a repository, `rules_repair: "apply-if-admin"` can rebind
-an existing repository-local **Forge review baseline** to that App. The planned
-`github.ruleset.repair_baseline` step changes only the source of
-`forge/merge-policy` and adds the current App's pull-request bypass if needed.
-Other checks, review requirements, signing rules and existing bypasses are
-preserved. The CLI checks the installed App's access, compares the saved rule
-snapshot before writing, and reads back the complete baseline afterward.
-`print-commands` and `skip` report a blocker without writing. Custom or inherited
-rules, unrecognized check sources and unfamiliar rule parameters require
-inspection; Forge does not replace them with a weaker baseline. An interrupted
-write is reconciled on resume before any new write.
+Setup does not create or repair GitHub rulesets. The supervisor enforces Forge's
+merge requirements, and GitHub enforces any rules chosen by the repository owner.
+Saved installation intents from earlier versions can still resume; historical
+protection and rules-repair choices no longer authorize rule changes. Existing
+Forge-created rulesets require an explicit owner cleanup decision and are never
+deleted automatically during an upgrade or reinstall.
 
 ## Existing installations and individual stages
 

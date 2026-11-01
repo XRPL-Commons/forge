@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from ..app_access import AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
 from .contracts import SHA, candidate, digest, submission
-from ..repository_policy import protection_ready, github_protection, plan_unavailable
+from ..repository_policy import protection_ready, plan_unavailable
 from ..request_metrics import RequestBudgetExhausted, deadline as request_deadline
 
 # Ancestry between two recorded commits never changes; one process asks once.
@@ -45,19 +45,6 @@ def bot_logins(github, role):
     """Current then retired bot logins for a role; adapters without history give one."""
     lookup = getattr(github, 'publishers', None)
     return list(lookup(role)) if lookup else [github.publisher(role)]
-
-
-def classic_allowances(value):
-    """Current classic bypass list as names, so a replacement can keep it; None if unreadable."""
-    if not isinstance(value, dict) or not all(kind in value for kind in ('users', 'teams', 'apps')):
-        return None
-    names = {}
-    for kind, key in (('users', 'login'), ('teams', 'slug'), ('apps', 'slug')):
-        rows = value[kind]
-        if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get(key), str) for r in rows):
-            return None
-        names[kind] = [r[key] for r in rows]
-    return names
 
 
 def verdict_comment(job, report, marker):
@@ -629,31 +616,17 @@ class GitHub:
         return isinstance(found, dict) and found.get('permission') in ('admin', 'write')
 
     def protections(self, item, candidate_value):
-        report = self.protection_report(item, candidate_value)
-        if not protection_ready(report):
-            return False
-        if report.get('github_protection') == 'optional' and report['sources'] and candidate_value.get('merge_request'):
-            # Existing actor bypasses are not permission to skip real rules.
-            # GitHub's clean state includes its applicable checks and approvals;
-            # an unprotected repository need not pass unrelated optional CI.
-            pr = self.pr(item, candidate_value['pr'])
-            return (pr.get('mergeable_state') == 'clean' and pr.get('mergeable') is True
-                    and (pr.get('head') or {}).get('sha') == candidate_value['head']
-                    and (pr.get('base') or {}).get('sha') == candidate_value['base']
-                    and (pr.get('base') or {}).get('ref') == candidate_value['base_ref'])
-        return True
+        # The final GitHub merge API enforces external rules for this App.
+        # Its generic UI merge state cannot account for actor-specific access.
+        return protection_ready(self.protection_report(item, candidate_value))
 
     def protection_report(self, item, candidate_value):
-        """Read effective GitHub rules; never confuse the baseline with a bypass audit."""
+        """Observe effective external rules without imposing a Forge baseline."""
         branch = candidate_value['base_ref']
-        mode = github_protection(self.settings.load(), item['repo_id'])
-        optional = mode == 'optional'
         repo = item.get('repo', '')
         report = {'repo_id': item.get('repo_id'), 'branch': branch, 'observed_at': self.clock(),
-                  'available': True, 'github_protection': mode, 'plan_unavailable_sources': [], 'requirements': [], 'sources': [], 'errors': [],
-                  'additional_rules': [], 'code_owner_reviews': False,
-                  'bypass': {'status': 'operator_review', 'detail':
-                      'GitHub may hide bypass permissions. Review who can bypass these rules on GitHub.'}}
+                  'available': True, 'plan_unavailable_sources': [], 'requirements': [], 'sources': [], 'errors': [],
+                  'additional_rules': [], 'code_owner_reviews': False}
         reviews = [];required_checks=[]
         try:
             protection = self.call('controller', item, 'GET', '/branches/' + quote(branch, safe='') + '/protection')
@@ -675,7 +648,7 @@ class GitHub:
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable as error:
-            if optional and plan_unavailable(error):
+            if plan_unavailable(error):
                 report['plan_unavailable_sources'].append('classic')
             elif error.status != 404:
                 report['errors'].append({'source': 'classic', 'detail':
@@ -707,7 +680,7 @@ class GitHub:
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable as error:
-            if optional and plan_unavailable(error):
+            if plan_unavailable(error):
                 report['plan_unavailable_sources'].append('rulesets')
             else:
                 report['errors'].append({'source': 'rulesets', 'detail':
@@ -726,80 +699,16 @@ class GitHub:
                 'label': 'Check repository review rules', 'detail': report['errors'][0]['detail'], 'sources': []}]
             return report
         count = max((r.get('required_approving_review_count', 0) for r, _ in reviews), default=0)
-        stale = [(r, s) for r, s in reviews if r.get('dismiss_stale_reviews', r.get('dismiss_stale_reviews_on_push', False))]
         report['code_owner_reviews'] = any(r.get('require_code_owner_reviews', False) for r, _ in reviews)
         report['required_approvals'] = count
-        report['requirements'] = [
-            {'id': 'reviews', 'label': 'At least two approving reviews', 'passed': count >= 2,
-             'detail': f'{count} approvals required.' if count >= 2 else 'Require pull requests with at least two approving reviews.',
-             'sources': [s for r, s in reviews if r.get('required_approving_review_count', 0) >= 2]},
-            {'id': 'stale', 'label': 'Fresh approvals when code changes', 'passed': bool(stale),
-             'detail': 'Approvals are dismissed when new commits are pushed.' if stale else
-                       'Dismiss stale pull request approvals when new commits are pushed.',
-             'sources': [s for _, s in stale]}]
-        from ..app_access import shared_app
         from .config import merge_check_scope
-        connection=shared_app(self.settings.load()['connections'])
-        if connection:
-            report['merge_check_scope']=merge_check_scope(self.runtime,item['repo_id'])
-        if connection and merge_check_scope(self.runtime,item['repo_id'])=='all':
-            app_id=connection['app_id']
-            sources=[source for check,source,key in required_checks if isinstance(check,dict)
-                     and check.get('context')=='forge/merge-policy' and type(check.get(key)) is int and check[key]==app_id]
-            report['requirements'].append({'id':'merge_policy','label':'Forge merge policy from the Forge App',
-                'passed':bool(sources),'detail':f'Require forge/merge-policy from Forge App {app_id} on the target branch.',
-                'sources':sources})
-        if optional:
-            report['requirements'] = [{'id': 'readable', 'label': 'Observe existing GitHub rules',
-                'passed': True, 'detail': ('GitHub reports these protections are unavailable on this plan. Forge still enforces Review and Audit.'
-                    if report['plan_unavailable_sources'] else
-                    'Forge enforces Review and Audit. Existing GitHub rules remain in force.'),
-                'sources': report['sources']}]
-            report['bypass'] = {'status': 'not_required', 'detail': 'Forge does not require a GitHub bypass.'}
-        else:
-            report['bypass'] = self.controller_bypass(item, reviews)
+        report['merge_check_scope'] = merge_check_scope(self.runtime, item['repo_id'])
+        report['requirements'] = [{'id': 'readable', 'label': 'Observe existing GitHub rules',
+            'passed': True, 'detail': ('GitHub reports these protections are unavailable on this plan. Forge still enforces Review and Audit.'
+                if report['plan_unavailable_sources'] else
+                'Forge enforces Review and Audit. Existing GitHub rules remain in force.'),
+            'sources': report['sources']}]
         return report
-
-    def controller_bypass(self, item, reviews):
-        """Can the controller merge past approval rules Forge's own App reviews cannot satisfy?
-
-        GitHub counts approvals only from reviewers with write access, so review and
-        audit approvals never satisfy a pull request rule. A confirmed missing bypass
-        blocks repository readiness; unreadable bypass details remain explicitly unknown."""
-        gating = [(r, s) for r, s in reviews if r.get('required_approving_review_count', 0) > 0]
-        if not gating:
-            return {'status': 'ready', 'detail': 'No approval rule blocks the Forge controller.', 'sources': []}
-        app_id = self.connection('controller').get('app_id')
-        missing, unknown, seen = [], [], set()
-        for review, source in gating:
-            if source['kind'] == 'classic':
-                apps = (review.get('bypass_pull_request_allowances') or {}).get('apps') or []
-                if not any(isinstance(a, dict) and a.get('id') == app_id for a in apps):
-                    allowances = classic_allowances(review.get('bypass_pull_request_allowances'))
-                    missing.append({**source, 'bypass_allowances': allowances} if allowances else source)
-                continue
-            if source.get('id') in seen:
-                continue
-            seen.add(source.get('id'))
-            try:
-                found = self.call('controller', item, 'GET', '/rulesets/' + str(int(source['id'])))
-                mode = found.get('current_user_can_bypass') if isinstance(found, dict) else None
-            except GitHubBudgetExhausted:
-                raise
-            except (GitHubUnavailable, TypeError, ValueError):
-                mode = None
-            if mode in ('always', 'pull_requests_only', 'exempt'):
-                continue
-            (missing if mode == 'never' else unknown).append(
-                {**source, 'bypass_actors_visible': isinstance(found.get('bypass_actors'), list)}
-                if mode == 'never' else source)
-        if missing:
-            return {'status': 'missing', 'sources': missing, 'controller_app_id': app_id, 'detail':
-                    f'Add the Forge controller App (ID {app_id}) as a pull request bypass actor, or Forge cannot merge approved work.'}
-        if unknown:
-            return {'status': 'operator_review', 'sources': unknown, 'detail':
-                    'GitHub did not say whether the Forge controller can bypass these rules. Check the bypass list on GitHub.'}
-        return {'status': 'ready', 'sources': [], 'detail': 'The Forge controller can merge past approval rules.'}
 
     def gates(self, item):
         candidate_value = item['candidate']
@@ -840,7 +749,7 @@ class GitHub:
                 and latest.get('status')=='completed' and latest.get('conclusion')=='success')
 
     MERGE_REFUSALS = {
-        405: 'branch rules still block it; check required approvals, checks, and the controller bypass in Repository setup',
+        405: 'GitHub rejected the merge under the repository’s existing rules; check its required approvals and checks',
         409: 'the head moved since verification',
         404: 'the controller cannot see the pull request',
     }

@@ -66,9 +66,9 @@ class ServerHandoffTests(unittest.TestCase):
         self.assertTrue(any(event.get('event') == 'web_setup' for event in events))
         saved = self.journal.read()['server_preparation']['plan']
         self.assertEqual(saved['providers'], [{'id': 'codex', 'kind': 'browser'}])
-        self.assertEqual(saved['repositories'][0]['github_protection'], 'required')
+        self.assertNotIn('github_protection', saved['repositories'][0])
 
-    def test_privileged_repository_repair_only_follows_explicit_operator_need(self):
+    def test_operator_attention_never_replays_retired_rule_repairs(self):
         factory = self.server(); self.install.apply()
         factory.prepare_repository.assert_not_called()
         approved = self.install.state['server_preparation']['plan']
@@ -76,8 +76,7 @@ class ServerHandoffTests(unittest.TestCase):
             {'repository': {'id': 10, 'name': 'owner/one'}, 'reason': 'Required rules missing', 'path': '/settings/repositories/10'}])
         factory.prepare_repository.side_effect = lambda name, **options: {'status': 'repository_ready' if options['apply'] else 'needs_setup'}
         self.install.prepare_on_server(factory, self.targets, self.report)
-        self.assertEqual([(call.args[0], call.kwargs['apply']) for call in factory.prepare_repository.call_args_list],
-                         [('owner/one', False), ('owner/one', True)])
+        factory.prepare_repository.assert_not_called()
         # No unrelated repository is repaired and no device login is launched.
         self.assertNotIn('device_account', [call.args[0] for call in factory.call.call_args_list])
 
@@ -89,17 +88,20 @@ class ServerHandoffTests(unittest.TestCase):
         with self.assertRaises(SetupError): self.install.prepare_on_server(factory, self.targets, self.report)
         factory.prepare_repository.assert_not_called()
 
-    def test_skip_repair_preserves_operator_decision(self):
-        factory = self.server(); self.install.apply()
-        self.install.state['intent']['rules_repair'] = 'skip'
-        # Rules repair is a local handling policy; bind a consistent saved intent.
+    def test_legacy_bound_plan_is_preserved_without_rule_writes(self):
+        self.install.state['intent']['rules_repair'] = 'apply-if-admin'
+        self.install.state['intent']['repositories'][0]['github_protection'] = 'required'
         from forge_client.contracts import digest
         self.install.state['inputs_digest'] = digest(self.install.state['intent'])
-        approved = install_prepare.plan(self.install.state, self.targets, self.report)
-        self.install.state['server_preparation']['plan'] = approved
+        factory = self.server(); self.install.apply()
+        approved = self.install.state['server_preparation']['plan']
+        approved['repositories'][0]['github_protection'] = 'required'
+        original = deepcopy(approved)
         self.remote = self.preparation(approved, status='preparation_needs_operator', needs_operator=[
-            {'repository': {'id': 10, 'name': 'owner/one'}, 'reason': 'Missing rules', 'path': '/settings/repositories'}])
+            {'repository': {'id': 10, 'name': 'owner/one'}, 'reason': 'External review pending', 'path': '/settings/repositories'}])
         self.install.prepare_on_server(factory, self.targets, self.report)
+        self.assertEqual(self.install.state['server_preparation']['plan'], original)
+        self.assertEqual(self.install.state['inputs_digest'], digest(self.install.state['intent']))
         factory.prepare_repository.assert_not_called()
 
     def test_poll_and_resume_follow_server_without_replaying_bootstrap(self):
@@ -134,7 +136,7 @@ class ServerHandoffTests(unittest.TestCase):
         self.observe.assert_not_called(); self.host.execute.assert_not_called()
         factory.prepare_repository.assert_not_called()
 
-    def test_resume_repairs_only_requested_repository_without_replaying_bootstrap(self):
+    def test_resume_preserves_attention_without_local_rule_repairs(self):
         factory = self.server(); self.install.apply()
         approved = self.install.state['server_preparation']['plan']
         self.remote = self.preparation(approved, status='preparation_needs_operator', needs_operator=[
@@ -143,10 +145,9 @@ class ServerHandoffTests(unittest.TestCase):
         self.observe.reset_mock(); self.host.execute.reset_mock(); factory.call.reset_mock()
         self.install.apply()
         self.observe.assert_not_called(); self.host.execute.assert_not_called()
-        self.assertEqual([(call.args[0], call.kwargs['apply']) for call in factory.prepare_repository.call_args_list],
-                         [('owner/one', False), ('owner/one', True)])
+        factory.prepare_repository.assert_not_called()
         self.assertNotIn('device_account', [call.args[0] for call in factory.call.call_args_list])
-        self.assertEqual(self.install.state['stages']['preparation']['receipt']['status'], 'preparation_pending')
+        self.assertEqual(self.install.state['stages']['preparation']['receipt']['status'], 'preparation_needs_operator')
 
     def test_online_status_adopts_server_smoke_and_normalized_handover(self):
         factory = self.server(); self.install.apply(); self.server_smoke(merged=True)

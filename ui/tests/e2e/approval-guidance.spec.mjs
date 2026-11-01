@@ -38,6 +38,8 @@ export default async function (page, { base, scenario, observeIssue }) {
   await page.getByText('The merge is blocked', { exact: true }).waitFor()
   assert.equal(await page.getByRole('button', { name: 'Approve…', exact: true }).count(), 0)
   assert.equal(await page.getByRole('dialog').count(), 0)
-  assert.match(await page.locator('body').innerText(), /pull-request bypass/)
-  assert.equal(await page.getByRole('link', { name: 'Repository setup →' }).count(), 1)
+  assert.match(await page.locator('#issue-merge-blocker').innerText(), /GitHub refused to merge: branch rules still block it/)
+  assert.ok(!(await page.locator('#issue-merge-blocker').innerText()).includes('bypass'))
+  assert.equal(await page.locator('#issue-merge-blocker').getByRole('link', { name: 'View pull request on GitHub ↗' }).getAttribute('href'), 'https://github.com/XRPL-Commons/academy/pull/31')
+  assert.equal(await page.getByRole('link', { name: 'Repository setup →' }).count(), 0)
 }

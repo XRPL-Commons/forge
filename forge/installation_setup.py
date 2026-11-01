@@ -38,9 +38,10 @@ class InstallationSetup:
         self.handoff.operator(request['actor_id'])
         data = self.setup.read()
         action, params = request['action'], request['parameters']
+        require(action != 'github_protection', 'policy_retired', 'Forge now governs merges through its supervisor; GitHub protection settings are retired.')
         allowed = {'status': (), 'preparation': (), 'prepare': ('plan',), 'progress': ('snapshot',), 'app': ('role', 'owner'), 'refresh': (), 'select': ('repository',),
                    'authorize': ('instance', 'repository', 'capability'), 'requirements': ('repository',),
-                   'verify_repository': ('repository', 'revision'), 'github_protection': ('repository', 'operation'), 'check': ('revision',),
+                   'verify_repository': ('repository', 'revision'), 'check': ('revision',),
                    'start': ('revision',), 'account': ('provider', 'kind', 'secret'),
                    'smoke_bind': ('binding',), 'smoke_status': (), 'smoke_handover': (), 'smoke_launch': (),
                    'smoke_issue': ('intent_digest', 'repository', 'number', 'started_at'),
@@ -50,7 +51,7 @@ class InstallationSetup:
                    'device_account': ('provider', 'apply', 'retry'),
                    'pilot': ('repository', 'number', 'started_at')}
         require(action in allowed, 'invalid_action', 'Unknown installation setup action.')
-        fields(params, (*allowed[action], *('mode', 'revision', 'request_id')) if action == 'github_protection' and params.get('operation') == 'set' else allowed[action])
+        fields(params, allowed[action])
         if action != 'status':
             require(request['generation'] == data['generation'], 'setup_changed', 'Setup changed; inspect before continuing.')
         if action == 'progress':
@@ -84,14 +85,14 @@ class InstallationSetup:
             from .installation_accounts import DeviceAccount
             return DeviceAccount(self.root, setup=self.setup).call(**params,
                 setup_id=request['setup_id'], generation=request['generation'])
-        require(data['phase'] == 'setup' or action in ('account', 'requirements', 'verify_repository', 'authorize', 'github_protection')
+        require(data['phase'] == 'setup' or action in ('account', 'requirements', 'verify_repository', 'authorize')
                 and data['phase'] == 'active', 'setup_complete', 'Factory is active; use the scoped repository commands.')
         if action == 'app':
             return self.handoff.begin(setup_id=request['setup_id'], actor_id=request['actor_id'],
                                       generation=request['generation'], **params)
         if action == 'refresh':
             self.setup.refresh()
-        elif action in ('authorize', 'requirements', 'verify_repository', 'select', 'github_protection'):
+        elif action in ('authorize', 'requirements', 'verify_repository', 'select'):
             target = repository(params['repository'])
             if data['phase'] == 'active':
                 from .settings import Settings
@@ -103,18 +104,6 @@ class InstallationSetup:
                         and params['capability'] in ('repositories:read', 'repositories:prepare', 'repositories:policy'),
                         'setup_changed', 'This preparation belongs to another installation.')
                 return {'authorized': True}
-            if action == 'github_protection':
-                policies = RepositorySetup(settings)
-                require(params['operation'] in ('read', 'set'), 'invalid_action')
-                if params['operation'] == 'read':
-                    return policies.protection_policy(target)
-                # Administrative SSH authority is bound to this setup generation.
-                # Only the exact consented repository may be added before discovery.
-                consent = (data.get('installation_consent') or {}).get('binding', {}).get('repositories', [])
-                discovered = any(r['id'] == target['id'] and r['name'].lower() == target['name'].lower()
-                                 for r in settings.view()['repositories'])
-                require(target in consent or discovered, 'repository_changed')
-                return policies.set_github_protection(target, params['revision'], params['mode'])
             if action == 'verify_repository':
                 require(params['revision'] == settings.view()['revision'], 'setup_changed', 'Repository setup changed.')
                 require(settings.refresh(), 'setup_busy', 'Repository access refresh is already running.')
