@@ -1,6 +1,7 @@
 """Private handover evidence, projected without credentials or raw diagnostics."""
 from urllib.parse import urlsplit
 import shlex
+import math
 
 from .workflow import Journal
 from .contracts import digest
@@ -61,9 +62,44 @@ def origin(value):
     return None
 
 
+def preparation_evidence(state):
+    """Project the server receipt only for this approved installation plan."""
+    plan = (state.get('server_preparation') or {}).get('plan')
+    value = receipt(state, 'preparation')
+    if not plan or value.get('available') is not True:
+        return {}, {}
+    expected = {'intent_digest': state['inputs_digest'], 'started_at': state['started_at'],
+                'repositories': plan['repositories'], 'smoke_repository': plan['smoke_repository']}
+    if not all(value.get(key) == part for key, part in expected.items()):
+        return {}, {}
+    handover = receipt(state, 'handover')
+    if handover.get('status') == 'handover_complete' and not all(
+            value.get(key) == handover.get(key) for key in ('setup_id', 'generation', 'intent_digest', 'started_at', 'repositories')):
+        return {}, {}
+    targets = {row['target']['id'] for row in plan['repositories']} | {plan['smoke_repository']['id']}
+    allowed = {'environment', 'settings', 'access', 'smoke.prepare'} | {
+        prefix + str(identifier) for identifier in targets for prefix in ('repository.', 'publication.')} | {
+        'account.' + row['id'] for row in plan['providers']}
+    stages = {}
+    for row in value.get('stages', []):
+        if row.get('id') not in allowed or row.get('status') not in ('pending', 'running', 'waiting', 'complete', 'needs_operator', 'failed'):
+            continue
+        stage = {'status': row['status']}
+        for key in ('started_at', 'completed_at'):
+            timestamp = row.get(key)
+            if type(timestamp) in (int, float) and math.isfinite(timestamp) and timestamp > 0:
+                stage[key] = timestamp
+        stages[row['id']] = stage
+    providers = {(row['id'], row['kind']): row['connected'] for row in value.get('providers', [])
+                 if type(row.get('connected')) is bool and {'id': row.get('id'), 'kind': row.get('kind')} in plan['providers']}
+    return stages, providers
+
+
 def build(state, *, versions=None):
     """Use only recorded evidence; completion does not establish a clean benchmark."""
-    intent, stages = state['intent'], state.get('stages', {})
+    intent, local_stages = state['intent'], state.get('stages', {})
+    server_stages, server_providers = preparation_evidence(state)
+    stages = {**local_stages, **server_stages}
     preflight = (state.get('preflight') or {}).get('report') or {}
     observations = {row['target']['id']: row for row in preflight.get('repositories', [])}
     handover = receipt(state, 'handover')
@@ -92,7 +128,8 @@ def build(state, *, versions=None):
     for selected in intent['repositories']:
         target = selected['target']; name = 'repository.' + str(target['id'])
         stage, observed = stages.get(name, {}), observations.get(target['id'], {})
-        changes = stage.get('rule_changes', rule_changes(stage.get('receipt') or {}))
+        local = local_stages.get(name, {})
+        changes = local.get('rule_changes', rule_changes(local.get('receipt') or {}))
         repositories.append({'repository': pick(target, 'id', 'name'),
             'merge_policy': selected['merge_policy'], 'github_protection': selected.get('github_protection', 'required'), 'allow_workflow_edits': selected['allow_workflow_edits'],
             'stage_status': stage.get('status', 'unknown'), 'environment_tier': observed.get('env_tier'),
@@ -101,10 +138,15 @@ def build(state, *, versions=None):
                       'classic_protection': observed.get('classic_protection'),
                       'sources': [pick(row, 'type', 'id', 'editable', 'enforcement') for row in observed.get('rule_sources', [])],
                       'confirmed_changes': changes,
-                      'change_history': 'recorded' if 'rule_changes' in stage or 'completed' in (stage.get('receipt') or {}) else 'unknown'},
-            'publication_status': receipt(state, 'publication.' + str(target['id'])).get('status', 'unknown')})
+                      'change_history': 'recorded' if 'rule_changes' in local or 'completed' in (local.get('receipt') or {}) else 'unknown'},
+            'publication_status': ('qualified' if server_stages['publication.' + str(target['id'])]['status'] == 'complete'
+                                   else server_stages['publication.' + str(target['id'])]['status'])
+                                  if 'publication.' + str(target['id']) in server_stages
+                                  else receipt(state, 'publication.' + str(target['id'])).get('status', 'unknown')})
     providers = [{'id': row['id'], 'kind': row['kind'],
-                  'status': receipt(state, 'account.' + row['id']).get('status', 'unknown')}
+                  'status': ('connected' if server_providers[(row['id'], row['kind'])] else 'not_connected')
+                            if (row['id'], row['kind']) in server_providers
+                            else receipt(state, 'account.' + row['id']).get('status', 'unknown')}
                  for row in intent['providers']]
     timings = []
     for name, stage in stages.items():
@@ -114,7 +156,8 @@ def build(state, *, versions=None):
     # Do not copy free-form errors, browser/device URLs, codes or arbitrary command
     # arguments from pending receipts into the report.
     remaining = [{'stage': name, 'status': stage['status'],
-                  'action': 'Inspect this stage in forge install --status, then resume the saved installation.'}
+                  'action': 'Review this step in the Forge setup page.' if name in server_stages else
+                            'Inspect this stage in forge install --status, then resume the saved installation.'}
                  for name, stage in stages.items() if stage['status'] != 'complete']
     waived = [{'id': row['id'], 'status': 'waived'} for row in preflight.get('items', [])
               if row['id'] in state.get('waivers', [])]
