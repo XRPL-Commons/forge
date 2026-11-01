@@ -247,7 +247,7 @@ class Onboarding:
             return None
         action, step = operation['action'], operation.get('step')
         if action in ('check', 'harness_check'):
-            if step == 'probe' and data.get('probe_jobs'):
+            if step in ('probe', 'probe_wait') and data.get('probe_jobs'):
                 job = data['probe_jobs'][-1]
                 if job.get('capacity_wait_since') is not None:
                     return {'target': 'setup', 'label': 'Waiting for available memory; verification will resume automatically'}

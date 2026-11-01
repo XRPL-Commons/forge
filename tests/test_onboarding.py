@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
@@ -346,6 +347,109 @@ class SetupTests(unittest.TestCase):
         for _ in range(16): service.tick()
         self.assertTrue(self.setup.view()['can_start'])
         self.assertFalse(engine)
+
+    def test_capacity_wait_replaces_unstarted_probe_with_consistent_immutable_deadline(self):
+        from forge.factory.runner import RunnerCapacity
+        from forge.factory.probe_runner import ProbeRunner
+        from tests.test_worker_boundary import Engine
+        self.connected()
+        config = self.setup.runtime(); config['image'] = 'sha256:' + 'a' * 64
+        self.setup.save_runtime(config, active=False)
+        service, engine, resets = self.service()
+        now = [time.time()]
+        self.setup.clock = lambda: now[0]
+        self.setup.queue('check', self.setup.view()['revision'])
+        original_create = service.runner_class.create
+        assignments, started = {}, []
+        def create(runner, job):
+            probe = ProbeRunner(job['runner_config'], environ={'FORGE_CREDENTIAL_ROOT': str(self.root)})
+            probe.call = Engine()
+            probe.prepare_source(job)
+            assignments[job['id']] = json.loads((probe.inputs(job) / 'assignment.json').read_text())
+            return original_create(runner, job)
+        original_start = service.runner_class.start
+        def start(runner, job):
+            started.append(assignments[job['id']]['deadline'])
+            return original_start(runner, job)
+        with patch('forge.setup_service.time.time', side_effect=lambda: now[0]), \
+                patch.object(service.runner_class, 'create', create), \
+                patch.object(service.runner_class, 'start', start):
+            service.tick(); service.tick()
+            old = self.setup.read()['probe_jobs'][-1]
+            # Container/input creation succeeded, but admission at start lost
+            # the memory race. The assignment already has the original clock.
+            with patch.object(service.runner_class, 'start', side_effect=RunnerCapacity({'allowed': False, 'reason': 'memory_headroom'})):
+                service.tick()
+            self.assertEqual(self.setup.read()['operation']['step'], 'probe_wait', self.setup.read().get('probe_error'))
+            now[0] += 300
+            with patch.object(service.runner_class, 'capacity', return_value={'allowed': False}):
+                service.tick()
+            self.assertEqual(self.setup.read()['probe_jobs'][-1]['id'], old['id'])
+            self.assertEqual(resets, [])
+            service.tick()
+            fresh = self.setup.read()['probe_jobs'][-1]
+            self.assertNotEqual(fresh['id'], old['id'])
+            self.assertEqual(fresh['deadline'], now[0] + 180)
+            self.assertEqual(fresh['provider_id'], old['provider_id'])
+            self.assertEqual(assignments[old['id']]['deadline'], old['deadline'])
+            with self.database.read_snapshot() as db:
+                row = db.execute('SELECT cleanup FROM auxiliary_executions WHERE id=?', (old['id'],)).fetchone()
+                self.assertEqual(row[0], 1)
+                self.assertIsNone(db.execute('SELECT 1 FROM auxiliary_leases WHERE execution_id=?', (old['id'],)).fetchone())
+            service.tick()
+            self.assertEqual(started, [fresh['deadline']])
+            for _ in range(16): service.tick()
+            self.assertEqual(self.setup.read()['checks']['provider'], 'passed')
+
+    def test_capacity_resume_recovers_after_cleanup_before_replacement_and_keeps_running_probe(self):
+        from forge.factory.runner import RunnerCapacity
+        self.connected()
+        service, engine, resets = self.service()
+        self.setup.queue('check', self.setup.view()['revision'])
+        service.tick(); service.tick()
+        with patch.object(service.runner_class, 'create', side_effect=RunnerCapacity({'allowed': False})):
+            service.tick()
+        old = self.setup.read()['probe_jobs'][-1]
+        with patch.object(service, 'new_probe', side_effect=RuntimeError('interrupted after cleanup')):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                service.check(self.setup.read())
+        self.assertTrue(self.setup.read()['probe_jobs'][-1]['cleanup'])
+        service, _, _ = self.service()
+        service.check(self.setup.read())
+        self.assertNotEqual(self.setup.read()['probe_jobs'][-1]['id'], old['id'])
+        # An uncertain start that is already running must be observed in place.
+        data = self.setup.read(); job = data['probe_jobs'][-1]
+        service.wait_probe(data, data['operation'])
+        with patch.object(service.runner_class, 'inspect', return_value={'status': 'running'}), \
+                patch.object(service.runner_class, 'reset') as reset:
+            service.check(self.setup.read())
+            reset.assert_not_called()
+        current = self.setup.read()
+        self.assertEqual(current['probe_jobs'][-1]['id'], job['id'])
+        self.assertEqual(current['probe_jobs'][-1]['deadline'], job['deadline'])
+        self.assertNotIn('capacity_wait_since', current['probe_jobs'][-1])
+        self.assertEqual(current['operation']['step'], 'probe')
+
+    def test_capacity_retry_waits_for_verified_cleanup_before_allocating_replacement(self):
+        from forge.factory.runner import RunnerCapacity
+        self.connected()
+        service, engine, resets = self.service()
+        self.setup.queue('check', self.setup.view()['revision'])
+        service.tick(); service.tick()
+        with patch.object(service.runner_class, 'create', side_effect=RunnerCapacity({'allowed': False})):
+            service.tick()
+        old = self.setup.read()['probe_jobs'][-1]['id']
+        with patch.object(service.runner_class, 'reset', side_effect=RunnerError('Cleanup not confirmed')):
+            service.tick()
+        data = self.setup.read()
+        self.assertEqual(data['probe_jobs'][-1]['id'], old)
+        self.assertFalse(data['probe_jobs'][-1]['cleanup'])
+        self.assertIn('Cleanup not confirmed', data['error'])
+        service.tick()
+        data = self.setup.read()
+        self.assertNotEqual(data['probe_jobs'][-1]['id'], old)
+        self.assertIsNone(data['error'])
+        self.assertIsNone(data['probe_error'])
 
     def test_start_rejects_stale_or_unverified_configuration(self):
         self.connected()

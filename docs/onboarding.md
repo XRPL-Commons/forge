@@ -74,6 +74,12 @@ signed publication. It qualifies the full database environment when repository
 requirements need it. Provider verification makes real model calls and can consume
 provider usage. See [GitHub setup](github-settings.md) for permissions and rules.
 
+When memory is unavailable, verification shows a waiting state and resumes
+automatically. Before starting a delayed check, Forge cleans up its unstarted
+reservation and creates a fresh one with a full execution deadline. It preserves
+the connected account. A check that already started keeps its original deadline;
+an execution timeout is reported explicitly.
+
 ## The first merge and handover
 
 ```mermaid
