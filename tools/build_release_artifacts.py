@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import runpy
 import shutil
 import subprocess
@@ -27,8 +28,50 @@ def descriptor(path, inputs, image=None):
             digest.update(chunk)
     result = {'filename': path.name, 'sha256': digest.hexdigest(), 'size': path.stat().st_size, 'inputs': inputs}
     if image:
-        result['image_id'] = image
+        result.update(image)
     return result
+
+
+def image_identity(path, built_image):
+    """Pin config and manifest identities from the actual exported image.
+
+    Classic Docker identifies an image by its config; containerd uses its
+    manifest. Both identities must describe the same exported configuration.
+    Read small JSON metadata in one pass without extracting image layers.
+    """
+    metadata = {}
+    with tarfile.open(path, 'r|gz') as archive:
+        for member in archive:
+            if not member.isfile() or member.size > 256 * 1024:
+                continue
+            if member.name not in ('index.json', 'manifest.json') and not re.fullmatch(r'blobs/sha256/[0-9a-f]{64}', member.name):
+                continue
+            raw = archive.extractfile(member).read()
+            try:
+                value = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            metadata[member.name] = (raw, value)
+    try:
+        entries = metadata['manifest.json'][1]
+        index = metadata['index.json'][1]
+        if len(entries) != 1 or len(index['manifests']) != 1:
+            raise ValueError('Prepared workers require one exported image.')
+        config_raw, config = metadata[entries[0]['Config']]
+        config_id = 'sha256:' + hashlib.sha256(config_raw).hexdigest()
+        manifest_id = index['manifests'][0]['digest']
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest_id):
+            raise ValueError('Invalid exported manifest digest.')
+        manifest_raw, manifest = metadata['blobs/sha256/' + manifest_id.removeprefix('sha256:')]
+        if ('sha256:' + hashlib.sha256(manifest_raw).hexdigest() != manifest_id
+                or manifest['config']['digest'] != config_id
+                or entries[0]['Config'] != 'blobs/sha256/' + config_id.removeprefix('sha256:')
+                or config['os'] != 'linux' or config['architecture'] != 'amd64'
+                or built_image not in (config_id, manifest_id)):
+            raise ValueError('Exported worker identity differs from the qualified image.')
+    except (KeyError, TypeError, IndexError) as error:
+        raise ValueError('Exported worker metadata is incomplete.') from error
+    return {'image_id': config_id, 'image_manifest_id': manifest_id}
 
 
 def save_image(image, destination):
@@ -76,10 +119,12 @@ def build(destination):
                 archive.add(child, arcname=child.name)
     save_image(base, destination / ASSETS['runner'])
     save_image(full, destination / ASSETS['full'])
+    identities = {kind: image_identity(destination / ASSETS[kind], image)
+                  for kind, image in (('runner', base), ('full', full))}
     inputs = host_update.artifact_inputs()
     manifest = {'version': 1, 'source': revision, 'platform': 'linux/amd64', 'node_image': host_update.NODE_IMAGE,
                 'python_image': host_update.PYTHON_IMAGE,
-                'artifacts': {kind: descriptor(destination / filename, inputs[kind], {'runner': base, 'full': full}.get(kind))
+                'artifacts': {kind: descriptor(destination / filename, inputs[kind], identities.get(kind))
                               for kind, filename in ASSETS.items()}}
     validate_manifest(manifest, revision, inputs, host_update.NODE_IMAGE, host_update.PYTHON_IMAGE)
     (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
