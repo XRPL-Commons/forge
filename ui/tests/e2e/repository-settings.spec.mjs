@@ -43,9 +43,9 @@ export default async function (page, { base, scenario, requests }) {
   await page.locator('summary').filter({ hasText: 'Dependency access' }).click()
   await page.locator('summary').filter({ hasText: 'Deployment tracking' }).click()
   await page.evaluate(() => window.scrollTo(0, 0))
-  await page.screenshot({ path: '/private/tmp/forge-settings-desktop.png', fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: '/tmp/forge-settings-desktop.png', fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.evaluate(() => window.scrollTo(0, 0))
-  await page.screenshot({ path: '/private/tmp/forge-settings-mobile.png', fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: '/tmp/forge-settings-mobile.png', fullPage: true, animations: 'disabled' })
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
 }
