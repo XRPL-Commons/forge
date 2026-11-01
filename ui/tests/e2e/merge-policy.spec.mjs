@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 
 export default async function (page, { base, scenario, requests, observeIssue }) {
+  await scenario('repository-settings')
   await page.goto(base + '/settings/repositories/2')
-  const policy = page.locator('#repository-merge-policy')
+  const policy = page.locator('#merge-policy')
   await policy.waitFor()
-  assert.match(await policy.innerText(), /One counted human approval/)
-  assert.equal(await policy.locator('button,input,select').count(), 0, 'policy is read-only in Settings')
+  assert.equal(await policy.inputValue(), 'human')
+  assert.equal(await page.getByRole('button', { name: 'Save merging', exact: true }).isDisabled(), true)
   assert.equal((await requests()).filter(row => row.method === 'POST' && row.path.includes('policy')).length, 0)
 
   await scenario('approval')

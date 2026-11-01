@@ -7,7 +7,7 @@ const route = useRoute()
 const deploymentOpen = ref(false)
 const wizard = ref(route.query.setup === '1')
 watch(() => route.query.setup, value => { if (value === '1') wizard.value = true })
-const { poll, live, row, report, displayReady, ready, hint, busy, checking, error, deployment, deployError, environmentError, environmentNotice, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, mirrorNotice, updateMirrorPolicy, updateReviewScope, updateMergePolicy, disable } = useRepository(repoId, computed(() => !wizard.value), deploymentOpen)
+const { poll, live, row, report, displayReady, hint, busy, checking, error, deployment, deployError, environmentError, environmentNotice, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, mirrorNotice, updateMirrorPolicy, updateReviewScope, updateMergePolicy, disable } = useRepository(repoId, computed(() => !wizard.value), deploymentOpen)
 const disabling = ref(false)
 async function confirmDisable() { await disable(); if (!row.value?.enabled) disabling.value = false }
 const environmentSummary = computed(() => row.value?.environment?.profile?.services.length
