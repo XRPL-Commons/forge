@@ -23,6 +23,7 @@ GitHub-confirmed merge allows the final repository handover.
 
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
+forge self-update
 forge install --ssh anvil
 ```
 
@@ -43,12 +44,12 @@ for diagnosis after handover, with automation disabled. Choosing a real reposito
 instead creates a small documentation smoke issue there; its merge policy and
 any independent operator holds still apply.
 
-After preflight passes, the CLI prepares these GitHub targets before installing
-the host. Provider sign-in runs immediately after App and operator identity setup,
-before repository repair, database-image provisioning and publication checks.
-Pending sign-in pauses that later work; resume observes the same login session.
-The browser steps still require the full host installation and Tailscale setup.
-This ordering does not yet provide a single consent batch before installation.
+After preflight passes, the CLI prepares these GitHub targets, installs the host,
+and configures private HTTPS, the App and operator identity. It then opens
+**Installation progress** in Forge and hands the approved plan to the server.
+You can close the terminal. The server prepares the worker environment while
+checking up to three repositories in parallel and waiting for Codex sign-in.
+Publication checks and the first-merge test start after their prerequisites pass.
 
 ### Browser steps
 
@@ -57,8 +58,10 @@ The CLI prints the exact browser actions as they become available:
 1. Approve the VM joining Tailscale if it needs authorization.
 2. Open the local GitHub handoff, create the single Forge App, and install it on
    the selected repositories, including the disposable repositories.
-3. Sign in to the selected coding provider. Codex uses a URL and one-time device
-   code; its login continues on the host if the laptop disconnects.
+3. In Forge's Installation progress page, choose **Connect Codex**. Open the
+   displayed sign-in URL and enter its one-time code. Forge detects completion
+   automatically; an expired attempt offers a new sign-in. Other providers and
+   API-key or token logins use the CLI's existing private input flow.
 
 Keep the CLI running while using its local GitHub callback page. GitHub may ask
 for a passkey. If GitHub explicitly reports a missing manifest and no App was
@@ -76,13 +79,22 @@ login is linked to their immutable GitHub ID, then verified through HTTPS.
 
 ```sh
 forge install --ssh anvil --status
-forge install --ssh anvil --resume --wait 3600
+forge install --ssh anvil --status --refresh
+forge install --ssh anvil --resume
 ```
 
-`--status` reads the saved local progress. Apply and resume re-observe incomplete
-stages. Host builds and Codex device login survive loss of the client; `--wait`
-follows automated progress for a bounded time. A browser action or blocker is
-returned explicitly. Resume keeps the original installation and first-merge timer.
+`--status` reads saved local progress without contacting the host. Add `--refresh`
+to read server preparation and completion, reconcile the journal and produce the
+handover report. Resume keeps the original installation and first-merge timer.
+After handoff, it observes server work without repeating host bootstrap. If the
+approved plan allows local GitHub administration, resume repairs only repositories
+the server identifies as needing it. Personal GitHub credentials stay local.
+
+Human CLI output returns the web destination after handoff, including when
+`--wait` was supplied. Agents can use `--json --wait SECONDS` to follow the server
+through the first merge. Neither closing the terminal nor reaching that timeout
+cancels server preparation. The web page reports blockers and offers explicit
+Continue or Retry actions after you resolve them.
 
 If a Codex device login expires, explicitly start a replacement:
 
@@ -135,7 +147,7 @@ Example intent:
 }
 ```
 
-`revision: null` resolves main once. `host_key: null` uses existing SSH trust.
+`revision: null` selects the latest complete published prepared release once. `host_key: null` uses existing SSH trust.
 An optional positive `smoke_issue` selects an existing issue in a selected real
 smoke repository; otherwise Forge creates its own smoke issue. Workflow-edit
 permission is enforced per repository even when another selected repository

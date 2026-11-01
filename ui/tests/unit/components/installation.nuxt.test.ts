@@ -78,4 +78,48 @@ describe('installation progress', () => {
     expect(wrapper.find('aside').exists()).toBe(false)
     wrapper.unmount()
   })
+  it('offers explicit browser consent and sends the offered action only after clicking', async () => {
+    setup()
+    Object.assign(state.current.view.value, {
+      account: { provider: 'codex', status: 'account_login_required', url: 'https://auth.openai.com/codex/device', code: 'TEST-CODE', expires_at: Date.now() / 1000 + 600 },
+      actions: [{ id: 'retry_account', label: 'Retry Codex sign-in' }], operation: { status: 'waiting' },
+    })
+    const wrapper = await mountSuspended(InstallationPage)
+    const account = wrapper.get('section[aria-label="Connect Codex"]')
+    expect(account.get('code').text()).toBe('TEST-CODE')
+    expect(account.get('a[href="https://auth.openai.com/codex/device"]').text()).toBe('Open Codex sign-in')
+    expect(wrapper.text()).toContain('Waiting for you. Complete the steps below')
+    expect(wrapper.text()).not.toContain('Setup will continue automatically on the server.')
+    expect(state.current.act).not.toHaveBeenCalled()
+    await account.findAll('button').find(button => button.text() === 'Retry Codex sign-in')!.trigger('click')
+    expect(state.current.act).toHaveBeenCalledWith(state.current.view.value.actions[0])
+    state.current.view.value.account = { status: 'connected', provider: 'codex' }
+    state.current.view.value.actions = []
+    await nextTick()
+    expect(account.text()).toContain('Codex is connected')
+    expect(wrapper.text()).not.toContain('TEST-CODE')
+    wrapper.unmount()
+  })
+  it('does not display expired device codes and explains retry', async () => {
+    setup()
+    state.current.view.value.account = { status: 'account_login_pending', provider: 'codex', url: 'https://auth.openai.com/codex/device', code: 'EXPIRED-CODE', expires_at: Date.now() / 1000 - 5 }
+    const wrapper = await mountSuspended(InstallationPage)
+    expect(wrapper.text()).not.toContain('EXPIRED-CODE')
+    expect(wrapper.text()).toContain('This sign-in attempt expired or failed.')
+    wrapper.unmount()
+  })
+  it('keeps repository configuration available and explains local CLI work', async () => {
+    setup()
+    state.current.view.value.preparation = { status: 'needs_operator', stages: [], providers: [], ready: false,
+      needs_operator: [{ repository: { id: 1, name: 'owner/project' }, reason: 'Required GitHub checks are missing.', path: '/settings/repositories?repo=1' }] }
+    const wrapper = await mountSuspended(InstallationPage)
+    expect(wrapper.get('a[href="/settings/repositories"]').text()).toBe('Configure repositories')
+    const section = wrapper.get('section[aria-label="Repository setup needs attention"]')
+    expect(section.text()).toContain('Required GitHub checks are missing.')
+    expect(section.get('a[href="/settings/repositories?repo=1"]').text()).toBe('Review repository setup')
+    expect(section.text()).toContain('Changes to GitHub rules require the local Forge CLI')
+    expect(section.text()).toContain('Continue setup to check again')
+    wrapper.unmount()
+  })
+
 })

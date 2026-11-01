@@ -6,7 +6,17 @@ def pending_in(db):
     row = db.execute("SELECT c.settings_json FROM configuration c JOIN setup_instances s ON s.scope='live' "
                      "AND c.subject=s.generation WHERE c.domain='installation_smoke' AND c.active=1").fetchone()
     value = json.loads(row[0]) if row else None
-    return value if value and value['phase'] != 'complete' else None
+    if value:
+        return value if value['phase'] != 'complete' else None
+    row = db.execute("SELECT c.settings_json FROM configuration c JOIN setup_instances s ON s.scope='live' "
+                     "AND c.subject=s.generation WHERE c.domain='installation_prepare' AND c.active=1").fetchone()
+    if row:
+        prepared = json.loads(row[0])
+        if prepared['status'] != 'complete':
+            plan = prepared['binding']['plan']
+            return {'phase': 'preparing', 'binding': {'repository': plan['smoke_repository'],
+                    'number': None, 'started_at': plan['started_at']}}
+    return None
 
 
 def pending(store):
@@ -16,7 +26,7 @@ def pending(store):
 
 def issue_allowed_in(db, repository_id, number):
     value = pending_in(db)
-    return value is None or (value['binding']['repository']['id'] == repository_id
+    return value is None or (value['phase'] != 'preparing' and value['binding']['repository']['id'] == repository_id
                              and value['binding']['number'] == number)
 
 
@@ -30,6 +40,8 @@ def execution_allowed(store, item):
         value = pending_in(db)
         if value is None:
             return True
+        if value['phase'] == 'preparing':
+            return False
         if triage_in(db, value['binding']) is None:
             return False
         target = value['binding']['repository']
@@ -94,6 +106,10 @@ def triage_in(db, binding):
 def check_repositories_in(db, repositories):
     value = pending_in(db)
     if value:
+        if value['phase'] == 'preparing':
+            if any(row['enabled'] for row in repositories):
+                raise ValueError('Complete installation preparation and the smoke merge before enabling repositories')
+            return
         target = value['binding']['repository']
         if any(row['enabled'] and (row['id'] != target['id'] or row['name'] != target['name']) for row in repositories):
             raise ValueError('Complete the installation smoke merge before enabling other repositories')

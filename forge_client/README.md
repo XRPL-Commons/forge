@@ -134,6 +134,7 @@ for paging, identities, preview fields and failure-budget effects.
 
 `forge version --ssh anvil` reports the client commit and reads the installed
 server commit over verified SSH. Different revisions produce a warning.
+`forge self-update` selects the latest published prepared release.
 `forge self-update --revision COMMIT` uses `uv tool install --reinstall` to install
 that exact client revision, then verifies the installed command and revision.
 Install uv first and use `uv tool install` for the initial CLI installation, as
@@ -163,7 +164,7 @@ The intent records multiple repositories, per-repository human/auto merge policy
 (default human in the interview), workflow-edit permission, provider login kinds,
 rules repair preference, operators, App owner, hostname and a source revision
 resolved once. It accepts no credentials. Resume preserves the saved inputs and
-re-observes every stage. Local journals are private and each stage records its
+observes server progress after handoff without replaying bootstrap. Local journals are private and each stage records its
 input digest, status, safe receipt and whether a write is still uncertain.
 
 Preflight performs read-only observations. It checks local tools and tailnet,
@@ -185,6 +186,16 @@ Build, independent Review and Audit, and a verified merge. Only after that test
 passes does it enable the selected repositories with their chosen merge policies.
 GitHub approval and coding-account sign-in are attended browser steps; the CLI
 handles the server commands, file transfers and saved progress.
+
+After host, private HTTPS, App and operator setup, the CLI submits the approved
+preparation plan and opens `/installation`. The server prepares the environment
+and checks repositories while the operator connects Codex in the web page.
+Human CLI use returns at this handoff; closing it does not stop setup. Agents
+can follow through handover with `--json --wait SECONDS`. Use
+`forge install --ssh HOST --status --refresh --json` to reconcile server progress
+without applying installation; plain `--status` remains offline. A repository
+repair requiring personal GitHub administrator access stays local and scoped to
+the saved plan.
 
 The private GitHub App must be owned by the account that owns the selected
 repositories. For personal repositories, choose your personal GitHub login as

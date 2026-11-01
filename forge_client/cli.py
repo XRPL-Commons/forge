@@ -81,6 +81,7 @@ def parser():
     action.add_argument('--apply', action='store_true', help='Apply the saved intent after a fresh successful preflight')
     action.add_argument('--resume', action='store_true', help='Re-observe saved stages and resume the same intent')
     action.add_argument('--status', action='store_true', help='Read the local stage journal')
+    install.add_argument('--refresh', action='store_true', help='With --status, observe server completion and update the local journal without resuming installation')
     install.add_argument('--waive', action='append', default=[], help='Explicitly waive a finding marked waivable; repeat for each ID')
     install.add_argument('--wait', type=int, default=0, help='Follow automated stages for up to 3600 seconds; browser actions remain explicit')
     install.add_argument('--reset', action='store_true', help='Plan a clean Forge reinstall on this VM; archives the old installation and retains SSH/Tailscale')
@@ -262,7 +263,7 @@ def parser():
 def execute(args):
     if args.command == 'install':
         if args.reset:
-            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file or getattr(args, 'replace_plan', False) or getattr(args, 'retry_smoke', None)),
+            require(args.ssh and not (args.resume or args.status or args.preflight or args.intent_file or getattr(args, 'replace_plan', False) or getattr(args, 'retry_smoke', None) or getattr(args, 'refresh', False)),
                     'invalid_reset', 'Use --reset --ssh HOST, then --reset --apply --reset-revision DIGEST.')
             from .installer_reset import execute as reset
             return reset(args)

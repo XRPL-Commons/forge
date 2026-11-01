@@ -6,6 +6,7 @@ Use the complete CLI flow on a dedicated Ubuntu 24.04 VM:
 
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
+forge self-update
 forge install --ssh anvil
 ```
 
@@ -33,15 +34,12 @@ update, and any action needed. It links to the first test issue and its pull
 request. Repository setup links to this page when installation still blocks
 activation, instead of offering an Enable button that cannot succeed.
 
-The CLI publishes a credential-free progress summary after GitHub App approval.
-Its reported state is distinct from the server worker's status: a closed terminal
-or disconnected browser is not evidence that work finished. If the CLI stopped,
-its last reported steps remain visible. Earlier installations without a CLI
-summary show the evidence already stored on the server.
-
-Once the CLI has prepared the first-merge test, **Continue setup** hands that test
-and repository activation to the server. You can close the terminal and browser;
-return to the same page to see progress. A failed planning attempt offers an
+After bootstrap and operator sign-in setup, the CLI hands the approved preparation
+plan to the server and opens this page. The server prepares the environment while
+checking repositories in parallel. Choose **Connect Codex** to request a one-time
+code in the web page; Forge detects completed sign-in automatically. You can close
+the terminal and browser, then return to see progress. The server retains each
+step and reports what needs your attention. A failed planning attempt offers an
 explicit retry. A proposal that needs a decision remains blocked until resolved
 in Issues. The server verifies the exact merged test and selected repository
 policies before enabling automation. The web controls cannot add repositories or
@@ -49,16 +47,19 @@ expand the GitHub permissions approved during bootstrap.
 
 Host installation, private networking and the initial privileged GitHub setup
 still start through the CLI. The web page does not replace those bootstrap steps.
-The CLI remains available for unattended use and recovery. During one running
-installation it polls pending steps without repeating every completed bootstrap
-check; a new invocation revalidates the saved installation.
+The CLI remains available for unattended use and recovery. After handoff, it
+observes the saved server operation without repeating bootstrap. GitHub rules
+repairs that need personal administrator access use the local CLI; the server
+never receives those credentials. Agents can follow automated work through the
+first merge using `--json --wait SECONDS`.
 
 The first smoke issue must complete Triage, Build, Review, Audit and a verified
 merge before Forge enables the selected repositories. A successful host build
 alone is not installation completion. Resume with:
 
 ```sh
-forge install --ssh anvil --resume --wait 3600
+forge install --ssh anvil --resume
+forge install --ssh anvil --status --refresh
 ```
 
 When smoke planning stops with `smoke_triage_failed`, fix the reported provider,
@@ -123,13 +124,14 @@ bin/forge setup
 runs on; the services refuse to start without it.
 
 `bin/forge setup install` prepares the host without offering coding-account logins.
-A first install builds the runner image and the UI; it took about three minutes on
-a 4-CPU VM.
+Use a published prepared release: setup downloads its checksum-verified worker
+image and UI, then qualifies the worker on this host. See
+[prepared releases](prepared-releases.md) for the publication and development-build paths.
 
 Keep this checkout in place: the installed services run its reviewed source.
-Setup builds the pinned runner image containing Codex, Claude Code and Grok Build, installs
-the runner's isolation policy and private egress network, builds the operator UI in a
-pinned Node container, and starts the UI, the status API and the supervisor as user
+Setup loads the pinned runner image containing Codex, Claude Code and Grok Build, installs
+the runner's isolation policy and private egress network, stages the prepared operator UI,
+and starts the UI, the status API and the supervisor as user
 services. The host needs no Node toolchain. It does not start issue processing or
 alter GitHub permissions. To run `systemctl --user` or `journalctl --user` yourself
 after `sudo -iu forge`, first `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
@@ -170,18 +172,18 @@ to it. It refuses a checkout with local changes or diverged history; use
 `bin/forge update --no-pull` to apply the checkout exactly as it is (after your own
 `git pull`, or to test a branch).
 
-Each part is compared with what the source wants, and only changed parts are rebuilt
+Each part is compared with what the source wants, and only changed parts are replaced
 and restarted:
 
-- **Runner image.** Tagged by a digest of its build inputs, so an unchanged source
-  never rebuilds. A new image must pass the offline canary described above before
+- **Runner image.** Selected from the release manifest by its image digest, so an
+  image already present is reused. A new image must pass the offline canary described above before
   any runtime configuration points at it. The switch happens between supervisor
   cycles. When coding accounts are connected, update then runs `setup check`
   against the new image, and new work waits for that check. Workers already
   running finish on the image they started with.
 - **Isolation policies.** The seccomp and AppArmor policies are replaced only when
   their sources change. Installing AppArmor uses sudo; without it, setup prints the commands for an administrator (see above).
-- **Operator UI.** Built into a content-addressed release under
+- **Operator UI.** Downloaded into a content-addressed release under
   `<runtime-root>/ui/releases/`. `ui/current` switches atomically, and the previous
   release is kept.
 - **Services.** `forge-status`, `forge-ui` and `forge-supervisor` are rewritten

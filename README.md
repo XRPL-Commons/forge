@@ -19,17 +19,20 @@ the CLI on your computer or your external agent's computer, then use
 The CLI applies schema changes to an installed host with a resumable
 `forge migrate upgrade`. See [the upgrade guide](docs/store-migration.md).
 
-On macOS or Linux with Python 3.10+, Git and
+On macOS or Linux with Python 3.10+, Git, authenticated GitHub CLI (`gh`) and
 [uv](https://docs.astral.sh/uv/getting-started/installation/) installed:
 
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
+forge self-update
 forge --help
 forge install --help
 forge server setup --help
 ```
 
 If your shell cannot find `forge`, run `uv tool update-shell` and open a new terminal.
+`forge self-update` selects the latest published prepared release, keeping the
+client aligned with the server artifacts used by a fresh installation.
 
 This fetches the repository but installs only the `forge-agent-client` Python
 distribution: the `forge` client command, `forge_client`, and the `forge` Python
