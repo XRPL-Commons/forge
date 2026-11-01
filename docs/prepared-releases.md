@@ -12,12 +12,14 @@ Each release is named `forge-build-<full commit SHA>`. Its `manifest.json` recor
 - the pinned Node and Python base images;
 - fingerprints of the UI, documentation and worker build inputs;
 - asset sizes and SHA-256 checksums;
-- the complete Docker image IDs for the base and full workers.
+- the configuration and OCI manifest digests for the base and full workers.
 
 The installer reads assets only from releases in `XRPL-Commons/forge`. It checks
 the source, platform, pinned toolchain and build inputs, then verifies each
-archive before extracting the UI or loading an image. Loaded images must have
-the declared image ID and platform. The existing host isolation and environment
+archive before extracting the UI or loading an image. Classic Docker identifies
+images by configuration digest; the containerd store uses the manifest digest.
+The publisher binds both to the same exported image. Loaded images must match
+one of those exact digests and the declared platform. The existing host isolation and environment
 canaries still run before workers are enabled. A failed or unavailable download
 never silently starts a source build.
 
@@ -30,7 +32,9 @@ source and build inputs; this is not a separate artifact signing authority.
 The **Prepared release** workflow runs after **CI** succeeds for a push to this
 repository's `main` branch. It checks out that CI run's exact commit, builds the
 UI with the pinned Node container, builds both workers, and runs their environment
-and isolation canaries. It creates a draft release with all assets and publishes
+and isolation canaries. It also loads both exported worker archives into fresh
+classic and containerd image stores and runs an offline execution probe in each.
+It creates a draft release with all assets and publishes
 only after uploads succeed. Published releases are never overwritten. A retry
 replaces an incomplete draft only when the draft belongs to `github-actions[bot]`
 and names the exact tested commit. Human-owned drafts are left for inspection.

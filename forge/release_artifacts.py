@@ -64,7 +64,8 @@ def validate_manifest(value, revision, inputs, node_image, python_image):
     require(isinstance(value['artifacts'], dict) and set(value['artifacts']) == set(ASSETS), 'Incomplete prepared release.')
     for kind, asset in value['artifacts'].items():
         keys = {'filename', 'sha256', 'size', 'inputs'} | ({'image_id'} if kind != 'ui' else set())
-        require(isinstance(asset, dict) and set(asset) == keys and asset['filename'] == ASSETS[kind], 'Invalid prepared asset descriptor.')
+        allowed_keys = (keys, keys | {'image_manifest_id'}) if kind != 'ui' else (keys,)
+        require(isinstance(asset, dict) and set(asset) in allowed_keys and asset['filename'] == ASSETS[kind], 'Invalid prepared asset descriptor.')
         require(isinstance(asset['sha256'], str) and SHA256.fullmatch(asset['sha256'])
                 and type(asset['size']) is int and 0 < asset['size'] < 2 * 1024**3,
                 'Invalid prepared asset checksum or size.')
@@ -72,6 +73,9 @@ def validate_manifest(value, revision, inputs, node_image, python_image):
                 'Use a clean published revision or explicitly set FORGE_BUILD_FROM_SOURCE=1 for development.')
         if kind != 'ui':
             require(isinstance(asset['image_id'], str) and IMAGE_ID.fullmatch(asset['image_id']), 'Invalid prepared runner image ID.')
+            if 'image_manifest_id' in asset:
+                require(isinstance(asset['image_manifest_id'], str) and IMAGE_ID.fullmatch(asset['image_manifest_id']),
+                        'Invalid prepared runner manifest ID.')
     return value
 
 
@@ -126,18 +130,30 @@ class Release:
         require(size == asset['size'] and digest.hexdigest() == asset['sha256'], 'Prepared ' + kind + ' artifact checksum mismatch.')
 
     def image(self, kind, *, run=subprocess.run):
-        image = self.manifest['artifacts'][kind]['image_id']
-        inspect = ['docker', 'image', 'inspect', image, '--format', '{{.Id}} {{.Os}}/{{.Architecture}}']
-        found = run(inspect, capture_output=True, text=True)
-        if found.returncode:
+        asset = self.manifest['artifacts'][kind]
+        # Docker's classic store identifies images by config digest; containerd
+        # uses the OCI manifest digest. Both pins come from the published archive.
+        identities = tuple(dict.fromkeys(asset[key] for key in ('image_id', 'image_manifest_id') if key in asset))
+        def installed():
+            for identity in identities:
+                found = run(['docker', 'image', 'inspect', identity, '--format', '{{.Id}} {{.Os}}/{{.Architecture}}'],
+                            capture_output=True, text=True)
+                if found.returncode:
+                    continue
+                parts = found.stdout.strip().split()
+                require(len(parts) == 2 and parts[0] in identities and parts[1] == 'linux/amd64',
+                        'Loaded runner differs from the prepared image ID or platform.')
+                return parts[0]
+            return None
+        image = installed()
+        if image is None:
             print('Downloading the prepared ' + ('full worker' if kind == 'full' else 'worker') + ' image…', flush=True)
             with tempfile.TemporaryDirectory(prefix='forge-release-') as temporary:
                 archive = Path(temporary) / ASSETS[kind]
                 self.download(kind, archive)
                 run(['docker', 'image', 'load', '--input', str(archive)], check=True)
-            found = run(inspect, capture_output=True, text=True)
-        require(found.returncode == 0 and found.stdout.strip() == image + ' linux/amd64',
-                'Loaded runner differs from the prepared image ID or platform.')
+            image = installed()
+        require(image is not None, 'Loaded runner differs from the prepared image ID or platform.')
         return image
 
     def ui(self, target):

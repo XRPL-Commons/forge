@@ -297,7 +297,8 @@ def runner_image():
 def full_runner_image(base):
     release = prepared_release()
     if release:
-        if release.manifest['artifacts']['runner']['image_id'] != base:
+        descriptor = release.manifest['artifacts']['runner']
+        if base not in {descriptor[key] for key in ('image_id', 'image_manifest_id') if key in descriptor}:
             raise ValueError('Prepared full worker does not match the selected base image.')
         return release.image('full', run=subprocess.run)
     inputs = FULL_RUNNER_INPUTS

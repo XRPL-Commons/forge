@@ -241,3 +241,73 @@ class PrivateDeliveryTests(unittest.TestCase):
         handler = artifacts._NoRedirect()
         with self.assertRaises(artifacts.ArtifactError):
             handler.redirect_request(None, None, 302, '', {}, 'https://attacker.invalid/file')
+
+
+class PortableImageIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.oci = 'sha256:' + 'd' * 64
+        self.value = manifest()
+        self.value['artifacts']['runner']['image_manifest_id'] = self.oci
+        self.release = artifacts.Release(REVISION, self.value)
+
+    def test_optional_oci_pin_is_explicit_and_validated(self):
+        self.assertEqual(validated(self.value)['artifacts']['runner']['image_manifest_id'], self.oci)
+        self.value['artifacts']['runner']['image_manifest_id'] = 'forge:mutable'
+        with self.assertRaises(artifacts.ArtifactError): validated(self.value)
+        self.value['artifacts']['runner']['image_manifest_id'] = self.oci
+        self.value['artifacts']['ui']['image_manifest_id'] = self.oci
+        with self.assertRaises(artifacts.ArtifactError): validated(self.value)
+
+    def test_classic_store_uses_config_id_without_loading_again(self):
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, BASE + ' linux/amd64\n', ''))
+        with patch.object(self.release, 'download') as download:
+            self.assertEqual(self.release.image('runner', run=run), BASE)
+        download.assert_not_called()
+        self.assertEqual(run.call_count, 1)
+
+    def test_containerd_store_returns_pinned_manifest_id_after_load(self):
+        calls = []
+        loaded = False
+        def run(argv, **kwargs):
+            nonlocal loaded
+            calls.append(argv)
+            if argv[2] == 'load':
+                loaded = True
+                return subprocess.CompletedProcess(argv, 0, 'Loaded image ID: untrusted diagnostic', '')
+            identity = argv[3]
+            found = loaded and identity == self.oci
+            return subprocess.CompletedProcess(argv, 0 if found else 1,
+                self.oci + ' linux/amd64\n' if found else '', '')
+        with patch.object(self.release, 'download') as download:
+            self.assertEqual(self.release.image('runner', run=run), self.oci)
+        download.assert_called_once()
+        self.assertEqual([argv[3] for argv in calls if argv[2] == 'inspect'], [BASE, self.oci, BASE, self.oci])
+        with patch.object(self.release, 'download') as download:
+            self.assertEqual(self.release.image('runner', run=run), self.oci)
+            download.assert_not_called()
+
+    def test_containerd_lookup_can_resolve_config_pin_to_exact_manifest_pin(self):
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, self.oci + ' linux/amd64\n', ''))
+        self.assertEqual(self.release.image('runner', run=run), self.oci)
+        self.assertEqual(run.call_count, 1)
+
+    def test_unpinned_digest_or_wrong_platform_is_rejected(self):
+        for identity, platform in [('sha256:' + 'e' * 64, 'linux/amd64'), (self.oci, 'linux/arm64')]:
+            with self.subTest(identity=identity, platform=platform):
+                run = Mock(return_value=subprocess.CompletedProcess([], 0, identity + ' ' + platform, ''))
+                with self.assertRaisesRegex(artifacts.ArtifactError, 'image ID or platform'):
+                    self.release.image('runner', run=run)
+        # Old manifests do not acquire permission to accept another store ID.
+        legacy = artifacts.Release(REVISION, manifest())
+        with self.assertRaises(artifacts.ArtifactError):
+            legacy.image('runner', run=Mock(return_value=subprocess.CompletedProcess([], 0, self.oci + ' linux/amd64', '')))
+
+    def test_full_runner_accepts_either_published_base_identity(self):
+        release = Mock(manifest=self.value)
+        release.image.return_value = FULL
+        with patch.object(host_update, 'prepared_release', return_value=release):
+            self.assertEqual(host_update.full_runner_image(BASE), FULL)
+            self.assertEqual(host_update.full_runner_image(self.oci), FULL)
+            with self.assertRaisesRegex(ValueError, 'selected base image'):
+                host_update.full_runner_image('sha256:' + 'f' * 64)
+        self.assertEqual(release.image.call_count, 2)
