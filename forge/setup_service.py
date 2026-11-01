@@ -72,7 +72,7 @@ def probe_failure_message(capture, provider, *, timed_out=False):
         message = PROBE_FAILURE_MESSAGES[reason].format(provider=provider)
         step = canary_step(capture.get('logs') or '') if reason == 'native_sandbox_failed' else None
         return message + (' (failed canary step: ' + step + ')' if step else '')
-    if timed_out:
+    if timed_out or (capture.get('execution') or {}).get('exit_code') == 124:
         return 'The ' + provider + ' check did not finish before its deadline. Check the provider status and the egress proxy, then retry'
     message = 'Provider or native sandbox check failed. Check the server connection and runner installation, then retry'
     detail = harness_error(capture.get('logs') or '')
@@ -139,6 +139,39 @@ class Service:
                 'repo_id': 1, 'issue_number': 1, 'publisher': 'setup-probe', 'target_branch': 'main',
                 'branch': 'setup-probe', 'candidate': None, 'history': {}, 'deadline': time.time() + 180,
                 'fenced': False, 'runner_config': config, 'kind': kind, 'cleanup': False}
+
+    def wait_probe(self, data, op):
+        job = data['probe_jobs'][-1]
+        job.setdefault('capacity_wait_since', time.time())
+        self.update(op, probe_jobs=data['probe_jobs'], operation={**op, 'step': 'probe_wait'})
+
+    def resume_probe(self, data, op, runner):
+        """Retire an unstarted reservation before giving its replacement a clock.
+
+        Assignment files and provider grants retain their original deadline.
+        Updating only auxiliary_runtime.deadline cannot extend either authority.
+        Cleanup and replacement are persisted separately so a restart can resume.
+        """
+        job = data['probe_jobs'][-1]
+        current = runner.inspect(job)
+        if current and current['status'] != 'created':
+            # An uncertain start may already have executed. Observe that exact
+            # execution; never replace it or grant it more time.
+            job.pop('capacity_wait_since', None)
+            self.update(op, probe_jobs=data['probe_jobs'], operation={**op, 'step': 'probe'})
+            return
+        if not runner.capacity(job)['allowed']:
+            return
+        job['fenced'] = True
+        self.update(op, probe_jobs=data['probe_jobs'])
+        runner.reset(job)
+        job['cleanup'] = True
+        self.update(op, probe_jobs=data['probe_jobs'])
+        replacement = self.new_probe(job['runner_config'], job['kind'])
+        if 'provider_id' in job:
+            replacement['provider_id'] = job['provider_id']
+        data['probe_jobs'][-1] = replacement
+        self.update(op, probe_jobs=data['probe_jobs'], operation={**op, 'step': 'probe'}, probe_error=None, error=None)
 
     def drain(self, scope):
         from .factory.sqlite_runtime import cycle
@@ -223,6 +256,10 @@ class Service:
             return
         job = data['probe_jobs'][-1]
         runner = self.runner(job['runner_config'], probe=True)
+        if op['step'] == 'probe_wait' or (job.get('capacity_wait_since') is not None
+                and not job['fenced'] and job.get('capture') is None):
+            self.resume_probe(data, op, runner)
+            return
         if job['fenced']:
             runner.reset(job)
             job['cleanup'] = True
@@ -261,12 +298,8 @@ class Service:
             try:
                 runner.start(job)
             except RunnerCapacity:
-                job.setdefault('capacity_wait_since', time.time())
-                self.update(op, probe_jobs=data['probe_jobs'])
+                self.wait_probe(data, op)
                 return
-            if job.get('capacity_wait_since') is not None:
-                job['deadline'] += max(0, time.time() - job.pop('capacity_wait_since'))
-                self.update(op, probe_jobs=data['probe_jobs'])
             return
         error = None
         if job['kind'] == 'provider' and current['running'] and time.time() < job['deadline']:
@@ -409,8 +442,7 @@ class Service:
                         self.check(data)
             except RunnerCapacity:
                 if data.get('probe_jobs'):
-                    data['probe_jobs'][-1].setdefault('capacity_wait_since', time.time())
-                    self.update(op, probe_jobs=data['probe_jobs'])
+                    self.wait_probe(data, op)
             except (OSError, ValueError, RuntimeError) as error:
                 message = str(error) if isinstance(error, (ValueError, RunnerError, StateError)) else 'Setup operation failed; retry after checking service health'
                 try:

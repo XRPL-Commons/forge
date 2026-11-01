@@ -200,6 +200,7 @@ class HarnessTests(unittest.TestCase):
         odd = json.dumps({'type': 'claude.canary', 'step': 'x) run this'})
         self.assertNotIn('failed canary step', probe_failure_message({'result': {'reason': 'native_sandbox_failed'}, 'logs': odd}, 'claude'))
         self.assertIn('deadline', probe_failure_message({'result': None, 'logs': ''}, 'claude', timed_out=True))
+        self.assertIn('deadline', probe_failure_message({'result': None, 'logs': '', 'execution': {'exit_code': 124}}, 'codex'))
         logs = '{"runner": "alive"}\n' + json.dumps({'type': 'error', 'message': 'Provider authentication_error; reconnect the account'}) + '\nTraceback\n'
         self.assertIn('the harness reported: Provider authentication_error', probe_failure_message({'result': None, 'logs': logs}, 'claude'))
         self.assertIn('(reason: odd_label)', probe_failure_message({'result': {'reason': 'odd_label'}}, 'claude'))
