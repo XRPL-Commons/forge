@@ -169,13 +169,12 @@ through the normal merge endpoint, which enforces the owner's GitHub rules.
 Forge neither requires a baseline ruleset nor configures bypass grants.
 Only a verified GitHub merge establishes `merged`.
 
-For human-escalated automatic merges, the first adapter additionally requires a
-native wildcard CODEOWNERS rule containing only configured humans and required
-code-owner reviews. This lets GitHub reject a merge when approval is dismissed
-during the controller's final read/request race. This native rule is repository-wide;
-Required code-owner reviews can come from classic protection or active rulesets.
-More selective CODEOWNERS/team and merge-queue variants need explicit verified adapters.
-Unsupported policy is held rather than assumed equivalent.
+Human-escalated automatic merges use the same eligible, current-candidate human
+approval checks. Forge re-reads those approvals immediately before requesting the
+merge. This read and GitHub's merge API are separate operations; the expected
+head prevents a changed commit from merging but does not atomically bind a review.
+Owners can use GitHub protections for additional enforcement. Forge does not
+require a wildcard CODEOWNERS rule or configure owner protections.
 
 ## Failure rule
 
