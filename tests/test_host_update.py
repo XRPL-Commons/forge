@@ -57,7 +57,8 @@ class FakeHost:
 
     def patches(self):
         policy = {'defaultAction': 'SCMP_ACT_ERRNO'}
-        return [patch.object(host_update, 'command', side_effect=lambda argv, **kw: self.run(argv, check=True, **kw)),
+        return [patch.dict('os.environ', {'FORGE_BUILD_FROM_SOURCE': '1'}),
+                patch.object(host_update, 'command', side_effect=lambda argv, **kw: self.run(argv, check=True, **kw)),
                 patch.object(host_update.subprocess, 'run', side_effect=self.run),
                 patch.object(host_update.Path, 'home', return_value=self.home),
                 patch.object(host_update, 'APPARMOR_TARGET', self.apparmor),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { elapsedTime, githubLink, installationHeadline, installationPending, type InstallationView } from '../../app/utils/installation'
+import { accountNeedsOperator, codexDeviceLink, elapsedTime, githubLink, installationHeadline, installationPending, setupPath, stageStatus, type InstallationView } from '../../app/utils/installation'
 const base: InstallationView = { available: true, complete: false, observed_at: 100, updated_at: 80, source: 'cli', stages: [], smoke: null, operation: null, actions: [] }
 describe('installation status', () => {
   it('keeps repository activation blocked until the server confirms completion', () => {
@@ -20,4 +20,23 @@ describe('installation status', () => {
     expect(githubLink('https://github.com.example.com/issues/1')).toBeUndefined()
     expect(githubLink('https://github.com/example/project/pull/2')).toBe('https://github.com/example/project/pull/2')
   })
+  it('distinguishes operator consent and repository decisions from running work', () => {
+    const account = { ...base, actions: [{ id: 'connect_account' as const, label: 'Connect Codex' }] }
+    expect(accountNeedsOperator(account)).toBe(true)
+    expect(installationHeadline(account)).toBe('Waiting for you to connect Codex')
+    expect(installationHeadline({ ...base, preparation: { status: 'waiting', stages: [], providers: [], ready: false,
+      needs_operator: [{ repository: { id: 1, name: 'owner/project' }, reason: 'Rules need updating', path: '/settings/repositories' }] } })).toBe('Waiting for you to finish repository setup')
+    expect(stageStatus('needs_operator')).toBe('Waiting for you')
+    expect(stageStatus('running')).toBe('In progress')
+  })
+  it('uses only the device sign-in origin and local setup links', () => {
+    expect(codexDeviceLink('https://auth.openai.com/codex/device')).toBe('https://auth.openai.com/codex/device')
+    expect(codexDeviceLink('https://auth.openai.com.example.test/codex/device')).toBeUndefined()
+    expect(codexDeviceLink('https://user@auth.openai.com/codex/device')).toBeUndefined()
+    expect(codexDeviceLink('javascript:alert(1)')).toBeUndefined()
+    expect(setupPath('/settings/repositories?repo=1')).toBe('/settings/repositories?repo=1')
+    expect(setupPath('//outside.example')).toBeUndefined()
+    expect(setupPath('https://outside.example')).toBeUndefined()
+  })
+
 })

@@ -145,6 +145,86 @@ class ReportTests(unittest.TestCase):
         report = build(self.install.state)
         self.assertEqual(report['repositories'][0]['rules']['confirmed_changes'], row['rule_changes'])
 
+    def server_completed(self):
+        state = deepcopy(self.state)
+        state['stages'].pop('account.codex')
+        state['stages'].pop('publication.10')
+        state['stages']['repository.10']['status'] = 'pending'
+        selected = [{**row, 'github_protection': 'required'} for row in state['intent']['repositories']]
+        plan = {'intent_digest': state['inputs_digest'], 'started_at': state['started_at'],
+                'repositories': selected, 'smoke_repository': {'id': 10, 'name': 'owner/repository'},
+                'providers': state['intent']['providers']}
+        state['server_preparation'] = {'registered': True, 'plan': plan}
+        handover = state['stages']['handover']['receipt']
+        handover['repositories'] = selected
+        value = {**plan, 'available': True, 'ready': True, 'status': 'preparation_ready',
+                 'setup_id': handover['setup_id'], 'generation': handover['generation'],
+                 'providers': [{'id': 'codex', 'kind': 'browser', 'connected': True}],
+                 'stages': [
+                     {'id': 'environment', 'status': 'complete'},
+                     {'id': 'account.codex', 'status': 'complete', 'started_at': 120, 'completed_at': 150},
+                     {'id': 'repository.10', 'status': 'complete', 'started_at': 125, 'completed_at': 160},
+                     {'id': 'publication.10', 'status': 'complete', 'started_at': 160, 'completed_at': 200}]}
+        state['stages']['preparation'] = {'status': 'complete', 'receipt': value, 'started_at': 120, 'completed_at': 200}
+        return state
+
+    def test_server_handover_projects_status_and_timings_without_losing_local_rule_changes(self):
+        state = self.server_completed()
+        report = build(state)
+        self.assertEqual(report['status'], 'handover_complete')
+        self.assertEqual(report['providers'][0]['status'], 'connected')
+        repository = report['repositories'][0]
+        self.assertEqual(repository['stage_status'], 'complete')
+        self.assertEqual(repository['publication_status'], 'qualified')
+        self.assertEqual(repository['rules']['confirmed_changes'][0]['ruleset_id'], 8)
+        self.assertEqual(repository['rules']['change_history'], 'recorded')
+        timings = {row['stage']: row for row in report['stages']}
+        self.assertEqual(timings['account.codex']['elapsed_seconds'], 30)
+        self.assertEqual(timings['repository.10']['elapsed_seconds'], 35)
+        self.assertEqual(timings['publication.10']['elapsed_seconds'], 40)
+        self.assertIsNone(timings['environment']['started_at'])
+        self.assertIsNone(timings['environment']['completed_at'])
+        self.assertIsNone(timings['environment']['elapsed_seconds'])
+        self.assertEqual(report['remaining_actions'], [])
+        self.assertEqual(state['stages']['repository.10']['status'], 'pending')
+
+    def test_server_report_omits_codes_raw_errors_and_unrecognized_stages(self):
+        state = self.server_completed()
+        prepared = state['stages']['preparation']['receipt']
+        prepared.update(code='SECRET', url='https://auth.example?token=SECRET', error='SECRET')
+        prepared['providers'][0].update(code='SECRET', token='SECRET')
+        for stage in prepared['stages']:
+            stage.update(label='SECRET', error='SECRET', reason='SECRET', next_action={'command': ['SECRET']})
+        prepared['stages'].append({'id': 'SECRET', 'status': 'complete', 'started_at': 10, 'completed_at': 20})
+        prepared['stages'][0].update(started_at='SECRET', completed_at=float('nan'))
+        report = build(state)
+        self.assertNotIn('SECRET', json.dumps(report, allow_nan=False))
+        self.assertEqual(report['providers'][0]['status'], 'connected')
+        self.assertEqual(report['repositories'][0]['publication_status'], 'qualified')
+
+    def test_mismatched_server_receipt_cannot_supply_report_evidence(self):
+        for key in ('intent_digest', 'started_at', 'repositories', 'smoke_repository', 'setup_id', 'generation'):
+            with self.subTest(key=key):
+                state = self.server_completed()
+                state['stages']['preparation']['receipt'][key] = None
+                report = build(state)
+                self.assertEqual(report['providers'][0]['status'], 'unknown')
+                self.assertEqual(report['repositories'][0]['stage_status'], 'pending')
+                self.assertEqual(report['repositories'][0]['publication_status'], 'unknown')
+                self.assertFalse(any(row['stage'] == 'account.codex' for row in report['stages']))
+
+    def test_server_report_does_not_infer_connection_or_rule_history(self):
+        state = self.server_completed()
+        prepared = state['stages']['preparation']['receipt']
+        state['stages'].pop('repository.10')
+        prepared['providers'] = []
+        report = build(state)
+        self.assertEqual(report['providers'][0]['status'], 'unknown')
+        self.assertEqual(report['repositories'][0]['rules']['change_history'], 'unknown')
+        self.assertEqual(report['repositories'][0]['rules']['confirmed_changes'], [])
+        prepared['providers'] = [{'id': 'codex', 'kind': 'browser', 'connected': False}]
+        self.assertEqual(build(state)['providers'][0]['status'], 'not_connected')
+
     def test_same_intent_after_reset_keeps_separate_run_report(self):
         first = storage(self.journal, self.state)
         first.save(build(self.state))

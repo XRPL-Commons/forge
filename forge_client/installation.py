@@ -1,6 +1,7 @@
 """One saved installation, from read-only preflight through a verified first merge."""
 from copy import deepcopy
 import json
+import math
 from pathlib import Path
 import re
 import shutil
@@ -187,6 +188,78 @@ class Install:
             announce('needs_user_action')
             return {'status': 'needs_user_action', 'error': error.code, 'reason': str(error)}
 
+    def reconcile_completion(self):
+        """Observe a server handover without rerunning any installation writes."""
+        self.load()
+        smoke = self.state.get('smoke')
+        if (not smoke and not self.state.get('server_preparation')) or self.state['stages'].get('handover', {}).get('status') == 'complete':
+            return False
+        factory = FactorySetup(self.installation, github=self.github)
+        # Status checks both the saved instance and setup generation before we
+        # accept evidence. The RPC also binds the original host installation ID.
+        factory.call('status')
+        if self.state.get('server_preparation'):
+            from . import install_prepare
+            preparation = install_prepare.observe(self.state, factory, factory.call('preparation'))
+            if not preparation['available']:
+                require(not self.state['server_preparation'].get('registered'), 'preparation_changed')
+                return False
+            install_prepare.record(self.state, preparation, self.clock()); self.save()
+            smoke = self.state.get('smoke')
+            if not smoke: return False
+        result = factory.call('smoke_status')
+        require(isinstance(result, dict) and result.get('status') in
+                ('handover_complete', 'smoke_pending', 'smoke_merged', 'smoke_triage_failed', 'smoke_binding_required'),
+                'invalid_host_response', 'The server did not return a recognized installation status.')
+        repositories = [{**row, 'target': {key: row['target'][key] for key in ('id', 'name')}}
+                        for row in self.state['intent']['repositories']]
+        if self.state.get('server_preparation'):
+            repositories = self.state['server_preparation']['plan']['repositories']
+        expected = {'setup_id': factory.state['intent']['id'],
+                    'generation': factory.state['factory_binding']['generation'],
+                    'intent_digest': self.state['inputs_digest'], 'repository': smoke['repository'],
+                    'number': smoke['number'], 'started_at': self.state['started_at'], 'repositories': repositories}
+        if result['status'] != 'handover_complete':
+            # Older pending/failed responses rely on the bound RPC alone. When
+            # evidence includes identity fields, reject any disagreement before
+            # replacing the local receipt or adopting a different smoke run.
+            require(all(result[key] == value for key, value in expected.items() if key in result),
+                    'smoke_changed', 'The server smoke status does not match this saved installation.')
+            if 'binding' in result:
+                binding = result['binding']
+                require(isinstance(binding, dict) and all(binding.get(key) == value for key, value in expected.items())
+                        and binding.get('smoke_policy') == smoke['smoke_policy'], 'smoke_changed')
+            stage_binding = digest({'intent': self.state['inputs_digest'], 'stage': 'smoke'})
+            row = self.state['stages'].get('smoke')
+            require(row is None or row['inputs_digest'] == stage_binding, 'stage_changed')
+            if row is None:
+                row = {'inputs_digest': stage_binding, 'started_at': self.state['started_at']}
+                self.state['stages']['smoke'] = row
+            row.update(status='needs_user_action' if result['status'] in ('smoke_triage_failed', 'smoke_binding_required') else 'pending',
+                       receipt=deepcopy(result), uncertain_write=False)
+            row.pop('completed_at', None)
+            self.save()
+            return False
+        require(all(result.get(key) == value for key, value in expected.items()),
+                'handover_changed', 'The server handover does not match this saved installation.')
+        completed_at = result.get('verified_at')
+        require(type(completed_at) in (int, float) and math.isfinite(completed_at)
+                and self.state['started_at'] <= completed_at <= self.clock() + 60,
+                'invalid_host_response', 'The server handover has no valid completion time.')
+        for name in ('smoke', 'handover'):
+            binding = digest({'intent': self.state['inputs_digest'], 'stage': name})
+            prior = self.state['stages'].get(name)
+            require(prior is None or prior['inputs_digest'] == binding, 'stage_changed')
+        for name in ('smoke', 'handover'):
+            row = self.state['stages'].setdefault(name, {
+                'inputs_digest': digest({'intent': self.state['inputs_digest'], 'stage': name}),
+                'started_at': self.state['started_at']})
+            row.update(status='complete', receipt=deepcopy(result), uncertain_write=False, completed_at=completed_at)
+        self.state['completed_at'] = completed_at
+        self.save()
+        self.write_report()
+        return True
+
     def apply(self, *, waivers=(), retry_smoke=None, poll=False):
         selected = self.load()
         self.polling = poll and self.run_preflight is not None
@@ -194,6 +267,23 @@ class Install:
             self.validated_stages.clear()
         if self.state['stages'].get('handover', {}).get('status') == 'complete':
             self.write_report()
+            return self.status()
+        if not poll and self.reconcile_completion():
+            return self.status()
+        if self.state.get('server_preparation', {}).get('registered'):
+            if poll and self.reconcile_completion(): return self.status()
+            if retry_smoke:
+                factory = FactorySetup(self.installation, github=self.github)
+                factory.call('status')
+                retried = factory.call('smoke_retry', proposal_id=retry_smoke)
+                require(retried.get('status') in ('smoke_retry_queued', 'smoke_pending'), 'invalid_host_response')
+                factory.call('prepare', plan=self.state['server_preparation']['plan'])
+            observed = self.state['stages']['preparation']['receipt']
+            if (observed['status'] == 'preparation_needs_operator' and observed.get('needs_operator')
+                    and selected['rules_repair'] == 'apply-if-admin'):
+                factory = FactorySetup(self.installation, github=self.github)
+                factory.call('status')
+                self.repair_preparation(factory, observed)
             return self.status()
         # Revalidate at each invocation/resume, but polling pending work in this
         # process does not restart every completed bootstrap check. Host operations
@@ -240,6 +330,16 @@ class Install:
                               lambda _: configure_identity(factory, apply=True),
                               complete=lambda row: row.get('status') == 'identity_ready')
         if identity.get('status') != 'identity_ready': return self.status()
+        if factory.call('status').get('installation_preparation') == 1:
+            # Codex device consent can continue in the authenticated web UI.
+            # Other credential kinds retain their existing local input surface.
+            for provider in selected['providers']:
+                if provider == {'id': 'codex', 'kind': 'browser'}: continue
+                account = self.stage('account.' + provider['id'], lambda provider=provider: self.account(factory, provider),
+                                     lambda _, provider=provider: self.account(factory, provider, apply=True),
+                                     complete=lambda row: row.get('status') == 'connected')
+                if account.get('status') != 'connected': return self.status()
+            return self.prepare_on_server(factory, targets, report)
         # Finish attended account consent before repository repair and image or
         # publication qualification. Existing login sessions are observed on resume.
         for provider in selected['providers']:
@@ -291,6 +391,51 @@ class Install:
             self.save()
             self.write_report()
         return self.status()
+
+    def prepare_on_server(self, factory, targets, report):
+        from . import install_prepare
+        approved = install_prepare.plan(self.state, targets, report)
+        saved = self.state.get('server_preparation')
+        require(saved is None or saved['plan'] == approved, 'preparation_changed')
+        self.state['server_preparation'] = saved or {'plan': approved, 'registered': False}
+        self.save()  # Persist intent before submitting the resumable operation.
+        observed = factory.call('preparation')
+        if not observed.get('available'):
+            observed = factory.call('prepare', plan=approved)
+        observed = install_prepare.observe(self.state, factory, observed)
+        require(observed['available'], 'preparation_changed')
+        self.state['server_preparation']['registered'] = True
+        if observed['status'] == 'preparation_needs_operator' and self.state['intent']['rules_repair'] == 'apply-if-admin':
+            observed = self.repair_preparation(factory, observed)
+        install_prepare.record(self.state, observed, self.clock()); self.save()
+        origin = self.state['stages']['identity']['receipt']['origin']
+        url = origin.rstrip('/') + '/installation'
+        if self.interactive: self.open_browser(url)
+        self.notify({'event': 'web_setup', 'url': url,
+                     'instruction': 'Continue setup in Forge. The server keeps working when you close this terminal.'})
+        if observed.get('ready') and self.reconcile_completion(): return self.status()
+        return self.status()
+
+    def repair_preparation(self, factory, observed):
+        """Use local administrator access only for the approved repository repairs."""
+        from . import install_prepare
+        approved = self.state['server_preparation']['plan']
+        targets = [row['target'] for row in approved['repositories']] + [approved['smoke_repository']]
+        repaired = bool(observed['needs_operator'])
+        for item in observed['needs_operator']:
+            target = next((row for row in targets if row == item['repository']), None)
+            require(target is not None, 'repository_changed')
+            name = 'repository.' + str(target['id'])
+            self.validated_stages.discard(name)
+            response = self.stage(name,
+                lambda target=target: self.repository(factory, target),
+                lambda _, target=target: self.repository(factory, target, apply=True),
+                complete=lambda row: row.get('status') == 'repository_ready')
+            repaired = repaired and response.get('status') == 'repository_ready'
+        if repaired:
+            observed = install_prepare.observe(self.state, factory, factory.call('prepare', plan=approved))
+        install_prepare.record(self.state, observed, self.clock()); self.save()
+        return observed
 
     def write_report(self):
         """Observe versions once after handover; status itself stays offline."""
@@ -382,7 +527,10 @@ class Install:
                 'stages': stages, 'pending': pending,
                 'started_at': self.state['started_at'], 'completed_at': self.state.get('completed_at'),
                 'elapsed_seconds': max(0, self.state.get('completed_at', self.clock()) - self.state['started_at']),
-                'next_action': None if complete else ['forge', 'install', '--ssh', self.ssh, '--resume'],
+                'next_action': None if complete or self.state.get('server_preparation') else ['forge', 'install', '--ssh', self.ssh, '--resume'],
+                'web_owned': bool(self.state.get('server_preparation')),
+                'setup_url': ((stages.get('identity', {}).get('receipt') or {}).get('origin', '').rstrip('/') + '/installation')
+                             if self.state.get('server_preparation') else None,
                 'handover_complete': complete,
                 'origin': (stages.get('identity', {}).get('receipt') or {}).get('origin'),
                 'report_path': str(self.journal.path) if complete else None,
@@ -429,6 +577,9 @@ def interview(ssh, github, *, ask=input, tell=None):
 def execute(args):
     import sys
     require(type(args.wait) is int and 0 <= args.wait <= 3600, 'invalid_wait', 'Use --wait between 0 and 3600 seconds.')
+    refresh = getattr(args, 'refresh', False)
+    require(not refresh or args.status and not getattr(args, 'reset', False),
+            'invalid_refresh', 'Use --refresh with --status to observe server completion without resuming installation.')
     replace = getattr(args, 'replace_plan', False)
     require(not replace or not (args.apply or args.resume or args.status or getattr(args, 'reset', False)),
             'invalid_replace_plan', '--replace-plan only replaces an unstarted plan and runs preflight; do not combine it with --apply, --resume, --status or --reset.')
@@ -465,7 +616,9 @@ def execute(args):
     workflow = Install(ssh, github=github, interactive=interactive, notify=event)
     with connection_lock(workflow.key, workflow.journal.root):
         if supplied is not None: workflow.plan(supplied, replace=replace)
-        if args.status: return workflow.status()
+        if args.status:
+            if refresh: workflow.reconcile_completion()
+            return workflow.status()
         if interactive and supplied is not None and not (args.resume or args.apply or args.preflight or replace):
             report = workflow.preflight()
             blocked = [row for row in report['items'] if row['status'] == 'needs_you' and row['id'] not in args.waive]
@@ -488,12 +641,13 @@ def execute(args):
                     previous = progress
                 pending = result.get('pending', [])
                 waiting = {'installing', 'network_installing', 'environment_installing', 'checking',
-                           'smoke_pending', 'first_merge_pending', 'account_login_pending', 'account_login_saved',
-                           'app_installation_required'}
+                           'smoke_pending', 'smoke_merged', 'first_merge_pending', 'account_login_pending', 'account_login_saved',
+                           'app_installation_required', 'preparation_pending', 'preparation_ready'}
                 def can_wait(row):
                     return (row.get('status') in waiting or
                             row.get('status') == 'account_login_required' and bool(row.get('url') and row.get('code')))
                 if (result.get('handover_complete') or result['status'] == 'preflight_blocked'
+                        or result.get('web_owned') and not args.json
                         or time.monotonic() >= deadline
                         or not pending or any(not can_wait(row) for row in pending)):
                     workflow.publish_progress(runner_state='complete' if result.get('handover_complete') else 'stopped')
@@ -545,6 +699,9 @@ def display(result, *, tell=None):
             install_report.display(result['handover_report'], tell=tell)
         elif result.get('origin'):
             tell('Forge: ' + result['origin'])
+        if result.get('web_owned') and not result.get('handover_complete'):
+            tell('Continue setup in your browser: ' + result['setup_url'])
+            tell('The server keeps working after this terminal closes.')
         if result.get('handover_report_path'):
             tell('Private report: ' + result['handover_report_path'])
         if result.get('report_path'): tell('Installation journal: ' + result['report_path'])
@@ -558,6 +715,8 @@ def schemas():
         'retry_smoke': {'command': 'forge install --ssh HOST --resume --retry-smoke FAILED_PROPOSAL_ID --wait 3600 --json',
                         'effect': 'After repair, explicitly requests one new smoke proposal for the current cleaned terminal failure. Replays reuse the same successor; prior attempts and receipts remain intact.'},
         'status': 'forge install --ssh HOST --status --json',
+        'refresh_status': {'command': 'forge install --ssh HOST --status --refresh --json',
+                           'effect': 'Read server completion and reconcile the local journal without replaying installation. Without --refresh, status stays offline.'},
         'preflight': 'forge install --ssh HOST --preflight --json',
         'replace_plan': {'command': 'forge install --ssh HOST --replace-plan --intent-file FILE --preflight --json',
                          'effect': 'Archives an unstarted saved plan and its host plan after confirming the host is untouched; resolves the replacement inputs and reruns preflight without applying installation.'},
@@ -575,7 +734,7 @@ def schemas():
                          'repositories', 'providers', 'rules_repair', 'smoke_target', 'codex_parallel_auth'],
             'properties': {
                 'version': {'const': 1}, 'ssh': {'type': 'string'}, 'name': {'type': 'string'},
-                'revision': {'type': ['string', 'null'], 'description': 'Exact commit, or null to resolve main once'},
+                'revision': {'type': ['string', 'null'], 'description': 'Exact commit, or null to resolve the latest prepared release once'},
                 'host_key': {'type': ['string', 'null'], 'description': 'Verified ED25519 fingerprint; null uses known_hosts'},
                 'hostname': {'type': 'string'}, 'owner': {'type': 'string'},
                 'operators': {'type': 'array', 'minItems': 1, 'items': {'type': 'string'}},
@@ -594,5 +753,5 @@ def schemas():
                 'smoke_issue': {'type': ['integer', 'null'], 'minimum': 1, 'description': 'Optional existing issue in the selected smoke repo; omitted creates a smoke issue'},
                 'codex_parallel_auth': {'type': 'boolean', 'description': 'Allow parallel jobs with the host-managed Codex login'}
             }},
-        'wait': 'Use --wait SECONDS to follow automated stages; resume retains the original installation and first-merge timer.',
+        'wait': 'Use --json --wait SECONDS to follow server work through handover. Human output returns the web destination after bootstrap. Resume retains the original installation and first-merge timer.',
         'secrets': 'Never accepted in the intent. Use forge account login with hidden input or private stdin.'}

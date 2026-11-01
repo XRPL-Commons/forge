@@ -3,7 +3,7 @@
 `bin/forge setup` and `bin/forge update` run the same reconciliation. Each host
 component (runner image, isolation policies, egress, operator UI, services) is
 compared with what this source wants; only what changed is rebuilt, qualified,
-replaced and restarted. Every new artifact is built and the runner canary passes
+replaced and restarted. Every prepared artifact is verified and the runner canary passes
 before anything in use is touched, so a failed update leaves the host as it was.
 An interrupted update is resumed by rerunning. Selected SQLite installations
 require a compatible forward update; older JSON-only source is not a rollback.
@@ -44,6 +44,7 @@ RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses',
                  'forge/factory/harness.py', 'forge/factory/startup.py', 'forge/factory/probe.py', 'forge/factory/build_environment.py',
                  'deploy/runner/browser-canary.cjs', 'deploy/runner/gitconfig', 'deploy/runner/gateway.py', 'forge/mirror/frontend.py')
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
+FULL_RUNNER_INPUTS = ('deploy/runner/Dockerfile.full', 'deploy/runner/services-canary.cjs')
 SERVICES = ('forge-mirror', 'forge-registry', 'forge-status', 'forge-ui', 'forge-supervisor')
 # Disabled leftovers of removed host services. Update deletes exactly these
 # unit files when present; any other unit is left alone.
@@ -262,7 +263,26 @@ def desired_units(root, bind):
     }
 
 
+def artifact_inputs():
+    guides = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs').glob('*.md'))
+    assets = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs/assets').glob('*.svg'))
+    return {'runner': tree_digest(RUNNER_INPUTS, NODE_IMAGE, PYTHON_IMAGE),
+            'full': tree_digest((*RUNNER_INPUTS, *FULL_RUNNER_INPUTS), NODE_IMAGE, PYTHON_IMAGE),
+            'ui': tree_digest(('ui', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)}
+
+
+def prepared_release():
+    from .release_artifacts import prepared, source_build
+    if source_build():
+        return None
+    inputs = artifact_inputs()
+    return prepared(source_revision(), inputs['runner'], inputs['full'], inputs['ui'], NODE_IMAGE, PYTHON_IMAGE)
+
+
 def runner_image():
+    release = prepared_release()
+    if release:
+        return release.image('runner', run=subprocess.run)
     tag = 'forge-runner:' + tree_digest(RUNNER_INPUTS, NODE_IMAGE, PYTHON_IMAGE)[:16]
     inspect = ['docker', 'image', 'inspect', tag, '--format', '{{.Id}}']
     found = subprocess.run(inspect, capture_output=True, text=True)
@@ -275,7 +295,12 @@ def runner_image():
 
 
 def full_runner_image(base):
-    inputs = ('deploy/runner/Dockerfile.full', 'deploy/runner/services-canary.cjs')
+    release = prepared_release()
+    if release:
+        if release.manifest['artifacts']['runner']['image_id'] != base:
+            raise ValueError('Prepared full worker does not match the selected base image.')
+        return release.image('full', run=subprocess.run)
+    inputs = FULL_RUNNER_INPUTS
     tag = 'forge-runner-full:' + tree_digest(inputs, base)[:16]
     inspect = ['docker', 'image', 'inspect', tag, '--format', '{{.Id}}']
     found = subprocess.run(inspect, capture_output=True, text=True)
@@ -310,13 +335,17 @@ def seccomp_policy(root, record):
 
 
 def ui_release(root):
-    """Build the operator UI in a pinned Node container; releases are content-addressed."""
+    """Stage a prepared UI, or explicitly build source; releases are content-addressed."""
     root = Path(root)
     guides = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs').glob('*.md'))
     assets = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs/assets').glob('*.svg'))
     release = tree_digest(('ui', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)[:16]
     target = root / 'ui/releases' / release
     if (target / 'server/index.mjs').exists():
+        return release
+    prepared = prepared_release()
+    if prepared:
+        prepared.ui(target)
         return release
     print('Building the operator UI…', flush=True)
     build = root / 'ui/build'
@@ -543,7 +572,7 @@ def reconcile(root, bind=None, assume_yes=False):
 
     qualify_boundary_engine()
 
-    # 1. Build and qualify everything new. Nothing in use changes here.
+    # 1. Prepare and qualify everything new. Nothing in use changes here.
     image = runner_image()
     full_image = full_runner_image(image) if record.data.get('full_image') else None
     seccomp, seccomp_inputs = seccomp_policy(root, record)

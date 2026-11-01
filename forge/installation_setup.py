@@ -38,7 +38,7 @@ class InstallationSetup:
         self.handoff.operator(request['actor_id'])
         data = self.setup.read()
         action, params = request['action'], request['parameters']
-        allowed = {'status': (), 'progress': ('snapshot',), 'app': ('role', 'owner'), 'refresh': (), 'select': ('repository',),
+        allowed = {'status': (), 'preparation': (), 'prepare': ('plan',), 'progress': ('snapshot',), 'app': ('role', 'owner'), 'refresh': (), 'select': ('repository',),
                    'authorize': ('instance', 'repository', 'capability'), 'requirements': ('repository',),
                    'verify_repository': ('repository', 'revision'), 'github_protection': ('repository', 'operation'), 'check': ('revision',),
                    'start': ('revision',), 'account': ('provider', 'kind', 'secret'),
@@ -56,6 +56,15 @@ class InstallationSetup:
         if action == 'progress':
             from .installation_progress import publish
             return publish(self.root, params['snapshot'], setup_id=request['setup_id'], generation=request['generation'])
+        if action in ('prepare', 'preparation'):
+            from .installation_prepare import InstallationPrepare
+            preparation = InstallationPrepare(self.root, setup=self.setup)
+            if action == 'prepare':
+                preparation.approve(params['plan'], setup_id=request['setup_id'], generation=request['generation'])
+                from .installation_web import InstallationWeb
+                InstallationWeb(self.root, setup=self.setup).request(
+                    {'generation': request['generation'], 'action': 'continue'}, actor_id=request['actor_id'])
+            return preparation.view()
         if action == 'pilot':
             from .factory.first_merge import proof
             return proof(self.root, **params)
@@ -141,7 +150,8 @@ class InstallationSetup:
     def view(self):
         view = self.setup.view()
         # No credentials, private challenge, transcripts or host commands leave this surface.
-        return {'status': 'factory_active' if view['phase'] == 'active' else 'checking' if view['operation'] else 'setup_required',
+        return {'installation_preparation': 1,
+                'status': 'factory_active' if view['phase'] == 'active' else 'checking' if view['operation'] else 'setup_required',
                 'instance': self.store.instance_id, 'ready_label': self.setup.runtime()['ready_label'], **{key: view[key] for key in
                     ('generation', 'revision', 'phase', 'roles', 'selected', 'checks', 'can_start', 'operation', 'error')},
                 'harnesses': [{key: item[key] for key in ('id', 'name', 'connected', 'models')} for item in view['harnesses']]}

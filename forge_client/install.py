@@ -125,20 +125,45 @@ def schemas():
     return commands
 
 
-def revision(value=None, *, run=run_bounded):
+def revision(value=None, *, run=run_bounded, fetch_manifest=None):
     if value is not None:
         require(isinstance(value, str) and re.fullmatch('[a-f0-9]{40}', value),
                 'invalid_revision', 'Use a full 40-character Forge commit SHA.')
         return value
-    executable = shutil.which('git')
-    require(executable, 'git_missing', 'Install Git on this computer before setting up Forge.')
+    executable = shutil.which('gh')
+    require(executable, 'github_cli_missing', 'Install the GitHub CLI locally before selecting a prepared Forge release.')
+    from forge.release_artifacts import ASSETS, ArtifactError, read_manifest
     try:
-        raw = run([executable, 'ls-remote', REPOSITORY, 'refs/heads/main']).decode().strip()
-        require(re.fullmatch('[a-f0-9]{40}\trefs/heads/main', raw), 'source_unavailable',
-                'Could not resolve the Forge release. Retry or supply --revision with a full commit SHA.')
-        return raw.split()[0]
-    except SetupError:
-        raise SetupError('source_unavailable', 'Could not resolve the Forge release. Retry or supply --revision with a full commit SHA.') from None
+        raw = run([executable, 'api', '--hostname', 'github.com', '--method', 'GET',
+                   '-H', 'Accept: application/vnd.github+json',
+                   'repos/XRPL-Commons/forge/releases?per_page=100'])
+        releases = json.loads(raw)
+        require(isinstance(releases, list), 'prepared_release_unavailable')
+        required_assets = {'manifest.json', *ASSETS.values()}
+        candidates = [item for item in releases if isinstance(item, dict)
+                      and item.get('draft') is False and item.get('prerelease') is False
+                      and isinstance(item.get('tag_name'), str)
+                      and re.fullmatch(r'forge-build-[a-f0-9]{40}', item['tag_name'])
+                      and isinstance(item.get('published_at'), str)
+                      and isinstance(item.get('assets'), list)
+                      and required_assets <= {asset.get('name') for asset in item['assets'] if isinstance(asset, dict)}]
+        require(bool(candidates), 'prepared_release_unavailable')
+        selected = max(candidates, key=lambda item: item['published_at'])
+        commit = selected['tag_name'].removeprefix('forge-build-')
+        manifest = (fetch_manifest or read_manifest)(commit)
+        require(isinstance(manifest, dict) and manifest.get('version') == 1 and manifest.get('source') == commit
+                and manifest.get('platform') == 'linux/amd64' and isinstance(manifest.get('artifacts'), dict)
+                and set(manifest['artifacts']) == set(ASSETS), 'prepared_release_unavailable')
+        for kind, filename in ASSETS.items():
+            asset = manifest['artifacts'][kind]
+            require(isinstance(asset, dict) and asset.get('filename') == filename
+                    and isinstance(asset.get('sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])
+                    and type(asset.get('size')) is int and asset['size'] > 0, 'prepared_release_unavailable')
+        return commit
+    except (SetupError, ArtifactError, ValueError, TypeError):
+        raise SetupError('prepared_release_unavailable',
+                         'No complete prepared Forge release could be verified. Wait for the Prepared release workflow '
+                         'or supply --revision with an already published full commit SHA.') from None
 
 
 class InstallerHost:

@@ -4,6 +4,8 @@ import time
 
 from forge_client.contracts import digest, fields, require, SetupError
 from .installation_smoke import InstallationSmoke
+from .installation_prepare import InstallationPrepare
+from .installation_accounts import DeviceAccount
 from .onboarding import Onboarding
 from .settings import Settings
 from .sqlite_identity import identity_effect_lock, audit_in
@@ -18,6 +20,21 @@ class InstallationWeb:
         self.store = required(root)
         self.configuration = Configuration(self.store, clock=clock)
         self.smoke = smoke or InstallationSmoke(root, setup=self.setup, clock=clock)
+        self.preparation = InstallationPrepare(root, setup=self.setup, clock=clock)
+
+    def account(self, preparation, *, apply=False, retry=False):
+        require(any(row['id'] == 'codex' and row['kind'] == 'browser'
+                    for row in preparation.get('providers', [])), 'account_not_selected')
+        try:
+            value = DeviceAccount(self.root, setup=self.setup, clock=self.clock).call(
+                'codex', setup_id=preparation['setup_id'], generation=preparation['generation'], apply=apply, retry=retry)
+        except (ValueError, RuntimeError, OSError):
+            if apply:
+                raise
+            # Reading progress must survive a busy login lock or unavailable
+            # Docker daemon. Never expose provider output or infer a failed login.
+            return {'status': 'account_unavailable', 'provider': 'codex'}
+        return {key: value[key] for key in ('status', 'provider', 'url', 'code', 'expires_at') if key in value}
 
     def row(self, domain, generation):
         return self.configuration.get(domain, generation)
@@ -53,8 +70,28 @@ class InstallationWeb:
             result.update(source='server', updated_at=operation['updated_at'], state=operation['status'])
         # CLI progress is historical evidence, not a heartbeat or a claim its process is alive.
         result['service'] = self.setup.service_status()
+        preparation = self.preparation.view()
+        if preparation['available']:
+            result['preparation'] = preparation
+            result.update(available=True, source='server', started_at=preparation['started_at'])
+            result['updated_at'] = max(result.get('updated_at') or 0, preparation['updated_at'])
+            prepared_ids = {stage['id'] for stage in preparation['stages']}
+            result['stages'] = [stage for stage in result['stages'] if stage['id'] not in prepared_ids] + preparation['stages']
+            result['repositories'] = [row['target'] for row in preparation['repositories']]
+            if not preparation['ready']:
+                result['reason'] = 'Preparing your repositories and worker environment on the server.'
+                if not operation or operation['status'] in ('blocked', 'failed'):
+                    result['actions'].append({'id': 'continue', 'label': 'Continue setup'})
+                if any(row['id'] == 'codex' and row['kind'] == 'browser' and not row['connected']
+                       for row in preparation['providers']):
+                    account = self.account(preparation)
+                    result['account'] = account
+                    if account['status'] == 'account_login_required' and not account.get('code'):
+                        result['actions'].append({'id': 'connect_account', 'label': 'Connect Codex'})
+                    elif account['status'] == 'account_login_failed':
+                        result['actions'].append({'id': 'retry_account', 'label': 'Get a new sign-in code'})
         if not bound:
-            if result['available']:
+            if result['available'] and not preparation['available']:
                 result['reason'] = 'The CLI is preparing the server and account connections. Its last reported steps are shown below.'
             return result
         observed = self.call('status', bound)
@@ -102,21 +139,29 @@ class InstallationWeb:
     def request(self, value, *, actor_id):
         require(isinstance(value, dict), 'invalid_request')
         fields(value, ('generation', 'action', 'proposal_id') if value.get('action') == 'retry' else ('generation', 'action'))
-        require(value['action'] in ('continue', 'retry'), 'invalid_action')
+        require(value['action'] in ('continue', 'retry', 'connect_account', 'retry_account'), 'invalid_action')
         with identity_effect_lock(self.store):
             data = self.setup.read(); generation = data['generation']
             require(value['generation'] == generation and data['phase'] in ('setup', 'active'), 'setup_changed')
             require(not Settings(self.root).paused(), 'factory_paused')
             saved = self.row('installation_smoke', generation)
-            require(saved and saved['settings']['phase'] != 'complete', 'smoke_binding_required')
-            binding = saved['settings']['binding']
+            prepared = self.preparation.saved(generation)
+            require((saved and saved['settings']['phase'] != 'complete') or (not saved and prepared), 'smoke_binding_required')
+            if value['action'] in ('connect_account', 'retry_account'):
+                require(prepared and not saved, 'account_setup_complete')
+                self.account(self.preparation.view(), apply=True, retry=value['action'] == 'retry_account')
+                return self.view()
+            binding = (saved or prepared)['settings']['binding']
             prior = self.row('installation_web', generation)
             if prior and prior['settings']['status'] in ('queued', 'running', 'waiting'):
                 return self.view()
             if value['action'] == 'retry':
+                require(saved, 'smoke_binding_required')
                 observed = self.call('status', binding)
                 require(observed['status'] == 'smoke_triage_failed'
                         and value['proposal_id'] == observed['proposal_id'], 'smoke_retry_changed')
+            elif prepared and not saved:
+                self.preparation.retry(generation=generation)
             operation = {'status': 'queued', 'updated_at': self.clock(), 'action': value['action'],
                          'proposal_id': value.get('proposal_id'), 'setup_id': binding['setup_id'], 'generation': generation}
             with self.store.write() as db:
@@ -128,12 +173,38 @@ class InstallationWeb:
         return self.view()
 
     def tick(self):
-        # Match setup/reset and smoke lock order: identity first, controller
-        # inside smoke effects. Re-read the generation only after acquiring it.
+        # Repository observations can take seconds. Keep them outside the
+        # identity lock so the operator can complete account consent meanwhile.
+        preparation_error = None
         with identity_effect_lock(self.store):
-            self._tick()
+            data = self.setup.read(); generation = data['generation']
+            prior = self.row('installation_web', generation)
+            operation = prior['settings'] if prior else {}
+            prepared = self.preparation.saved(generation)
+            eligible = data['phase'] == 'setup' and not Settings(self.root).paused()
+            if eligible and prepared and data.get('device_logins', {}).get('codex') and not data.get('operation'):
+                providers = self.preparation.view()
+                if any(row['id'] == 'codex' and row['kind'] == 'browser' for row in providers['providers']):
+                    try:
+                        current = self.account(providers)
+                        if current['status'] in ('account_login_pending', 'account_login_required', 'account_login_saved'):
+                            self.account(providers, apply=True)
+                    except (ValueError, RuntimeError, OSError) as error:
+                        preparation_error = error
+            prepare = eligible and prepared and not self.row('installation_smoke', generation) and (
+                operation.get('status') in ('queued', 'running', 'waiting')) and (
+                operation['status'] == 'queued' or self.clock() - operation.get('last_seen_at', operation['updated_at']) >= 10)
+        if prepare and preparation_error is None:
+            try:
+                self.preparation.tick()
+            except (ValueError, RuntimeError, OSError) as error:
+                preparation_error = error
+        # Match setup/reset and smoke lock order: identity then controller.
+        with identity_effect_lock(self.store):
+            if self.setup.read()['generation'] == generation:
+                self._tick(preparation_error=preparation_error)
 
-    def _tick(self):
+    def _tick(self, *, preparation_error=None):
         data = self.setup.read(); generation = data['generation']
         prior = self.row('installation_web', generation)
         if not prior or prior['settings']['status'] not in ('queued', 'running', 'waiting'):
@@ -142,12 +213,17 @@ class InstallationWeb:
         if operation['status'] != 'queued' and self.clock() - operation.get('last_seen_at', operation['updated_at']) < 10:
             return
         saved = self.row('installation_smoke', generation)
-        if not saved or data['phase'] == 'resetting' or Settings(self.root).paused(): return
-        binding = saved['settings']['binding']
+        prepared = self.preparation.saved(generation)
+        if not (saved or prepared) or data['phase'] == 'resetting' or Settings(self.root).paused(): return
+        binding = (saved or prepared)['settings']['binding']
         require(operation['setup_id'] == binding['setup_id']
                 and operation['generation'] == binding['generation'] == generation, 'setup_changed')
         try:
-            if data.get('operation'):
+            if preparation_error is not None:
+                raise preparation_error
+            if prepared and not saved:
+                result = self.preparation.view()
+            elif data.get('operation'):
                 result = {'status': 'checking'}
             elif data['phase'] == 'setup':
                 if data.get('selected') != binding['repository']:
@@ -168,9 +244,9 @@ class InstallationWeb:
                 if result['status'] == 'smoke_merged':
                     result = self.call('handover', binding)
             status = 'complete' if result['status'] == 'handover_complete' else 'blocked' if result['status'] in (
-                'smoke_triage_failed', 'smoke_triage_required', 'write_unconfirmed') else 'waiting'
+                'smoke_triage_failed', 'smoke_triage_required', 'write_unconfirmed', 'preparation_needs_operator') else 'waiting'
             fingerprint = digest({key: result.get(key) for key in
-                                  ('status', 'phase', 'reason', 'operator_status', 'candidate', 'attempts', 'proposal_id')})
+                                  ('status', 'phase', 'reason', 'operator_status', 'candidate', 'attempts', 'proposal_id', 'stages')})
             changed = operation.get('progress') != fingerprint or operation['status'] != status
             following = {**operation, 'status': status, 'last_seen_at': self.clock(), 'progress': fingerprint,
                          'updated_at': self.clock() if changed else operation['updated_at']}
