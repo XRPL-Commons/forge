@@ -18,6 +18,7 @@ BOOTSTRAP = r'''import base64,hashlib,json,pathlib,sys,tempfile,zipfile,io,os,su
 payload=sys.stdin.buffer.read(64*1024*1024+1)
 if len(payload)>64*1024*1024: raise ValueError("request too large")
 request=json.loads(payload)
+release_access=request.pop("release_access",None)
 raw=base64.b64decode(request.pop("bundle"),validate=True)
 if hashlib.sha256(raw).hexdigest()!=request.pop("bundle_digest"): raise ValueError("bundle mismatch")
 with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
@@ -31,6 +32,12 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
  from forge.store.migration.snapshot import MigrationError
  from forge.store.db import StoreError,qualified_sqlite
  try:
+  if release_access is not None:
+   if request.get("apply") is not True or not isinstance(release_access,dict) or release_access.get("revision")!=request.get("source_revision"): raise MigrationError("invalid_release_access")
+   from forge.release_artifacts import stage,ArtifactError
+   try: stage(release_access)
+   except ArtifactError: raise MigrationError("prepared_release_unavailable") from None
+   release_access=None
   prepared=None
   if not qualified_sqlite():
    from forge.store.migration.runtime import inspect
@@ -93,7 +100,7 @@ def call(args,action,**fields):
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
     try:
-        result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP]),input=json.dumps(request).encode(),capture_output=True,timeout=1500)
+        result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP]),input=json.dumps(request).encode(),capture_output=True,timeout=4500)
     except subprocess.TimeoutExpired:
         raise SetupError('migration_transport_timeout',
                          'The SSH maintenance call timed out. The host operation may still be running or may have completed. '
@@ -134,13 +141,15 @@ def execute(args):
         previous = observed.get('source_revision')
         require(isinstance(previous,str) and re.fullmatch(r'[0-9a-f]{40}',previous),
                 'invalid_host_response','The host did not report its installed source revision.')
-        # GitHub credentials remain local. Once checkout completed, resumption
-        # uses the already installed objects and needs no further GitHub read.
+        # Both source and private release assets are authorized locally. Even
+        # after checkout, resumption may still need to fill the host asset cache.
+        fields = {}
         if previous != revision:
             from .source import export
-            source_pack = export(revision, previous=previous)
-            return call(args,'upgrade',apply=True,source_revision=revision,source_pack=source_pack)
-        return call(args,'upgrade',apply=True,source_revision=revision)
+            fields['source_pack'] = export(revision, previous=previous)
+        from .release_delivery import access
+        fields['release_access'] = access(revision)
+        return call(args,'upgrade',apply=True,source_revision=revision,**fields)
 
     except (MigrationError, StoreError) as error:
         raise SetupError('migration_'+error.code,'Schema upgrade could not proceed: '+error.code) from None
