@@ -123,6 +123,24 @@ class GitHub:
                 and value.get('login', '').lower() == login.lower())
         return {k: value[k] for k in ('id', 'login', 'type')}
 
+    def installation_repositories(self, login):
+        """Recent choices for the human interview; plan resolves each choice again."""
+        owner = self.registration_owner(login)
+        path = ('/orgs/' + owner['login'] + '/repos' if owner['type'] == 'Organization'
+                else '/user/repos')
+        values = self._request('GET', path + '?sort=pushed&per_page=100')
+        require(isinstance(values, list), 'github_invalid_response')
+        names = []
+        for row in values:
+            require(isinstance(row, dict), 'github_invalid_response')
+            if ((row.get('owner') or {}).get('id') != owner['id']
+                    or row.get('archived') is not False or row.get('disabled') is not False):
+                continue
+            name = row.get('full_name')
+            require(isinstance(name, str) and NAME.fullmatch(name), 'github_invalid_response')
+            names.append(name)
+        return sorted(set(names), key=str.lower)
+
     def pilot_issue(self, target, number, *, ready_label=None):
         require(isinstance(target, dict) and NAME.fullmatch(target.get('name', '')) and positive(number))
         value = self._request('GET', f"/repos/{target['name']}/issues/{number}")

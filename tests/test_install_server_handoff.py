@@ -68,6 +68,35 @@ class ServerHandoffTests(unittest.TestCase):
         self.assertEqual(saved['providers'], [{'id': 'codex', 'kind': 'browser'}])
         self.assertNotIn('github_protection', saved['repositories'][0])
 
+    def test_unconfirmed_handoff_keeps_cli_resume_and_adopts_lost_reply(self):
+        factory = self.server()
+        original = factory.call.side_effect
+        def lose_reply(action, **parameters):
+            result = original(action, **parameters)
+            if action == 'prepare':
+                raise SetupError('connection_lost', 'Reply lost')
+            return result
+        factory.call.side_effect = lose_reply
+        with self.assertRaises(SetupError):
+            self.install.apply()
+        saved = self.journal.read()['server_preparation']
+        self.assertFalse(saved['registered'])
+        result = self.install.status()
+        self.assertFalse(result['web_owned'])
+        self.assertIsNone(result['setup_url'])
+        self.assertEqual(result['next_action'], ['forge', 'install', '--ssh', 'anvil', '--resume'])
+        from forge_client.installation import display
+        lines = []; display(result, tell=lines.append)
+        self.assertNotIn('You can close this terminal', '\n'.join(lines))
+        self.assertIn('Setup still needs this CLI', '\n'.join(lines))
+        factory.call.side_effect = original
+        result = self.install.apply()
+        self.assertTrue(result['web_owned'])
+        self.assertIsNone(result['next_action'])
+        self.assertEqual(sum(call.args[0] == 'prepare' for call in factory.call.call_args_list), 1)
+        lines = []; display(result, tell=lines.append)
+        self.assertIn('You can close this terminal', '\n'.join(lines))
+
     def test_operator_attention_never_replays_retired_rule_repairs(self):
         factory = self.server(); self.install.apply()
         factory.prepare_repository.assert_not_called()
