@@ -11,7 +11,7 @@ server, workers, web app and CLI.
 
 You need:
 
-- An Ubuntu 24.04 server with SSH access and administrator privileges.
+- An x86-64 Ubuntu 24.04 server with SSH access and administrator privileges.
 - A Tailscale account for private access to the factory.
 - Permission to create a GitHub App and install it on your repositories.
 - A supported coding account, such as Codex or Claude Code.

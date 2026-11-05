@@ -7,7 +7,7 @@ GitHub-confirmed merge allows the final repository handover.
 
 ## Prerequisites
 
-- A dedicated Ubuntu 24.04 VM with AppArmor, systemd and `/usr/bin/python3`.
+- A dedicated x86-64 Ubuntu 24.04 VM with AppArmor, systemd and `/usr/bin/python3`.
 - SSH access from your computer as root or an account with noninteractive sudo.
   Configure its SSH key through your VM provider. Forge handles remote commands
   and file transfers through the CLI.
