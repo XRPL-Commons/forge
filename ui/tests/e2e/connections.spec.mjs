@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 export default async function (page, { base }) {
   await page.goto(base + '/settings/connections')
@@ -16,5 +18,5 @@ export default async function (page, { base }) {
     await page.setViewportSize({ width, height: 844 })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
   }
-  await page.screenshot({ path: '/private/tmp/forge-connections-mobile.png', fullPage: true })
+  await page.screenshot({ path: join(tmpdir(), 'forge-connections-mobile.png'), fullPage: true })
 }
