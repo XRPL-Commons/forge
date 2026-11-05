@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  harnessLine, harnessState, harnessSummary, initialStep, repositoryProblem,
+  harnessLine, harnessState, harnessSummary, initialStep, repositoryProblem, usesSingleApp,
   resetComplete, resetStep, signature, step3, technicalChecks, waitingService,
   type Harness, type OnboardingView,
 } from '../../app/utils/onboarding'
@@ -313,5 +313,16 @@ describe('resetComplete', () => {
   it('withholds it while the reset reported an error, or outside phase setup', () => {
     expect(resetComplete({ ...blank, error: 'Reset could not stop every worker' }, null)).toBe(false)
     expect(resetComplete({ ...blank, phase: 'resetting' }, null)).toBe(false)
+  })
+})
+
+describe('single-App setup', () => {
+  it('uses one App for a fresh factory and retains partial legacy setup', () => {
+    const fresh = view({ roles: Object.fromEntries(['build', 'review', 'audit', 'controller'].map(name => [name, role({ registered: false, status: 'missing' })])) as OnboardingView['roles'] })
+    expect(usesSingleApp(fresh)).toBe(true)
+    fresh.roles.build.registered = true
+    expect(usesSingleApp(fresh)).toBe(false)
+    fresh.single_app = true
+    expect(usesSingleApp(fresh)).toBe(true)
   })
 })

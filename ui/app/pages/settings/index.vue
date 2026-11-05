@@ -62,7 +62,6 @@ function onSaved(view: FactoryView) {
       <div>
         <p class="text-xs uppercase tracking-wide text-muted">Settings</p>
         <h1 class="text-3xl font-semibold text-white">General</h1>
-        <p class="mt-1 text-sm text-muted">Manage worker capacity and factory setup.</p>
       </div>
       <NuxtLink v-if="continueSetup" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
     </div>
@@ -92,8 +91,8 @@ function onSaved(view: FactoryView) {
       </details>
     </section>
 
-    <section id="worker-capacity" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-panel p-4">
-      <h2 class="text-sm font-semibold text-white">Worker capacity</h2>
+    <details :open="route.hash === '#worker-capacity'" id="worker-capacity" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-panel p-4">
+      <summary class="cursor-pointer text-sm font-semibold text-white">Worker capacity</summary>
       <CapacityForm
         v-if="factoryView"
         ref="capacityForm"
@@ -105,7 +104,7 @@ function onSaved(view: FactoryView) {
         @saved="onSaved"
       />
       <p v-else class="mt-2 text-sm text-muted">{{ poll.data.value ? 'Worker capacity is not available.' : 'Loading…' }}</p>
-    </section>
+    </details>
 
     <section id="approvers" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-panel p-4">
       <h2 class="text-sm font-semibold text-white">Who can approve</h2>
@@ -121,12 +120,10 @@ function onSaved(view: FactoryView) {
       <p v-else class="mt-2 text-sm text-muted">{{ poll.data.value ? 'The approver list is not available.' : 'Loading…' }}</p>
     </section>
 
-    <section class="mt-4 rounded-xl border border-rose-200/30 bg-panel p-4">
-      <p class="text-xs uppercase tracking-wide text-rose-200">Destructive action</p>
-      <h2 class="mt-1 text-sm font-semibold text-white">Reset Forge</h2>
-      <p class="mt-2 text-sm text-muted">Stops all Forge workers, discards unfinished local work, and clears this factory’s setup and saved connections. You will need to set up Forge again.</p>
-      <p class="mt-1 text-sm text-muted">Your GitHub issues, branches, pull requests and App registrations are preserved.</p>
+    <details class="mt-4 rounded-xl border border-line bg-panel p-4">
+      <summary class="cursor-pointer text-sm text-muted">Reset factory</summary>
+      <p class="mt-2 text-sm text-muted">Stop workers and clear this factory’s setup and connections.</p>
       <NuxtLink to="/reset" class="mt-2 inline-block text-sm text-sky-200 hover:underline">Review reset…</NuxtLink>
-    </section>
+    </details>
   </div>
 </template>

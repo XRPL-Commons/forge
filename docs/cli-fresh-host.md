@@ -16,8 +16,8 @@ GitHub-confirmed merge allows the final repository handover.
 - Your computer joined to the intended Tailscale network. Enable MagicDNS and
   HTTPS certificates in that network.
 - Authority to register a GitHub App under the chosen owner and administer the
-  selected repositories. Private repositories need a GitHub plan supporting their
-  required branch rules. Forge reports unsupported rules during preflight.
+  selected repositories. GitHub Pro is not required. Forge respects existing
+  repository rules and reports any merge blockers.
 
 ## Install the CLI and start
 

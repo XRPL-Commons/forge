@@ -61,7 +61,7 @@ describe('installation progress', () => {
     state.repository = Object.fromEntries(['view', 'live', 'row', 'report', 'shown', 'displayReady', 'ready', 'prepared', 'pickerRows', 'connections', 'accessDescription', 'accessNote', 'syncing', 'failed', 'hint', 'editUrl', 'downloadHref', 'downloaded', 'busy', 'checking', 'enabling', 'error', 'query'].map(key => [key, ref(null)]))
     Object.assign(state.repository, { live: ref(true), ready: ref(true), row: ref({ id: 1, name: 'example/project', enabled: false, access_ready: true, protection_ready: true, protection_status: 'ready' }), enable: vi.fn() })
     const wrapper = await mountSuspended(RepositorySetupWizard, { props: { initialRepoId: 1 }, global: { stubs: { UModal: { template: '<div><slot name="body" /><slot name="footer" /></div>' } } } })
-    expect(wrapper.text()).toContain('Finish the installation test before enabling automation.')
+    expect(wrapper.text()).toContain('Finish installation before enabling automation.')
     expect(wrapper.get('a[href="/installation"]').text()).toBe('View setup progress')
     const enable = wrapper.findAll('button').find(button => button.text() === 'Enable automation')!
     expect(enable.attributes('disabled')).toBeDefined()
@@ -89,7 +89,7 @@ describe('installation progress', () => {
     expect(account.get('code').text()).toBe('TEST-CODE')
     expect(account.get('a[href="https://auth.openai.com/codex/device"]').text()).toBe('Open Codex sign-in')
     expect(wrapper.text()).toContain('Waiting for you. Complete the steps below')
-    expect(wrapper.text()).not.toContain('Setup will continue automatically on the server.')
+    expect(wrapper.text()).not.toContain('Setup is running.')
     expect(state.current.act).not.toHaveBeenCalled()
     await account.findAll('button').find(button => button.text() === 'Retry Codex sign-in')!.trigger('click')
     expect(state.current.act).toHaveBeenCalledWith(state.current.view.value.actions[0])
@@ -117,8 +117,7 @@ describe('installation progress', () => {
     const section = wrapper.get('section[aria-label="Repository setup needs attention"]')
     expect(section.text()).toContain('Repository access needs refreshing.')
     expect(section.get('a[href="/settings/repositories?repo=1"]').text()).toBe('Review repository setup')
-    expect(section.text()).toContain('Forge keeps existing GitHub protections in force')
-    expect(section.text()).toContain('Continue setup to check again')
+    expect(section.text()).toContain('Continue setup.')
     wrapper.unmount()
   })
 

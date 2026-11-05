@@ -4,8 +4,9 @@ Forge owns its implementation details. The UI presents decisions about the work
 an operator wants the factory to do.
 
 - Keep the Forge logo as the home link. Keep Settings in the top bar alongside Help,
-  highlighted within settings; the logo returns to the factory. Group General,
-  GitHub access and Coding accounts under the Settings tabs. Use the green
+  highlighted within settings; the logo returns to the factory. Use General,
+  Repositories and Connections as the Settings tabs. Connections contains GitHub,
+  coding accounts and external agents. Use the green
   SETTINGS eyebrow above each settings page title; avoid duplicate navigation.
 - Show useful choices: managed repositories, worker capacity, model preferences,
   and effort levels supported by the selected coding harness.

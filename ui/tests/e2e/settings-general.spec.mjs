@@ -18,7 +18,8 @@ function waitForText(page, text) {
 // paused-factory fence, and a stacked mobile layout.
 export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings')
-  await waitForText(page, 'Manage worker capacity and factory setup.')
+  await page.getByRole('heading', { name: 'General', exact: true }).waitFor()
+  assert.equal(await page.locator('#capacity-build').isVisible(), false)
 
   // The fixture's last supervisor observation is days old: the summary says
   // so in one sentence and shows only that row; the rest fold away.
@@ -51,12 +52,17 @@ export default async function (page, { base, scenario, requests }) {
   await page.reload()
   await waitForText(page, 'needs your attention')
 
+  await page.locator('#worker-capacity > summary').click()
   const builders = page.locator('#capacity-build')
   await builders.waitFor({ state: 'visible' })
   assert.equal(await builders.inputValue(), '2')
 
   // Discard restores the original value without posting anything.
   await builders.fill('5')
+  await page.locator('#worker-capacity > summary').click()
+  await page.waitForTimeout(700)
+  await page.locator('#worker-capacity > summary').click()
+  assert.equal(await builders.inputValue(), '5', 'folding a dirty form preserves its draft across polls')
   await page.getByRole('button', { name: 'Discard changes' }).click()
   await waitForText(page, 'Changes discarded.')
   assert.equal(await builders.inputValue(), '2')
@@ -127,4 +133,8 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(direction, 'column', 'status rows must stack on a phone-width viewport')
   const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }))
   assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
+  await page.goto(base + '/settings#worker-capacity')
+  await page.locator('#capacity-build').waitFor({ state: 'visible' })
+  assert.equal(await page.locator('#worker-capacity').getAttribute('open'), '')
+
 }

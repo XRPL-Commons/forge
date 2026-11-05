@@ -209,13 +209,6 @@ export function protectionReport(row: RepositoryRow | null | undefined): Protect
   return (row.protection?.available ? row.protection : row.protection_last_known ?? row.protection) ?? null
 }
 
-export function repoStage(row: RepositoryRow | null | undefined, activationAvailable: boolean): 0 | 1 | 2 | 3 | 4 {
-  if (!row) return 0
-  if (!row.access_ready) return 1
-  if (displayStatus(row) !== 'ready') return 2
-  return row.enabled && activationAvailable ? 4 : 3
-}
-
 export function rowState(row: RepositoryRow): { icon: 'attention' | 'enabled' | 'off'; label: string } {
   const ready = row.protection_ready || (row.protection_status === 'checking' && row.protection_previous_status === 'ready')
   if (row.enabled && (!row.access_ready || !ready)) return { icon: 'attention', label: 'Needs attention' }

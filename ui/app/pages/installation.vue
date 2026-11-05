@@ -22,7 +22,7 @@ const accountConnected = computed(() => view.value?.account?.status === 'connect
   <div class="mx-auto max-w-[920px]">
     <p class="text-xs font-semibold tracking-wider text-mint-200 uppercase">Installation</p>
     <h1 class="mt-2 text-3xl font-semibold">{{ view?.complete ? 'Your factory is ready' : 'Setting up your factory' }}</h1>
-    <p class="mt-3 text-muted">Follow setup here. You can leave this page and return while Forge works.</p>
+    <p class="mt-3 text-muted">Setup continues when you leave this page.</p>
     <UButton class="mt-3" to="/settings/repositories" color="neutral" variant="link">Configure repositories</UButton>
     <p v-if="!view && !poll.error.value" role="status" class="mt-6 text-muted">Loading setup progress…</p>
     <UAlert v-if="poll.error.value" class="mt-6" color="warning" variant="subtle" title="Could not refresh setup progress" :description="view ? 'Showing the last received status. Forge may still be working; retry to check.' : poll.error.value" />
@@ -35,10 +35,9 @@ const accountConnected = computed(() => view.value?.account?.status === 'connect
           <span v-if="view.updated_at">Last setup report {{ localTime(view.updated_at, true) }}<template v-if="lastChange"> · {{ lastChange }} ago</template></span>
           <span v-if="view.observed_at">Status checked {{ localTime(view.observed_at, true) }}</span>
         </div>
-        <p v-if="!view.complete && !poll.stale.value && lastChange" class="mt-3 text-sm text-muted">Refreshing status automatically.</p>
         <p v-if="waitingForYou" class="mt-3 text-sm text-amber-200">Waiting for you. Complete the steps below so setup can continue.</p>
-        <p v-else-if="['queued', 'running', 'waiting'].includes(view.operation?.status ?? '')" class="mt-3 text-sm">{{ view.operation?.status === 'queued' ? 'Setup continuation is queued on the server.' : 'Setup will continue automatically on the server.' }}</p>
-        <UAlert v-if="view.service && !view.service.available && !view.complete" class="mt-4" color="warning" variant="subtle" title="Setup service is not responding" description="The progress API is reachable, but the setup service has not reported recently. Continuing may wait until it recovers." />
+        <p v-else-if="['queued', 'running', 'waiting'].includes(view.operation?.status ?? '')" class="mt-3 text-sm">{{ view.operation?.status === 'queued' ? 'Waiting to continue.' : 'Setup is running.' }}</p>
+        <UAlert v-if="view.service && !view.service.available && !view.complete" class="mt-4" color="warning" variant="subtle" title="Setup service is not responding" description="Setup has stopped reporting progress. Refresh to check whether it has recovered." />
         <UAlert v-if="actionError" class="mt-4" color="error" variant="subtle" :description="actionError" />
         <div v-if="setupActions.length" class="mt-4 flex flex-wrap gap-3">
           <UButton v-for="action in setupActions" :key="action.id" :loading="busy" :disabled="busy" @click="act(action)">{{ action.label }}</UButton>
@@ -49,12 +48,12 @@ const accountConnected = computed(() => view.value?.account?.status === 'connect
         <h2 class="text-lg font-semibold">{{ accountConnected ? 'Codex is connected' : 'Connect your Codex account' }}</h2>
         <template v-if="!accountConnected">
           <template v-if="deviceUrl && view.account?.code && !accountExpired">
-            <p class="mt-2 text-sm">Open the sign-in page, enter this one-time code, and approve the connection. Forge will detect completion automatically.</p>
+            <p class="mt-2 text-sm">Open sign-in and enter this code.</p>
             <p class="mt-4"><code class="select-all rounded-lg border border-line bg-base px-4 py-2 text-xl tracking-widest" aria-label="One-time sign-in code">{{ view.account.code }}</code></p>
             <p v-if="view.account.expires_at" class="mt-3 text-sm text-muted">Expires {{ localTime(view.account.expires_at, true) }}.</p>
             <UButton class="mt-4" :to="deviceUrl" target="_blank" rel="noopener noreferrer">Open Codex sign-in</UButton>
           </template>
-          <p v-else-if="view.account?.status === 'account_unavailable'" class="mt-2 text-sm text-amber-200">Forge cannot check the coding account right now. Another login may be in progress, or the account service may be unavailable. Setup progress remains visible; this page will check again.</p>
+          <p v-else-if="view.account?.status === 'account_unavailable'" class="mt-2 text-sm text-amber-200">Cannot check this account yet. Retrying automatically.</p>
           <p v-else-if="accountExpired || view.account?.status === 'account_login_failed'" class="mt-2 text-sm text-amber-200">This sign-in attempt expired or failed. Start a new sign-in using the retry button.</p>
           <p v-else-if="accountActions.length" class="mt-2 text-sm">Start sign-in here, then approve the connection in your browser.</p>
           <p v-else class="mt-2 text-sm text-muted">Forge is checking your Codex connection. This page will update automatically.</p>
@@ -73,7 +72,7 @@ const accountConnected = computed(() => view.value?.account?.status === 'connect
             <UButton class="mt-2" :to="setupPath(item.path) || '/settings/repositories'" color="neutral" variant="outline">Review repository setup</UButton>
           </li>
         </ul>
-        <p class="mt-4 text-sm text-muted">Review the reported repository access or merge blocker, then choose Continue setup to check again. Forge keeps existing GitHub protections in force.</p>
+        <p class="mt-4 text-sm text-muted">Resolve the blocker, then choose Continue setup.</p>
       </section>
       <section class="mt-6 overflow-hidden rounded-xl border border-line bg-panel" aria-label="Installation checklist">
         <h2 class="border-b border-line px-5 py-4 text-lg font-semibold">Setup checklist</h2>

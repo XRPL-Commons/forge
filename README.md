@@ -1,178 +1,80 @@
 # Forge
 
-Forge moves GitHub issues through **Build → Review → Security audit → Merge**.
-GitHub holds requirements, code and review evidence. The supervisor owns the durable
-delivery ledger, assignments, failure history and resource allocation. Related issues
-can form one operator-approved delivery with one owning builder, tracked parallel
-children and one integrated pull request for Review and Audit. Workers receive
-one assignment and run inside disposable containers; completion is verified against
-GitHub before the issue advances.
+Forge turns GitHub issues into pull requests, with independent code review and
+security audit before merge. Use the web app to choose repositories, approve
+work and follow its progress.
 
-## Install
+**Experimental.** Start with a test repository. This repository contains the
+server, workers, web app and CLI.
 
-This repository contains the Forge server, workers, web UI and local CLI. Install
-the CLI on your computer or your external agent's computer, then use
-`forge install` to install and configure the server on its Linux host.
+## Get started
 
-### Local CLI
+You need:
 
-The CLI applies schema changes to an installed host with a resumable
-`forge migrate upgrade`. See [the upgrade guide](docs/store-migration.md).
+- An Ubuntu 24.04 server with SSH access and administrator privileges.
+- A Tailscale account for private access to the factory.
+- Permission to create a GitHub App and install it on your repositories.
+- A supported coding account, such as Codex or Claude Code.
+- On your computer: Python 3.10+, Git, authenticated GitHub CLI (`gh`), and
+  [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
-On macOS or Linux with Python 3.10+, Git, authenticated GitHub CLI (`gh`) and
-[uv](https://docs.astral.sh/uv/getting-started/installation/) installed:
+Your server and coding provider may have costs. GitHub Pro is not required.
+Mac hosting is not supported by this installer yet.
+
+Install the CLI on your computer, then start setup:
 
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
 forge self-update
-forge --help
-forge install --help
-forge server setup --help
+forge install --ssh USER@HOST
 ```
 
-If your shell cannot find `forge`, run `uv tool update-shell` and open a new terminal.
-`forge self-update` selects the latest published prepared release, keeping the
-client aligned with the server artifacts used by a fresh installation.
+Replace `USER@HOST` with your server's SSH address or alias. The CLI asks for the
+factory name, GitHub owner, repositories and coding account, then prepares the
+server. It handles SSH and file transfers.
 
-This fetches the repository but installs only the `forge-agent-client` Python
-distribution: the `forge` client command, `forge_client`, and the `forge` Python
-modules used for shared contracts and host maintenance. Installing this package
-does not build worker images, deploy services or start a server. No PyPI release
-is currently published.
+Approve the Tailscale and GitHub browser prompts. Keep the terminal open until
+setup gives you the web address. From there, **Installation progress** shows the
+current step, anything waiting for you, and the first merge test. Codex sign-in
+can continue in the web app; other provider setup may require the CLI.
 
-| Command | Run it on | Purpose |
-| --- | --- | --- |
-| `forge install` | Your computer or the external agent's computer | Interview or JSON intent for Ubuntu 24.04, single-App consent, coding login, smoke merge and repository handover |
-| `forge migrate` | Your computer or the external agent’s computer | Rehearse a private SQLite import, or activate it through a resumable one-way migration |
-| `forge server setup` | Your computer or the external agent's computer | Configure operator sign-in and private HTTPS on an existing Tailscale host over SSH |
-| `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
-| `bin/forge update` | The Forge server, from its source checkout | Update the source and reconcile the installed services |
+Forge completes a test issue before enabling your chosen repositories. You can
+close the web page and return while it runs.
 
-For a fresh VM, follow [fresh-host installation](docs/cli-fresh-host.md). Run
-`forge install` for the guided path through single-App setup and a first verified
-smoke merge. `forge install --ssh USER@HOST --resume --wait 3600` resumes it.
-Agents use the same stages with `--intent-file` and `--json`. The CLI handles SSH
-and transfers and keeps GitHub administration local. Only the smoke issue runs
-before verified handover enables the selected repositories.
-
-For an existing Forge host that needs operator sign-in and private HTTPS, use
-[CLI server setup](docs/cli-server-setup.md). Then follow
-[agent connections](docs/agent-connections.md) to approve a scoped external agent
-connection. Connections require an unlocked macOS Keychain or Linux Secret
-Service for local credential storage.
-
-For repository setup on an existing server:
+If interrupted, resume the saved installation:
 
 ```sh
-forge repo setup OWNER/REPO --server https://forge.example --apply --enable --json
+forge install --ssh USER@HOST --resume --wait 3600
 ```
 
-This uses the approved client connection, keeps GitHub administration local, and
-asks Forge to verify readiness before enabling automation. Omit `--enable` to stop
-at readiness, or `--apply` to return a plan. See [repository operations](docs/agent-connections.md#repository-operations)
-and the bundled [agent skill](forge_client/skills/forge-repositories/SKILL.md).
+If your shell cannot find `forge`, run `uv tool update-shell` and open a new
+terminal. See [installation details and prerequisites](docs/cli-fresh-host.md)
+for supported hosts, credential storage and troubleshooting.
 
-Forge's supervisor enforces Review, Audit, CI and operator approval for its own
-merges. Setup does not create GitHub rulesets, require branch protection, or
-require GitHub Pro. Repository owners manage their own GitHub protections;
-Forge respects those rules and reports when GitHub blocks a merge.
+## Use your factory
 
-**Activity** shows issue work and independent PR reviews, including queued and
-blocked work. Open a PR review for its current revision, retry timing and worker
-history. GitHub checks link to the same work record.
+- **Activity:** see running, queued and blocked work, including pull request reviews.
+- **Issues:** follow issues and their results.
+- **Settings → Repositories:** add repositories and choose whether Forge needs
+  your approval before merging. The default is to require approval.
+- **Settings → Connections:** manage GitHub access, coding accounts and external agents.
 
-### Forge server
+Label an issue `ready` to make it eligible for work. To group related issues,
+open **Plan repository work**, request triage and approve the proposed group.
+Forge builds one pull request for the group and reviews it as a whole.
 
-On an AppArmor-enabled Linux VM with Docker Engine (Compose plugin), systemd and
-Python 3.10+, as a dedicated non-root account in the `docker` group with lingering
-enabled (an administrator also installs the runner's AppArmor profile unless that
-account may use sudo; see [installation](docs/installation.md) for these commands):
+Forge enforces its own merge checks and respects existing GitHub rules. It does
+not create branch protections or require a paid GitHub plan.
 
-```sh
-git clone https://github.com/XRPL-Commons/forge.git
-cd forge
-bin/forge setup      # host, runner image, operator UI, coding-account logins
-```
+## Guides
 
-Then open `http://127.0.0.1:8787/onboarding` (through an SSH tunnel, or on your
-tailnet address with `--bind`) to connect GitHub, choose a repository and start.
-Label an issue `ready` to have it worked. To apply a newer release later:
-
-```sh
-bin/forge update
-```
-
-See [installation](docs/installation.md), [guided onboarding](docs/onboarding.md),
-the [issue state machine and blockers](docs/issue-state-machine.md) and the
-[workflow contract](docs/software-factory-spec.md).
-The [current architecture target](docs/target-architecture.md) records the agreed
-move to one GitHub App, tokenless workers and Tailscale identity, including the
-proofs and migration steps still required.
-
-**Status: experimental.** The durable factory has synthetic workflow/restart tests
-and real credential-free runner canaries. The guided setup verifies access, provider
-authentication and disposable runner cleanup before Start; GitHub App approvals
-still happen on GitHub. See [implementation status](docs/implementation.md).
-
-## Plan repository work
-
-Each repository has durable planning rules, notes and proposals. In **Repository
-settings → Plan repository work**, request **Triage now**, inspect the proposal,
-then approve its rows. Nightly proposals are enabled by default. Planning can
-propose closures with evidence, labels, parked issues, prerequisites, questions
-and related groups; GitHub changes require operator acceptance.
-
-Every composition is approved explicitly, including groups with existing PRs.
-Choose a new PR or one exact existing PR to continue. One logical builder owns
-all member requirements, delegates tracked children within shared capacity, then
-integrates their outputs. Review and Audit assess the complete candidate; changed
-inputs require revalidation. Other existing PRs are preserved.
-
-**Issue Details → Combined delivery** loads member and child progress on demand.
-The same read is available to an external agent:
-
-```sh
-forge repo delivery OWNER/REPO ISSUE_NUMBER --server https://forge.example --json
-```
-
-Merge policy defaults to `human` per repository. An explicit `auto` policy removes
-the ordinary counted-approval requirement while keeping CI, Review, Audit,
-verification and any additional human requirement. Settings shows this policy
-read-only; change it through `forge repo policy` after approving its separate
-connection capability.
-
-See [repository planning](docs/repository-planning.md),
-[delivery execution](docs/delivery-execution.md), and
-[merge policy](docs/factory-runtime.md#what-permits-a-merge).
-
-## Dashboard and history
-
-Guided onboarding creates the GitHub Apps and configuration. The
-[GitHub settings guide](docs/github-settings.md) is the reference for the `/settings`
-page, repository discovery, explicit activation and the underlying files; secrets
-remain outside the source tree. The factory issues repository-scoped role credentials.
-
-The operator UI is the Nuxt app in `ui/` (service `forge-ui`); it reads local
-state through the JSON API in `legacy/forge-status.py`, which listens only on
-loopback. `bin/forge setup` installs both and `bin/forge update` keeps them current;
-see [`docs/ui-deployment.md`](docs/ui-deployment.md). The pages refresh automatically.
-
-[Optional operator sign-in](docs/operator-sign-in.md) protects dashboard data and
-actions using an explicit list of authorized GitHub account IDs. It requires
-verified HTTPS and is required for external agent connections. Before sign-in is
-configured, keep the UI on loopback or a trusted private network; it exposes local
-worker output and must not be public. Operator actions use same-origin requests
-and CSRF protection; the API queues them and the supervisor executes them.
-
-The local CLI keeps your GitHub administrative credentials on your computer.
-Forge stores its own required runtime credentials privately on the controller:
-the operator identity App secret, role App credentials and coding-provider logins.
-The identity App requests no OAuth scopes and is separate from the four role Apps.
-[Runtime setup](docs/factory-runtime.md) covers admission, capacity and operations.
-[External verification](docs/human-verification.md) covers checks a person must run
-and opting a repository into verification through CI.
-GitHub raw content remains authoritative; cached summaries are not independent
-proof of approval or completion.
+- [Fresh installation](docs/cli-fresh-host.md)
+- [Updates](docs/store-migration.md)
+- [Connect an external agent](docs/agent-connections.md) — agents use the same CLI,
+  with structured input and JSON output.
+- [Repository planning](docs/repository-planning.md) and [merge policy](docs/factory-runtime.md#what-permits-a-merge)
+- [Operations](docs/factory-runtime.md), [manual server installation](docs/installation.md)
+  and [documentation index](docs/README.md)
 
 ## Development
 

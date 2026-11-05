@@ -2,7 +2,7 @@
 import { ForgeApiError } from '~/composables/useForgeApi'
 import {
   PROTECTION_HELP_LINK, RESETTING_SCREEN, ROLES, ROLE_NAMES, checksPassed, harnessSummary,
-  initialStep, nextRole, repositoryProblem, resetStep, signature, step3, summaryVerified,
+  initialStep, nextRole, usesSingleApp, repositoryProblem, resetStep, signature, step3, summaryVerified,
   technicalChecks, type OnboardingView, type Step3View,
 } from '~/utils/onboarding'
 
@@ -130,7 +130,7 @@ async function act(action: 'github' | 'refresh' | 'repository' | 'check' | 'star
       } else {
         const result = await api.act<{ install_url?: string; action?: string; manifest?: unknown }>('/api/onboarding', {
           action: 'github',
-          role,
+          role: usesSingleApp(view) ? 'app' : role,
           owner: view.owner || owner.value.trim(),
           account_type: view.account_type || accountType.value,
         })
@@ -163,11 +163,13 @@ const resetting = computed(() => state.value?.phase === 'resetting')
 const phase = computed(() => state.value?.phase)
 const solo = computed(() => resetting.value || phase.value === 'active')
 const rolesOk = computed(() => Boolean(state.value) && ROLES.every(role => state.value!.roles?.[role]?.status === 'ok'))
+const singleApp = computed(() => !!state.value && usesSingleApp(state.value))
+const displayedRoles = computed(() => singleApp.value ? [pending.value || 'controller'] as const : ROLES)
 const pending = computed(() => (state.value ? nextRole(state.value) : null))
 const harnesses = computed(() => state.value?.harnesses ?? [])
 const repositories = computed(() => state.value?.repositories ?? [])
 const repoItems = computed(() => repositories.value.map(row => ({
-  label: row.name, description: 'All four roles have access', value: String(row.id),
+  label: row.name, description: 'GitHub access ready', value: String(row.id),
 })))
 const checking = computed(() => Boolean(state.value?.operation))
 const problem = computed(() => {
@@ -237,19 +239,19 @@ function activityFor(target: string): string | null {
       <template v-else-if="step === 0">
         <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">1 · GitHub</p>
         <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Connect your GitHub workspace</h1>
-        <p class="mt-2 text-muted">You own the Apps and choose which repositories they can access.</p>
+        <p class="mt-2 text-muted">Choose which repositories Forge can access on GitHub.</p>
 
         <div class="mt-6 overflow-hidden rounded-xl border border-line bg-panel">
-          <div v-for="role in ROLES" :key="role" class="flex items-center gap-4 border-b border-line px-5 py-4 last:border-b-0">
+          <div v-for="role in displayedRoles" :key="role" class="flex items-center gap-4 border-b border-line px-5 py-4 last:border-b-0">
             <span class="grid size-7 shrink-0 place-items-center" :class="state.roles[role].status === 'ok' ? 'text-mint-200' : 'text-muted'">
               {{ state.roles[role].status === 'ok' ? '✓' : '○' }}
             </span>
             <div class="min-w-0 flex-1">
-              <h3 class="text-[15px] font-medium">{{ ROLE_NAMES[role] }}</h3>
+              <h3 class="text-[15px] font-medium">{{ singleApp ? 'Forge' : ROLE_NAMES[role] }}</h3>
               <small class="block text-[13px] text-muted">
                 {{ state.roles[role].status === 'ok' ? 'Connected'
                   : state.roles[role].registered ? 'App created · install it on GitHub'
-                    : 'Create a distinct GitHub App' }}
+                    : 'Connect on GitHub' }}
               </small>
             </div>
           </div>
@@ -272,10 +274,10 @@ function activityFor(target: string): string | null {
 
         <div class="mt-8 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6">
           <span class="max-w-[355px] text-xs text-muted">
-            {{ pending ? 'GitHub will ask you to approve each App and its installation.' : 'All four identities are verified.' }}
+            {{ pending ? 'Approve access on GitHub to continue.' : 'GitHub is connected.' }}
           </span>
           <UButton color="primary" :loading="busy" :disabled="busy" @click="act('github')">
-            {{ !pending ? 'Continue' : state.roles[pending].registered ? `Install ${ROLE_NAMES[pending]}` : `Connect ${ROLE_NAMES[pending]}` }}
+            {{ !pending ? 'Continue' : state.roles[pending].registered ? `Install ${singleApp ? 'Forge' : ROLE_NAMES[pending]}` : `Connect ${singleApp ? 'Forge' : ROLE_NAMES[pending]}` }}
           </UButton>
         </div>
         <UButton class="mt-2" color="neutral" variant="link" :disabled="busy" @click="act('refresh')">Refresh access</UButton>
@@ -289,7 +291,7 @@ function activityFor(target: string): string | null {
 
         <div class="mt-6 rounded-xl border border-line bg-panel px-5 py-4">
           <URadioGroup v-if="repoItems.length" v-model="repoChoice" :items="repoItems" :ui="{ item: 'py-2' }" />
-          <p v-else class="text-muted">No shared repositories yet. Install all four Apps on the same repository, then refresh access.</p>
+          <p v-else class="text-muted">No repositories yet. Grant repository access on GitHub, then refresh.</p>
         </div>
         <UButton class="mt-2" color="neutral" variant="link" :disabled="busy" @click="act('refresh')">Refresh access</UButton>
 

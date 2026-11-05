@@ -62,10 +62,10 @@ export default async function (page, { base, scenario, requests }) {
 
   const step1 = await text(page)
   assert.ok(step1.includes('1 · GitHub'), step1)
-  assert.ok(step1.includes('You own the Apps and choose which repositories they can access.'))
-  for (const name of ['Builder', 'Reviewer', 'Auditor', 'Controller']) assert.ok(step1.includes(name), name)
-  assert.ok(step1.includes('Create a distinct GitHub App'))
-  assert.ok(step1.includes('GitHub will ask you to approve each App and its installation.'))
+  assert.ok(step1.includes('Choose which repositories Forge can access on GitHub.'))
+  for (const name of ['Builder', 'Reviewer', 'Auditor', 'Controller']) assert.ok(!step1.includes(name), name)
+  assert.ok(step1.includes('Connect on GitHub'))
+  assert.ok(step1.includes('Approve access on GitHub to continue.'))
   // Nothing is registered yet, so the rail cannot skip ahead.
   assert.equal(await page.locator('[data-step="1"]').isDisabled(), true)
   assert.equal(await page.locator('[data-step="2"]').isDisabled(), true)
@@ -98,17 +98,17 @@ export default async function (page, { base, scenario, requests }) {
   await page.locator('#owner').fill('acme-labs')
   await page.locator('#account-type').click()
   await page.getByRole('option', { name: 'Personal account' }).click()
-  await page.getByRole('button', { name: 'Connect Builder' }).click()
+  await page.getByRole('button', { name: 'Connect Forge' }).click()
 
   // The manifest is handed over by a form POST, and the mock answers 303.
   await page.waitForURL(MOCK_BASE + '/onboarding', { timeout: 10000 })
   const connected = await requests()
   assert.deepEqual(posts(connected)[0].body, {
-    action: 'github', role: 'build', owner: 'acme-labs', account_type: 'personal',
+    action: 'github', role: 'app', owner: 'acme-labs', account_type: 'personal',
   })
   const manifest = posts(connected, '/__manifest')
   assert.equal(manifest.length, 1, 'the manifest form was not submitted to the returned action')
-  assert.deepEqual(JSON.parse(manifest[0].body.manifest), { name: 'forge-build' })
+  assert.deepEqual(JSON.parse(manifest[0].body.manifest), { name: 'forge' })
 
   // --- Step 1 with a known owner: role copy, and the boot refresh --------
   await scenario('setup')
@@ -157,7 +157,7 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Where should Forge work?')
   const step2 = await text(page)
   assert.ok(step2.includes('Choose one repository to start with. You can add more later.'), step2)
-  assert.ok(step2.includes('All four roles have access'))
+  assert.ok(step2.includes('GitHub access ready'))
   assert.ok(step2.includes('Selecting a repository does not start work.'))
   const choices = page.getByRole('radio')
   assert.equal(await choices.count(), 1, 'the fixture offers exactly one shared repository')
@@ -212,7 +212,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(cookie.path, '/')
 
   await page.locator('#owner').fill('acme-labs')
-  await page.getByRole('button', { name: 'Connect Builder' }).click()
+  await page.getByRole('button', { name: 'Connect Forge' }).click()
   await page.waitForURL(MOCK_BASE + '/onboarding', { timeout: 10000 })
   const afterClientNav = posts(await requests())
   assert.equal(afterClientNav.length, 1)
