@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 
 export default async function (page, { base, accounts }) {
-  let operation = {}, account = { status: 'connected' }, revision = 0
+  await page.clock.install()
+  let serverNow = Date.now() / 1000
+  let operation = { status: 'failed', verification: true }, account = { status: 'connected' }, revision = 0
   const requests = []
   await page.route('**/api/accounts', async route => {
     if (route.request().method() === 'POST') {
       requests.push(route.request().postDataJSON()); revision++
       operation = { status: 'connecting' }
-      account = { status: 'account_login_required', code: 'ABCD-12345', url: 'https://auth.openai.com/codex/device', expires_at: Date.now() / 1000 + 900 }
+      account = { status: 'account_login_required', code: 'ABCD-12345', url: 'https://auth.openai.com/codex/device', expires_at: serverNow + 900 }
     }
     await route.fulfill({ json: { ok: true, browser_providers: ['codex'], controls_token: 'token', active: true, generation: 'g', revision, setup_revision: 'r', operation, account } })
   })
@@ -15,7 +17,7 @@ export default async function (page, { base, accounts }) {
     until: Date.now() / 1000 + 600, reason_code: 'blocked_auth', waiting_issues: 1 }])
   await page.goto(base + '/settings/harnesses')
   await page.locator('#account-codex').getByRole('button', { name: 'Reconnect Codex' }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Connect Codex' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Try again' }).click()
   await page.locator('[data-device-code]').waitFor()
   assert.equal(requests[0].action, 'reconnect')
   assert.equal(requests[0].provider, 'codex')
@@ -30,8 +32,12 @@ export default async function (page, { base, accounts }) {
     await page.getByRole('link', { name: 'Open Codex sign-in' }).waitFor()
     if (width === 320) await page.screenshot({ path: '/private/tmp/forge-account-web-mobile.png' })
   }
-  operation = { status: 'failed' }; account = { status: 'account_login_failed' }
+  // The server still reports connecting: local time must retire the old code.
+  serverNow += 901
+  await page.clock.fastForward(901000)
   await page.getByRole('dialog').getByRole('button', { name: 'Try again' }).waitFor({ timeout: 10000 }).catch(async error => { console.error(await page.getByRole('dialog').innerText()); throw error })
+  assert.equal(await page.locator('[data-device-code]').count(), 0)
+  assert.equal(await page.getByRole('link', { name: 'Open Codex sign-in' }).count(), 0)
   await page.getByRole('dialog').getByRole('button', { name: 'Try again' }).click()
   assert.equal(requests.length, 2)
   await page.locator('[data-device-code]').waitFor()

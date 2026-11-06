@@ -4,6 +4,7 @@ import uuid
 
 from forge_client.contracts import fields, require
 from .installation_accounts import DeviceAccount
+from .host_setup import LoginBusy
 from .onboarding import Onboarding
 from .settings import Settings
 from .sqlite_identity import audit_in, identity_effect_lock
@@ -50,7 +51,11 @@ class AccountWeb:
             saved = self.saved(generation)
             require(value['revision'] == (saved['revision'] if saved else 0)
                     and value['setup_revision'] == self.setup.revision(data), 'account_changed')
-            if saved and saved['settings']['status'] in ('queued', 'connecting', 'verifying'):
+            record = data.get('device_logins', {}).get('codex')
+            expired_retry = (saved and saved['settings']['status'] == 'connecting'
+                             and value['action'] in ('retry', 'reconnect') and record
+                             and self.clock() >= record['expires_at'])
+            if saved and saved['settings']['status'] in ('queued', 'connecting', 'verifying') and not expired_retry:
                 return self.view()
             require(not data.get('operation'), 'setup_busy')
             connected = next(row['connected'] for row in self.setup.harnesses(data) if row['id'] == 'codex')
@@ -101,6 +106,8 @@ class AccountWeb:
                         following.update(status='verifying', verification=True)
                     else:
                         following['status'] = 'failed' if result['status'] in ('account_login_failed', 'write_unconfirmed') else 'connecting'
+            except LoginBusy:
+                return
             except (ValueError, RuntimeError, OSError):
                 following.update(status='failed', error='Account connection stopped. Retry or check the factory status.')
             if following != operation:

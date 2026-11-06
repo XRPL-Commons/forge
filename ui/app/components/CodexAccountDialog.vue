@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codexDeviceLink } from '~/utils/installation'
 import type { Harness } from '~/utils/onboarding'
 interface AccountView {
   generation: string; revision: number; setup_revision: string
@@ -16,13 +17,17 @@ const poll = useResource<AccountView>('/api/accounts', path => api.get<AccountVi
 })
 onMounted(() => poll.start())
 const view = poll.data
+const now = useClock()
+const deviceUrl = computed(() => codexDeviceLink(view.value?.account.url))
+const expired = computed(() => Boolean(view.value?.account.expires_at && view.value.account.expires_at <= now.value))
 const running = computed(() => ['queued', 'connecting', 'verifying'].includes(view.value?.operation.status ?? ''))
-const failed = computed(() => view.value?.operation.status === 'failed' || view.value?.account.status === 'account_login_failed')
+const failed = computed(() => expired.value || view.value?.operation.status === 'failed' || view.value?.account.status === 'account_login_failed')
 watch(() => view.value?.operation.status, status => {
   if (status && ['queued', 'connecting', 'verifying'].includes(status)) requested.value = true
 })
 const complete = computed(() => view.value?.operation.status === 'complete' && requested.value)
 const message = computed(() => {
+  if (expired.value && view.value?.account.code) return 'This sign-in code expired. Request a new code.'
   if (view.value?.operation.status === 'verifying') return 'Verifying Codex…'
   if (complete.value) return 'Codex is connected and verified.'
   if (failed.value) return view.value?.operation.error || 'Sign-in expired or did not complete. Try again.'
@@ -41,8 +46,8 @@ async function act(action: string) {
   } catch (failure) { error.value = failure instanceof Error ? failure.message : 'Could not connect. Try again.' }
   finally { busy.value = false }
 }
-const action = computed(() => failed.value ? (view.value?.operation.verification ? 'verify' : props.harness.connected ? 'reconnect' : 'retry')
-  : props.reconnect ? 'reconnect' : props.harness.connected ? 'verify' : 'connect')
+const action = computed(() => props.reconnect ? 'reconnect' : failed.value ? (view.value?.operation.verification ? 'verify' : props.harness.connected ? 'reconnect' : 'retry')
+  : props.harness.connected ? 'verify' : 'connect')
 </script>
 <template>
   <UModal :open="open" title="Connect Codex" :close="false" @update:open="value => !value && emit('close')">
@@ -50,14 +55,14 @@ const action = computed(() => failed.value ? (view.value?.operation.verification
       <div class="space-y-4">
         <p role="status">{{ view ? message : 'Loading connection…' }}</p>
         <p v-if="error || poll.error.value" role="alert" class="text-error">{{ error || poll.error.value }}</p>
-        <template v-if="view?.account.code && running">
+        <template v-if="view?.account.code && running && !expired && deviceUrl">
           <p class="text-2xl font-mono tracking-wider break-all" data-device-code>{{ view.account.code }}</p>
           <p v-if="view.account.expires_at" class="text-sm text-muted">Expires {{ new Date(view.account.expires_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}.</p>
-          <a :href="view.account.url" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center rounded-full bg-mint-200 px-5 py-2 font-medium text-bg">Open Codex sign-in</a>
+          <a :href="deviceUrl" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center rounded-full bg-mint-200 px-5 py-2 font-medium text-bg">Open Codex sign-in</a>
         </template>
-        <p v-if="running" class="text-sm text-muted">You can close this window and return to follow progress.</p>
+        <p v-if="running && !expired" class="text-sm text-muted">You can close this window and return to follow progress.</p>
         <p v-else-if="!complete" class="text-sm text-muted">Sign in with OpenAI. Forge stores the connection on this factory; no credentials are entered here.</p>
-        <UButton v-if="view && !running && !complete" :loading="busy" :disabled="!view.active" @click="act(action)">{{ action === 'verify' ? 'Verify connection' : failed ? 'Try again' : 'Connect Codex' }}</UButton>
+        <UButton v-if="view && (!running || expired) && !complete" :loading="busy" :disabled="!view.active" @click="act(action)">{{ action === 'verify' ? 'Verify connection' : failed ? 'Try again' : 'Connect Codex' }}</UButton>
       </div>
     </template>
     <template #footer><DialogFooter><template #secondary><UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton></template></DialogFooter></template>

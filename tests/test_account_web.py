@@ -121,3 +121,74 @@ class AccountHTTPTests(unittest.TestCase):
                 getattr(handler, method)()
                 handler.send_error.assert_called_once_with(401)
             service.assert_not_called()
+
+
+class AccountLockTests(unittest.TestCase):
+    from tests.test_installation_accounts import DeviceLoginTests as Fixture
+    setUp = Fixture.setUp
+    call = Fixture.call
+
+    def web(self):
+        self.call(apply=True)
+        config = self.setup.runtime()
+        with self.setup.store.transaction() as data: data['phase'] = 'active'
+        self.setup.save_runtime(config, active=True)
+        web = AccountWeb(self.root, setup=self.setup, device=self.client, clock=lambda: self.now)
+        view = web.view()
+        web.request({**{key: view[key] for key in ('generation', 'revision', 'setup_revision')},
+                     'provider': 'codex', 'action': 'connect'}, actor_id='github:7')
+        return web
+
+    def test_concurrent_get_waiting_on_identity_cannot_fail_tick(self):
+        import threading
+        from contextlib import contextmanager
+        from forge.sqlite_identity import identity_effect_lock
+        web = self.web()
+        observing, ready, proceed = threading.Event(), threading.Event(), threading.Event()
+        results = []
+        original_call = self.client.call
+        def observed_call(*args, **kwargs):
+            if threading.current_thread().name == 'account-get':
+                ready.set()
+                if not proceed.wait(3): raise AssertionError('GET was not released')
+            return original_call(*args, **kwargs)
+        @contextmanager
+        def observed_lock(root):
+            if threading.current_thread().name == 'account-get': observing.set()
+            with identity_effect_lock(root): yield
+        with patch.object(self.client, 'call', side_effect=observed_call), \
+             patch('forge.installation_accounts.identity_effect_lock', observed_lock):
+            thread = threading.Thread(name='account-get', target=lambda: results.append(web.view()))
+            thread.start()
+            try:
+                self.assertTrue(ready.wait(3), 'GET did not read its saved operation')
+                with identity_effect_lock(self.root):
+                    proceed.set()
+                    self.assertTrue(observing.wait(3), 'GET did not reach the identity lock')
+                    web.tick()
+                    self.assertEqual(web.saved(self.generation)['settings']['status'], 'connecting')
+            finally:
+                proceed.set()
+                thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(results[0]['account']['code'], 'ABCD-12345')
+        self.assertEqual(sum(call[1] == 'create' for call in self.calls), 1)
+
+    def test_provider_lock_contention_leaves_login_pending(self):
+        from forge.host_setup import login_lock
+        web = self.web()
+        with login_lock(self.root, 'codex'): web.tick()
+        self.assertEqual(web.saved(self.generation)['settings']['status'], 'queued')
+        web.tick()
+        self.assertEqual(web.saved(self.generation)['settings']['status'], 'connecting')
+
+    def test_expired_login_can_be_retried_before_supervisor_observes_expiry(self):
+        web = self.web(); web.tick()
+        previous = self.setup.read()['device_logins']['codex']['id']
+        self.now += 901
+        view = web.view()
+        web.request({**{key: view[key] for key in ('generation', 'revision', 'setup_revision')},
+                     'provider': 'codex', 'action': 'retry'}, actor_id='github:7')
+        self.assertEqual(web.saved(self.generation)['settings']['status'], 'queued')
+        web.tick()
+        self.assertNotEqual(previous, self.setup.read()['device_logins']['codex']['id'])

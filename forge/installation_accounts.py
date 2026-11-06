@@ -85,7 +85,10 @@ class DeviceAccount:
         require(type(apply) is bool and type(retry) is bool and (not retry or apply)
                 and type(reconnect) is bool and (not reconnect or retry)
                 and isinstance(setup_id, str) and re.fullmatch('[a-f0-9]{32}', setup_id))
-        with login_lock(self.root, provider), identity_effect_lock(self.root):
+        # Installation and account supervisors already hold the identity lock.
+        # Reads use the same order so they never hold the provider lock while
+        # waiting for a supervisor to release identity ownership.
+        with identity_effect_lock(self.root), login_lock(self.root, provider):
             data = self.setup.read()
             require(data['generation'] == generation and data['phase'] in ('setup', 'active'),
                     'setup_changed', 'Setup identity or phase changed during account login.')
