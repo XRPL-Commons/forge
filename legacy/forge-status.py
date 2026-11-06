@@ -385,7 +385,7 @@ class H(BaseHTTPRequestHandler):
         if not self._session:
             # Without configured sign-in and a session, the API offers no control.
             self.send_error(401);return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/installation', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/review-scope', '/api/repositories/merge-policy', '/api/repositories/github-protection', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/auth/identity', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/installation', '/api/accounts', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/review-scope', '/api/repositories/merge-policy', '/api/repositories/github-protection', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -443,6 +443,10 @@ class H(BaseHTTPRequestHandler):
                 self._auth.logout(self._session_token)
                 self._send(json.dumps({'ok': True}), headers={'Set-Cookie': cookie(SESSION_COOKIE)})
                 return
+            if self.path == '/api/accounts':
+                from forge.account_web import AccountWeb
+                result = AccountWeb(WD).request(value, actor_id=self._operator_actor())
+                self._send(json.dumps({'ok': True, **result}));return
             if self.path == '/api/installation':
                 from forge.installation_web import InstallationWeb
                 result = InstallationWeb(WD).request(value, actor_id=self._operator_actor())
@@ -700,7 +704,10 @@ class H(BaseHTTPRequestHandler):
             except (ValueError,OSError,RuntimeError):
                 self._redirect('/onboarding?connection_error=1')
             return
-        if u.path == '/api/installation':
+        if u.path == '/api/accounts':
+            from forge.account_web import AccountWeb
+            self._send(json.dumps({'ok': True, **AccountWeb(WD).view(), 'controls_token': self._action_token}))
+        elif u.path == '/api/installation':
             from forge.installation_web import InstallationWeb
             try:
                 result = InstallationWeb(WD).view()

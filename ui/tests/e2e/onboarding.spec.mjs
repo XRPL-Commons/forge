@@ -199,7 +199,7 @@ export default async function (page, { base, scenario, requests }) {
   // page's own GET /_ui/setup-cookie can put one back.
   await scenario('setup-fresh')
   await page.goto(base + '/settings/harnesses')
-  await waitForText(page, 'Manage sign-in from the Forge VM terminal.')
+  await waitForText(page, 'Connect Codex here. Other providers currently use the Forge CLI.')
   await page.context().clearCookies()
   assert.equal((await page.context().cookies(base)).length, 0)
 

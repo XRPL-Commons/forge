@@ -121,7 +121,11 @@ time to first merge when the run completes.
 ## Configuration and recovery
 
 For an active factory, use **Settings** to manage repository access, accounts and
-configuration. **Settings → GitHub access → Add repository** checks access and
+configuration. Codex browser sign-in and reconnect are available under
+**Settings → Connections → Coding accounts**. Other providers and API-key/token
+modes currently use the CLI and are labeled accordingly.
+
+**Settings → Repositories → Add repository** checks access and
 rules before **Enable automation**. Checking or discovering a repository alone
 does not enable it. Refresh expired checks when prompted.
 

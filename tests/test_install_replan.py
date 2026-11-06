@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from forge_client.cli import main, parser, execute as cli_execute
 from forge_client.contracts import SetupError, digest
 from forge_client.install import Installation
-from forge_client.installation import Install, execute, interview as wizard
+from forge_client.installation import Install, execute
 from forge_client.workflow import Journal
 from tests import test_install_coordinator as coordinator
 from tests.test_install_coordinator import interview, REVISION
@@ -169,19 +169,3 @@ class PresentationTests(unittest.TestCase):
         self.assertNotIn('repository.42', output)
         self.assertIn('open https://github.com/owner/project', output)
         self.assertNotIn('Apply with:', output)
-
-    def test_interview_explains_supervisor_policy_without_protection_or_repair_choice(self):
-        events = []
-        answers = iter(['', '', '', 'owner/one', 'auto', '', '', '', '', '', ''])
-        github = Mock(); github.identity.return_value = {'login': 'owner'}
-        def ask(prompt): events.append(('ask', prompt)); return next(answers)
-        with patch('forge_client.installation.shutil.which', return_value=None):
-            result = wizard('anvil', github, ask=ask, tell=lambda line: events.append(('tell', line)))
-        self.assertNotIn('rules_repair', result)
-        self.assertNotIn('github_protection', result['repositories'][0])
-        self.assertFalse(any('Rules repair' in text for kind, text in events if kind == 'ask'))
-        for explanation, question in (('private GitHub App', 'GitHub App owner'),
-                                      ('Human merge policy', 'merge policy ['),
-                                      ('first-merge test', 'Smoke target')):
-            self.assertLess(next(i for i, (kind, text) in enumerate(events) if kind == 'tell' and explanation in text),
-                            next(i for i, (kind, text) in enumerate(events) if kind == 'ask' and question in text))

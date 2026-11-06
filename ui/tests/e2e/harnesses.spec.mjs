@@ -21,7 +21,7 @@ export default async function (page, { base, scenario }) {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base })
   await page.goto(base + '/settings/harnesses')
   assert.equal(await page.title(), 'Coding accounts · Forge')
-  await waitForText(page, 'Manage sign-in from the Forge VM terminal.')
+  await waitForText(page, 'Connect Codex here. Other providers currently use the Forge CLI.')
 
   // Three harnesses, each reading its own state (contracts §3.7). The intro
   // renders before the list does, so wait for the rows rather than the copy.
@@ -34,17 +34,17 @@ export default async function (page, { base, scenario }) {
   assert.ok(listed.includes('gpt-5-codex'), 'a fully verified harness names its model without a suffix')
   assert.ok(!listed.includes('gpt-5-codex · '), listed)
   assert.ok(listed.includes('Not connected'))
-  assert.ok(listed.includes('Connected harnesses and models take turns across all roles. If one is unavailable, Forge uses another.'))
+  assert.ok(listed.includes('Forge uses available accounts across build, review and audit.'))
   assert.equal(await page.locator('[data-harness="codex"]').getByText('Verified').count(), 1)
   assert.equal(await page.locator('[data-harness="claude"]').getByText('Verified').count(), 1)
   // Nothing failed in this scenario, so there is no error notice.
   assert.ok(!listed.includes(SANDBOX_ERROR))
 
   // Connect opens the dialog with both commands.
-  await page.locator('[data-harness="grok"]').getByRole('button', { name: 'Connect' }).click()
+  await page.locator('[data-harness="grok"]').getByRole('button', { name: 'CLI instructions' }).click()
   await waitForText(page, 'Connect Grok')
-  await waitForText(page, 'Sign-in requires Forge’s installed runner image and Docker access for the Forge service account.')
-  await waitForText(page, 'Forge checks Grok’s sign-in sandbox before browser authorization')
+  await waitForText(page, 'This provider’s browser and token sign-in are currently available through the CLI.')
+  await waitForText(page, 'Follow the CLI’s sign-in instructions.')
   const dialog = await text(page)
   assert.ok(dialog.includes('Run this command in a terminal on the Forge VM, as the Forge service account. Follow the harness’s sign-in instructions.'), dialog)
   assert.ok(dialog.includes(GROK_LOGIN))
@@ -64,8 +64,8 @@ export default async function (page, { base, scenario }) {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, get: () => undefined })
   })
   await page.reload()
-  await waitForText(page, 'Manage sign-in from the Forge VM terminal.')
-  await page.locator('[data-harness="grok"]').getByRole('button', { name: 'Connect' }).click()
+  await waitForText(page, 'Connect Codex here. Other providers currently use the Forge CLI.')
+  await page.locator('[data-harness="grok"]').getByRole('button', { name: 'CLI instructions' }).click()
   await waitForText(page, 'Connect Grok')
   await page.getByRole('button', { name: 'Copy sign-in command' }).click()
   await waitForText(page, 'Select and copy the command above')
@@ -85,7 +85,7 @@ export default async function (page, { base, scenario }) {
 
   // A connected harness whose model did not pass asks to verify, and its
   // dialog leaves out the sign-in block.
-  await page.locator('[data-harness="claude"]').getByRole('button', { name: 'Verify connection' }).click()
+  await page.locator('[data-harness="claude"]').getByRole('button', { name: 'CLI instructions' }).click()
   await waitForText(page, 'Verify Claude Code')
   const verify = await text(page)
   assert.ok(verify.includes('Run this command in a terminal on the Forge VM, as the Forge service account, to verify the connection:'), verify)

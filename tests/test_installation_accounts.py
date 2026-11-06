@@ -213,6 +213,23 @@ class DeviceLoginTests(unittest.TestCase):
             self.assertEqual(retried['status'], 'account_login_pending')
             self.assertNotEqual(retried['session_id'], completed['session_id'])
 
+    def test_explicit_reconnect_replaces_a_stored_but_expired_account_once(self):
+        self.call(apply=True); self.finish(); completed = self.call(apply=True)
+        self.assertEqual(self.call()['status'], 'connected')
+        replacement = self.call(apply=True, retry=True, reconnect=True)
+        self.assertNotEqual(replacement['session_id'], completed['session_id'])
+        with self.assertRaises(SetupError): self.call(apply=True, retry=True, reconnect=True)
+        self.assertEqual(sum(call[1] == 'create' for call in self.calls), 2)
+
+    def test_reconnect_preserves_configured_models(self):
+        self.call(apply=True); self.finish(); self.call(apply=True)
+        config = self.setup.runtime()
+        config['provider_pool'][0]['model'] = 'gpt-5.4'
+        self.setup.save_runtime(config, active=False)
+        self.call(apply=True, retry=True, reconnect=True)
+        self.finish(); self.call(apply=True)
+        self.assertEqual(self.setup.runtime()['provider_pool'][0]['model'], 'gpt-5.4')
+
     def test_lost_create_reply_reconciles_the_same_owned_container(self):
         original = self.client.run
         def lost(argv, **kw):

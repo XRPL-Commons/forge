@@ -30,11 +30,13 @@ forge install --ssh USER@HOST
 ```
 
 Replace `USER@HOST` with your server's SSH address or alias. The CLI asks for the
-factory name, GitHub owner, repositories and coding account, then prepares the
-server. It handles SSH and file transfers.
+factory name and GitHub owner, then lists repositories and coding accounts to
+choose from. Review the summary, edit anything you need, and confirm installation.
+Forge handles SSH and file transfers. Your approval is required before project
+merges by default; customization is under **Advanced**.
 
 Approve the Tailscale and GitHub browser prompts. Keep the terminal open until
-setup gives you the web address. From there, **Installation progress** shows the
+setup says **You can close this terminal**. From there, **Installation progress** shows the
 current step, anything waiting for you, and the first merge test. Codex sign-in
 can continue in the web app; other provider setup may require the CLI.
 

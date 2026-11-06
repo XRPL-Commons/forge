@@ -31,11 +31,22 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first if n
 If your shell cannot find `forge`, run `uv tool update-shell` and open a new terminal.
 `anvil` is an example of an SSH alias; a `user@hostname` destination also works.
 
-The interview records the factory name, GitHub owner and operators, repositories,
-merge policies, provider logins and smoke target. It resolves the Forge revision
-once. All selected repositories must belong to the chosen GitHub owner. A new
-SSH fingerprint must be verified against the VM provider before use.
-Review the preflight findings and confirm Apply once.
+The default interview asks for the factory name, GitHub owner, repositories and
+coding account, plus SSH host identity. Choose repositories and providers by
+number; you can also type a repository name if it is not listed. All selected
+repositories must belong to the chosen GitHub owner.
+
+Review one editable summary before preflight. Defaults are your GitHub account
+as operator, Codex browser sign-in, approval before project merges, workflow
+edits off, and a private repository for the first-merge test. **Advanced** offers
+additional operators, network hostname, merge policies, explicit workflow-write
+permission, other login methods and a different test repository. No passwords
+or tokens belong in this interview.
+
+For an unfamiliar SSH host, verify its ED25519 fingerprint with your VM provider
+before entering it. Leaving it blank uses your existing trusted SSH keys; it does
+not trust a newly discovered host. Preflight checks the plan before the final
+Apply confirmation. The deterministic intent-file interface is unchanged.
 
 The default smoke target creates two private repositories under the selected
 owner: one for the smoke issue, one for signed-publication qualification. Their
@@ -47,13 +58,16 @@ any independent operator holds still apply.
 After preflight passes, the CLI prepares these GitHub targets, installs the host,
 and configures private HTTPS, the App and operator identity. It then opens
 **Installation progress** in Forge and hands the approved plan to the server.
-You can close the terminal. The server prepares the worker environment while
+Only after the CLI says **You can close this terminal** is the handoff confirmed.
+The server prepares the worker environment while
 checking up to three repositories in parallel and waiting for Codex sign-in.
 Publication checks and the first-merge test start after their prerequisites pass.
 
 ### Browser steps
 
-The CLI prints the exact browser actions as they become available:
+The CLI prints the exact browser actions as they become available. Host and
+network preparation still run before GitHub App consent; this is not an
+all-consent-before-installation flow:
 
 1. Approve the VM joining Tailscale if it needs authorization.
 2. Open the local GitHub handoff, create the single Forge App, and install it on

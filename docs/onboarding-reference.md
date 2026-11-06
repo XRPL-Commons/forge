@@ -2,9 +2,9 @@
 
 Detailed setup and repository protection reference. For the everyday walkthrough, see [Getting set up](onboarding.md).
 
-`bin/forge setup` prepares the host and connects coding accounts in the terminal
-(see [installation](installation.md)). Then open /onboarding on the trusted private
-dashboard address. It has three steps: GitHub, Repository and Start.
+Use the [guided installer](onboarding.md) for a new factory. It opens the web
+installation page after bootstrap. Existing manual installations can continue
+at `/onboarding`, with three steps: GitHub, Repository and Start.
 
 1. **GitHub.** Register and install one Forge App through the guided flow.
    Select the repositories it may access, then refresh access in Forge.
@@ -108,10 +108,16 @@ Guided setup allows up to four Build, two Review, one Audit and one Recovery wor
 These are ceilings: how many actually run depends on available memory (see
 [factory runtime](factory-runtime.md)), so a small host needs no tuning.
 
-Connect or reconnect a harness from the VM terminal with
+Connect or reconnect Codex in **Settings → Connections → Coding accounts**.
+Choose Connect, open the OpenAI sign-in page and enter the displayed code. Forge
+finishes sign-in and verifies Codex automatically. Closing the dialog does not
+stop the login; return to the same page to resume it or request a fresh code
+after expiry.
+
+Other providers and API-key/token modes currently use the CLI. Connect from the VM terminal with
 `bin/forge setup login codex --root <runtime>` or
 `bin/forge setup login claude --root <runtime>`, then `bin/forge setup check` with
-the same root. The UI shows connection status and terminal instructions.
+the same root. The UI labels those modes as CLI instructions before you open them.
 Forge preserves refreshed installation-owned logins across runner cleanup; an
 older runner cannot overwrite a newer login. External imported files remain untouched.
 See [installation](installation.md) for API keys, model rotation and fresh VM setup.

@@ -18,6 +18,29 @@ merge. Operator actions and time spent waiting for a prompt are separate measure
 | Where are settings? | Five categories compete for attention. Capacity and reset appear alongside normal operation. | General, Repositories, Connections. Fold capacity/reset; preserve deep links and unsaved edits. |
 | What should I do first? | Installation tests itself, but the README buried the path to real issue work. | Explain `ready`, planning groups, approval and Activity. Validate this handover in Group C. |
 
+## Implementation follow-up
+
+The next integrated change implements the shorter default CLI interview, numbered
+repository/provider choices and editable summary. Advanced choices retain workflow
+permission and host identity consent. The browser handoff is announced only after
+the server confirms that it accepted the setup plan; otherwise the CLI provides
+its resume action.
+
+Codex browser connect, reconnect and verification now have a post-install web
+path using the existing durable device-login lifecycle. Other provider/browser
+adapters and API-key/token web entry remain separate work. The original findings
+below describe the audit baseline; these two improvements address most of A/B.
+
+Remaining release work:
+
+- Move the remaining GitHub consent earlier; host/network preparation still comes
+  first. Do not claim all approvals happen before installation starts.
+- Verify the integrated account-recovery changes on the deployed factory.
+- Run Group C on a disposable supported Ubuntu x86-64 host. Record command-start
+  time separately because the historical saved timer begins after the interview.
+- Keep additional provider modes explicit rather than presenting unsupported web
+  sign-in actions. New adapters and Mac-host support remain outside this release.
+
 ## Delivery groups, in order
 
 ### A — Finish the default installation path (release blocker)

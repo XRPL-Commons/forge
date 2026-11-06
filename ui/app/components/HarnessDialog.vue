@@ -62,15 +62,15 @@ async function copy(kind: 'login' | 'check' | 'token') {
     <template #body>
       <div v-if="harness" class="space-y-3 text-sm">
         <template v-if="!harness.connected">
-          <p class="text-muted">Sign-in requires Forge’s installed runner image and Docker access for the Forge service account.</p>
-          <p v-if="harness.id === 'grok'" class="text-muted">Forge checks Grok’s sign-in sandbox before browser authorization and gives a repair command if it needs attention.</p>
+          <p class="text-muted">This provider’s browser and token sign-in are currently available through the CLI.</p>
+          <p v-if="harness.id === 'grok'" class="text-muted">Follow the CLI’s sign-in instructions.</p>
           <p class="text-muted">Run this command in a terminal on the Forge VM, as the Forge service account. Follow the harness’s sign-in instructions.</p>
           <pre ref="loginCommand" class="rounded-lg border border-line bg-bg p-3 text-[13px] whitespace-pre-wrap break-words">{{ harness.login_command }}</pre>
           <UButton color="neutral" variant="outline" @click="copy('login')">{{ loginLabel }}</UButton>
           <template v-if="harness.token_login_command">
             <p class="text-muted">
-              Or share one long-lived token so several workers can use this account at once:
-              run <code class="text-white">{{ harness.token_command }}</code> on your own machine, then paste the token here:
+              For token sign-in:
+              run <code class="text-white">{{ harness.token_command }}</code> on your own machine, then provide the token to the following server command:
             </p>
             <pre ref="tokenCommand" class="rounded-lg border border-line bg-bg p-3 text-[13px] whitespace-pre-wrap break-words">{{ harness.token_login_command }}</pre>
             <UButton color="neutral" variant="outline" @click="copy('token')">{{ tokenLabel }}</UButton>

@@ -6,7 +6,7 @@ import { accountAnchor, type AccountAlert } from '~/utils/accounts'
 // page-level (contracts §3.7), so the error notice stays on the page and
 // never moves in here.
 // `alert`: this account's live health problem from the board poll, if any.
-const props = defineProps<{ harness: Harness; activity?: SetupActivity | null; alert?: AccountAlert | null }>()
+const props = defineProps<{ harness: Harness; activity?: SetupActivity | null; alert?: AccountAlert | null; browser?: boolean; operation?: string }>()
 const emit = defineEmits<{ open: [harness: Harness] }>()
 
 const line = computed(() => harnessLine(props.harness))
@@ -29,8 +29,11 @@ const BADGE = { sign_in_expired: 'Signed out', quota: 'Usage limit reached', una
       <p v-if="alert" class="mt-1 text-[13px] leading-relaxed" :class="alert.color === 'error' ? 'text-error' : 'text-warning'">{{ alert.title }} {{ alert.description }}</p>
       <small class="block text-[13px] leading-relaxed whitespace-pre-line text-muted">{{ line }}</small>
     </div>
-    <UButton v-if="alert && state !== 'busy'" :color="alert.color" data-account-reconnect @click="emit('open', harness)">
-      {{ alert.actionLabel }}
+    <UButton v-if="operation && ['queued', 'connecting', 'verifying'].includes(operation)" color="neutral" variant="outline" @click="emit('open', harness)">
+      {{ operation === 'verifying' ? 'Verifying…' : 'Sign-in progress' }}
+    </UButton>
+    <UButton v-else-if="alert && state !== 'busy'" :color="alert.color" data-account-reconnect @click="emit('open', harness)">
+      {{ browser ? alert.actionLabel : 'CLI instructions' }}
     </UButton>
     <span v-else-if="state === 'busy'" role="status" class="flex shrink-0 items-center gap-2 text-xs text-muted">
       <span class="size-3.5 rounded-full border border-line border-t-mint-200 motion-safe:animate-spin" aria-hidden="true" />
@@ -40,7 +43,7 @@ const BADGE = { sign_in_expired: 'Signed out', quota: 'Usage limit reached', una
       <span aria-hidden="true">✓</span> Verified
     </span>
     <UButton v-else color="primary" @click="emit('open', harness)">
-      {{ state === 'verify' ? 'Verify connection' : 'Connect' }}
+      {{ browser ? (state === 'verify' ? 'Verify connection' : 'Connect') : 'CLI instructions' }}
     </UButton>
   </div>
 </template>

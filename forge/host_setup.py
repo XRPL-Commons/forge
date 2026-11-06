@@ -110,13 +110,17 @@ def update(root, bind=None, assume_yes=False):
         check(root)
 
 
+class LoginBusy(ValueError):
+    """Another caller owns this provider login; retry observation later."""
+
+
 @contextmanager
 def login_lock(root, provider):
     with open(root / ('state-login-' + provider + '.lock'), 'a') as stream:
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ValueError('Another terminal is already connecting this harness') from None
+            raise LoginBusy('Another terminal is already connecting this harness') from None
         yield
 
 

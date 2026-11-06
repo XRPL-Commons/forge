@@ -4,7 +4,6 @@ import json
 import math
 from pathlib import Path
 import re
-import shutil
 import time
 
 from .connection import connection_lock
@@ -12,6 +11,7 @@ from .contracts import SetupError, digest, fields, require
 from .factory_setup import FactorySetup
 from .github import GitHub
 from .install import Installation, revision
+from .install_interview import interview
 from .network import Network
 from .preflight import observe
 from .workflow import Journal
@@ -467,6 +467,7 @@ class Install:
         self.load()
         stages = deepcopy(self.state['stages'])
         complete = stages.get('handover', {}).get('status') == 'complete'
+        web_owned = self.state.get('server_preparation', {}).get('registered') is True
         report, report_path = None, None
         if complete:
             saved = install_report.storage(self.journal, self.state)
@@ -486,48 +487,14 @@ class Install:
                 'stages': stages, 'pending': pending,
                 'started_at': self.state['started_at'], 'completed_at': self.state.get('completed_at'),
                 'elapsed_seconds': max(0, self.state.get('completed_at', self.clock()) - self.state['started_at']),
-                'next_action': None if complete or self.state.get('server_preparation') else ['forge', 'install', '--ssh', self.ssh, '--resume'],
-                'web_owned': bool(self.state.get('server_preparation')),
+                'next_action': None if complete or web_owned else ['forge', 'install', '--ssh', self.ssh, '--resume'],
+                'web_owned': web_owned,
                 'setup_url': ((stages.get('identity', {}).get('receipt') or {}).get('origin', '').rstrip('/') + '/installation')
-                             if self.state.get('server_preparation') else None,
+                             if web_owned else None,
                 'handover_complete': complete,
                 'origin': (stages.get('identity', {}).get('receipt') or {}).get('origin'),
                 'report_path': str(self.journal.path) if complete else None,
                 'handover_report': report, 'handover_report_path': report_path}
-
-
-def interview(ssh, github, *, ask=input, tell=None):
-    tell = tell or (lambda line: print(line, flush=True))
-    actor = github.identity()
-    ssh = ssh or ask('SSH destination (configured alias or user@host): ').strip()
-    suggested = ssh.split('@')[-1]
-    name = ask('Factory name [' + suggested + ']: ').strip() or suggested
-    tell('Forge creates one private GitHub App. Its owner must be the same personal account or organization that owns all repositories selected here.')
-    owner = ask('GitHub App owner [' + actor['login'] + ']: ').strip() or actor['login']
-    operators = ask('Operator logins [' + actor['login'] + ']: ').strip().split() or [actor['login']]
-    repos = ask('Repositories (OWNER/REPO, separated by spaces): ').strip().split()
-    rows = []
-    tell('Human merge policy waits for your approval after Forge Review and Audit. Auto merges when Forge checks and existing GitHub rules pass.')
-    tell('Forge enforces Review and Audit before merging. Existing GitHub rules also apply; setup does not create or change them.')
-    for name_in_repo in repos:
-        mode = ask(name_in_repo + ' merge policy [human/auto; human]: ').strip() or 'human'
-        workflows = ask(name_in_repo + ' allow workflow edits? [y/N]: ').strip().lower() in ('y', 'yes')
-        rows.append({'name': name_in_repo, 'merge_policy': mode, 'allow_workflow_edits': workflows})
-    providers = ask('Providers (codex, claude, grok; space-separated) [codex]: ').strip().split() or ['codex']
-    accounts = []
-    for provider in providers:
-        default = 'token' if provider == 'claude' and shutil.which('claude') else 'browser'
-        kind = ask(provider + ' login kind [browser/api_key/token; ' + default + ']: ').strip() or default
-        accounts.append({'id': provider, 'kind': kind})
-    hostname = re.sub('[^a-z0-9-]+', '-', name.lower()).strip('-')[:63]
-    hostname = ask('Tailnet hostname [' + hostname + ']: ').strip() or hostname
-    tell('The first-merge test runs a small issue through Build, Review, Audit and merge. Scratch creates a private test repository; choosing a project runs the test there. A separate private repository tests signed publication.')
-    smoke = ask('Smoke target [scratch or chosen OWNER/REPO; scratch]: ').strip() or 'scratch'
-    tell('Known SSH host keys are required. For a new VM, use forge setup host-key and verify its fingerprint with the provider.')
-    fingerprint = ask('Verified ED25519 fingerprint (leave empty to use known_hosts): ').strip() or None
-    return {'version': 1, 'ssh': ssh, 'name': name, 'revision': None, 'host_key': fingerprint, 'hostname': hostname,
-            'owner': owner, 'operators': operators, 'repositories': rows, 'providers': accounts,
-            'smoke_target': smoke, 'codex_parallel_auth': True}
 
 
 def execute(args):
@@ -584,6 +551,8 @@ def execute(args):
             if input('Apply this installation, including its smoke issue and configured handover? [y/N] ').strip().lower() not in ('y', 'yes'):
                 args._installation_report_displayed = True
                 return report
+            print('Keep this terminal open for Tailscale and GitHub approval. '
+                  'Forge will tell you when setup can continue in the browser.', file=sys.stderr, flush=True)
             args.apply = True
             args.wait = args.wait or 3600
         if args.resume or args.apply:
@@ -657,11 +626,12 @@ def display(result, *, tell=None):
             tell('Forge: ' + result['origin'])
         if result.get('web_owned') and not result.get('handover_complete'):
             tell('Continue setup in your browser: ' + result['setup_url'])
-            tell('The server keeps working after this terminal closes.')
+            tell('You can close this terminal. Follow progress and remaining actions in Forge.')
         if result.get('handover_report_path'):
             tell('Private report: ' + result['handover_report_path'])
         if result.get('report_path'): tell('Installation journal: ' + result['report_path'])
-    if result.get('next_action'): tell(shlex.join(result['next_action']))
+    if result.get('next_action'):
+        tell('Setup still needs this CLI. Resume with: ' + shlex.join(result['next_action']))
 
 
 def schemas():
