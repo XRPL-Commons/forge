@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 export default async function (page, { base, accounts }) {
   await page.clock.install()
@@ -30,7 +32,7 @@ export default async function (page, { base, accounts }) {
     await page.setViewportSize({ width, height: 900 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
     await page.getByRole('link', { name: 'Open Codex sign-in' }).waitFor()
-    if (width === 320) await page.screenshot({ path: '/private/tmp/forge-account-web-mobile.png' })
+    if (width === 320) await page.screenshot({ path: join(tmpdir(), 'forge-account-web-mobile.png') })
   }
   // The server still reports connecting: local time must retire the old code.
   serverNow += 901
