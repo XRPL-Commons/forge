@@ -3,12 +3,10 @@ const route = useRoute()
 const tabs = [
   { href: '/settings', label: 'General' },
   { href: '/settings/repositories', label: 'Repositories' },
-  { href: '/settings/github', label: 'GitHub access' },
-  { href: '/settings/agents', label: 'Agent connections' },
-  { href: '/settings/harnesses', label: 'Coding accounts' },
+  { href: '/settings/connections', label: 'Connections' },
 ]
 function isCurrent(tab: (typeof tabs)[number]) {
-  return route.path === tab.href || (tab.href === '/settings/repositories' && route.path.startsWith(tab.href + '/'))
+  return (tab.href === '/settings/connections' && ['/settings/github', '/settings/agents', '/settings/harnesses'].includes(route.path)) || route.path === tab.href || (tab.href === '/settings/repositories' && route.path.startsWith(tab.href + '/'))
 }
 </script>
 <template>

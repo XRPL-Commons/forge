@@ -5,7 +5,7 @@ defineProps<{ connections: AccessRowModel[]; accessDescription: string; accessNo
 <template>
   <section id="app-access" class="mt-4 rounded-xl border border-line bg-panel p-4">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="text-sm font-semibold text-white">Connect the Forge Apps</h2>
+      <h2 class="text-sm font-semibold text-white">GitHub access</h2>
     </div>
     <p class="mt-1 text-xs text-muted">{{ accessDescription }}</p>
     <p v-if="accessNote" id="access-result" role="status" class="mt-1 text-xs text-sky-200">{{ accessNote }}</p>

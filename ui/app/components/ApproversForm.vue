@@ -84,7 +84,7 @@ function discard() {
 
 <template>
   <div>
-    <p class="text-sm text-muted">Forge merges a pull request once one of these people approves it on GitHub.</p>
+    <p class="text-sm text-muted">Whose GitHub approval counts when a repository requires approval.</p>
 
     <URadioGroup
       id="approvers-mode"

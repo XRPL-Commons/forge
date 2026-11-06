@@ -5,7 +5,11 @@ async function waitText(page, text) {
   await page.waitForFunction(text => document.body.innerText.includes(text), text)
 }
 async function waitStep(page, name) {
-  await page.waitForFunction(name => document.querySelector('[role="dialog"] #repository-stage [aria-current="step"] [data-label]')?.textContent?.trim() === name, name)
+  const dialog = page.getByRole('dialog')
+  if (name === 'Repository') await dialog.getByRole('searchbox', { name: 'Find by name' }).waitFor()
+  else if (name === 'Merge policy') await dialog.getByRole('button', { name: 'Check again', exact: true }).waitFor()
+  else if (name === 'App access') await dialog.getByRole('heading', { name: 'GitHub access', exact: true }).waitFor()
+  else await dialog.getByRole('button', { name: 'Enable automation', exact: true }).waitFor()
 }
 // A click returns before the request it sends is recorded, so anything read
 // after one is polled until it settles (10 s), never read once.
@@ -48,7 +52,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await dialog.getByRole('button', { name: 'Continue', exact: true }).isDisabled(), true)
   await dialog.getByRole('radio', { name: /hackathon/ }).focus(); await page.keyboard.press('Space')
   await dialog.getByRole('button', { name: 'Continue', exact: true }).focus(); await page.keyboard.press('Enter')
-  await waitStep(page, 'App access')
+  await waitStep(page, 'Enable')
   await dialog.getByRole('button', { name: 'Back', exact: true }).focus(); await page.keyboard.press('Enter')
   await waitStep(page, 'Repository')
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus(); await page.keyboard.press('Enter')
@@ -62,12 +66,10 @@ export default async function (page, { base, scenario, requests }) {
   await dialog.getByRole('searchbox', { name: 'Find by name' }).fill('hack')
   await dialog.getByRole('radio', { name: /hackathon/ }).check()
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
-  await waitStep(page, 'App access')
-  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
-  await waitStep(page, 'Merge policy')
-  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
   await waitStep(page, 'Enable')
+
   assert.equal(await dialog.locator('#deployment-title, #test-databases').count(), 0)
+  assert.equal((await requests()).filter(entry => entry.path.startsWith('/api/deployment')).length, 0)
   await dialog.getByRole('button', { name: 'Enable automation', exact: true }).click()
   await page.waitForURL(base + '/settings/repositories/2')
   await dialog.waitFor({ state: 'detached' })
@@ -89,10 +91,12 @@ export default async function (page, { base, scenario, requests }) {
   const checks = await posts(requests, '/api/repositories/check')
   assert.equal(checks.length, 1)
   assert.deepEqual(checks[0].body, { repo_id: 2, revision: 'settings-rev-1' })
-  await page.setViewportSize({ width: 390, height: 844 })
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
-  const button = await dialog.getByRole('button', { name: 'Check again', exact: true }).boundingBox()
-  assert.ok(button.y >= 0 && button.y + button.height <= 844, 'primary action stays visible on mobile')
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 844 })
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    const button = await dialog.getByRole('button', { name: 'Check again', exact: true }).boundingBox()
+    assert.ok(button.y >= 0 && button.y + button.height <= 844, 'primary action stays visible on mobile')
+  }
   await page.screenshot({ path: '/tmp/forge-repository-wizard-mobile.png', fullPage: true })
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
   await dialog.waitFor({ state: 'detached' })
@@ -139,7 +143,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto('about:blank'); await scenario('access-needed')
   await page.goto(base + '/settings/repositories/2?setup=1')
   await waitStep(page, 'App access')
-  assert.ok((await dialog.locator('#repository-stage').innerText()).includes('Needs attention'))
+  assert.equal(await dialog.getByRole('button', { name: 'Enable automation', exact: true }).count(), 0)
   assert.equal(await dialog.getByRole('link', { name: 'Manage access ↗' }).count(), 1)
   await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
   assert.equal((await posts(requests, '/api/settings/sync')).length, 1)

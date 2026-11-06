@@ -107,6 +107,7 @@ async function refreshAccess() {
 
 <template>
   <div>
+    <NuxtLink to="/settings/connections" class="mb-4 inline-block text-sm text-sky-200 hover:underline">← Connections</NuxtLink>
     <div>
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -115,7 +116,7 @@ async function refreshAccess() {
         </div>
         <NuxtLink v-if="settingUp" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
       </div>
-      <p class="mt-1 text-sm text-muted">See your Forge App connections, their verified permissions, and repository access. Refresh after changing access on GitHub.</p>
+      <p class="mt-1 text-sm text-muted">Choose Manage access on GitHub, then refresh here.</p>
     </div>
 
     <UAlert v-if="notice && noticeError" id="notice" class="mt-4" role="alert" color="error" variant="subtle" :description="notice" />
@@ -139,16 +140,13 @@ async function refreshAccess() {
       <p id="sync-status" class="mt-1 text-xs text-muted">{{ syncStatus }}</p>
       <p v-if="refreshNote" id="refresh-result" role="status" class="mt-1 text-xs text-sky-200">{{ refreshNote }}</p>
 
-      <aside class="mt-3 rounded-xl border border-sky-200/30 bg-sky-200/5 px-4 py-3 text-xs text-sky-200/90">
-        <span class="block text-[11px] font-semibold uppercase tracking-wide text-sky-200">Help · repository access</span>
-        To add repositories, use <strong>Manage access</strong> for each App on GitHub, then <strong>Refresh</strong> here. Forge manages the App credentials.
-      </aside>
+
 
       <div id="connections" class="mt-4 grid gap-3 lg:grid-cols-2">
         <ConnectionCard v-for="card in cards" :key="card.role" :card="card" />
       </div>
     </section>
 
-    <p class="mt-4 text-sm text-muted">Manage automation, deployment tracking and test databases in <NuxtLink to="/settings/repositories" class="text-sky-200 underline">Repositories</NuxtLink>.</p>
+    <p class="mt-4 text-sm text-muted">Enable automation in <NuxtLink to="/settings/repositories" class="text-sky-200 underline">Repositories</NuxtLink>.</p>
   </div>
 </template>

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ACCESS_LABELS, ACCESS_STATUS_NAMES, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES,
   actionMessage, checkedAtText, connectionAction, connectionCards, hintText,
-  lastRefreshText, repoDescription, repoStage, repositoryRows, rowState,
+  lastRefreshText, repoDescription, repositoryRows, rowState,
   statusPillText, deploymentCard,
   type DeploymentProfile, type DeploymentProposal, type DeploymentRow, type FactoryDeployment,
   type ProtectionReport, type RepositoryRow, type RoleAccess, type SettingsView,
@@ -38,20 +38,6 @@ describe('copy maps', () => {
     expect(PROTECTION_LABELS.needs_setup).toBe('Setup needed')
     expect(PROTECTION_LABELS.unchecked).toBe('Checking setup…')
   })
-})
-
-describe('repoStage', () => {
-  it('is 0 with no repository', () => expect(repoStage(null, true)).toBe(0))
-  it('is 1 while App access is incomplete', () =>
-    expect(repoStage(row({ access_ready: false, protection_status: 'access_needed', protection_ready: false }), true)).toBe(1))
-  it('is 2 while repository checks are not complete', () =>
-    expect(repoStage(row({ protection_status: 'needs_setup', protection_ready: false }), true)).toBe(2))
-  it('is 3 when the repository is ready but not enabled', () => expect(repoStage(row(), true)).toBe(3))
-  it('is 4 when the repository is enabled on a live factory', () => expect(repoStage(row({ enabled: true }), true)).toBe(4))
-  it('stays 3 during initial setup, where enabling is not available yet', () =>
-    expect(repoStage(row({ enabled: true }), false)).toBe(3))
-  it('keeps the previous status while a re-check runs', () =>
-    expect(repoStage(row({ protection_status: 'checking', protection_ready: false, protection_previous_status: 'ready' }), true)).toBe(3))
 })
 
 describe('rowState', () => {

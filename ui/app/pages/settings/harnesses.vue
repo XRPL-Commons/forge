@@ -59,6 +59,7 @@ function openDialog(harness: Harness) {
 
 <template>
   <div class="max-w-[780px]">
+    <NuxtLink to="/settings/connections" class="mb-4 inline-block text-sm text-sky-200 hover:underline">← Connections</NuxtLink>
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-xs uppercase tracking-wide text-muted">Settings</p>

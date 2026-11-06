@@ -26,7 +26,7 @@ const posted = (path) => (entry) => entry.method === 'POST' && entry.path === pa
 // setup phase, and its three outcomes), with a link to repository management.
 export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See your Forge App connections')
+  await waitForText(page, 'Choose Manage access on GitHub')
   // The original role illustrations survive on both migrated UI surfaces.
   for (const role of ['build', 'review', 'audit', 'controller']) {
     const art = page.locator(`#connections svg.role-illustration[data-role="${role}"]`)
@@ -43,7 +43,7 @@ export default async function (page, { base, scenario, requests }) {
 
 
   assert.equal(await page.title(), 'GitHub access · Forge')
-  assert.equal(await page.getByRole('link', { name: 'GitHub access' }).getAttribute('aria-current'), 'page')
+  assert.equal(await page.getByRole('link', { name: 'Connections', exact: true }).getAttribute('aria-current'), 'page')
 
   // One card per role, in role order, each with its identity, purpose, badge,
   // observation and action link.
@@ -68,7 +68,7 @@ export default async function (page, { base, scenario, requests }) {
   // it finished when a newer `finished_at` arrives.
   await scenario('default')
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See your Forge App connections')
+  await waitForText(page, 'Choose Manage access on GitHub')
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   const syncs = await waitForRequests(requests, posted('/api/settings/sync'))
   assert.deepEqual(syncs[0].body, {})
@@ -92,7 +92,7 @@ export default async function (page, { base, scenario, requests }) {
   // tone: it is a failure the operator has to act on, not a progress note.
   await scenario('sync-failed')
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See your Forge App connections')
+  await waitForText(page, 'Choose Manage access on GitHub')
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   await waitForText(page, 'Could not refresh access. Try again.')
   const failure = page.locator('#notice')
@@ -106,7 +106,7 @@ export default async function (page, { base, scenario, requests }) {
   // the onboarding endpoint instead of the settings sync.
   await scenario('needs-apps')
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See your Forge App connections')
+  await waitForText(page, 'Choose Manage access on GitHub')
   await page.locator('#connections [data-badge]').nth(3).waitFor()
   const badges = await page.locator('#connections [data-badge]').allInnerTexts()
   assert.deepEqual(badges, ['Connected', 'Installation unverified', 'Permissions missing', 'Not connected'])
@@ -151,7 +151,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('default')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'See your Forge App connections')
+  await waitForText(page, 'Choose Manage access on GitHub')
   const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }))
   assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
 }

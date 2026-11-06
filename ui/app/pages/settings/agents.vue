@@ -53,6 +53,7 @@ async function revoke(id: string) {
 </script>
 <template>
   <div class="max-w-4xl space-y-6">
+    <NuxtLink to="/settings/connections" class="mb-4 inline-block text-sm text-sky-200 hover:underline">← Connections</NuxtLink>
     <div><p class="text-xs uppercase tracking-wide text-muted">Settings</p><h1 class="text-3xl font-semibold">Agent connections</h1>
       <p class="mt-2 text-muted">Approve an external agent once for the repositories it may manage. Its GitHub credentials stay on its computer.</p></div>
     <UAlert v-if="error || connections.error.value" color="error" :description="error || connections.error.value || ''" />

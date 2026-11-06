@@ -7,7 +7,7 @@ GitHub-confirmed merge allows the final repository handover.
 
 ## Prerequisites
 
-- A dedicated Ubuntu 24.04 VM with AppArmor, systemd and `/usr/bin/python3`.
+- A dedicated x86-64 Ubuntu 24.04 VM with AppArmor, systemd and `/usr/bin/python3`.
 - SSH access from your computer as root or an account with noninteractive sudo.
   Configure its SSH key through your VM provider. Forge handles remote commands
   and file transfers through the CLI.
@@ -16,8 +16,8 @@ GitHub-confirmed merge allows the final repository handover.
 - Your computer joined to the intended Tailscale network. Enable MagicDNS and
   HTTPS certificates in that network.
 - Authority to register a GitHub App under the chosen owner and administer the
-  selected repositories. Private repositories need a GitHub plan supporting their
-  required branch rules. Forge reports unsupported rules during preflight.
+  selected repositories. GitHub Pro is not required. Forge respects existing
+  repository rules and reports any merge blockers.
 
 ## Install the CLI and start
 

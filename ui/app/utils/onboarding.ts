@@ -61,6 +61,7 @@ interface RoleState { status: string; registered: boolean; app_id?: number | nul
 export interface OnboardingView {
   ok: true; controls_token: string
   phase: SetupPhase; generation: string; revision: string
+  single_app?: boolean
   account_type?: 'organization' | 'personal' | null
   reset_receipt?: { id: string; generation: string } | null
   roles: Record<AppRole, RoleState>
@@ -85,6 +86,11 @@ export interface OnboardingView {
 export const ROLES: AppRole[] = ['build', 'review', 'audit', 'controller']
 export const ROLE_NAMES: Record<AppRole, string> = {
   build: 'Builder', review: 'Reviewer', audit: 'Auditor', controller: 'Controller',
+}
+// Fresh setup uses one App. Partially registered legacy setups can finish
+// their existing flow without silently creating a second identity.
+export function usesSingleApp(view: OnboardingView): boolean {
+  return view.single_app === true || !ROLES.some(role => view.roles?.[role]?.registered)
 }
 export const STEP_LABELS = ['GitHub', 'Repository', 'Start']
 
