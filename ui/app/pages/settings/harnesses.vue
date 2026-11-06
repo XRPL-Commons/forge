@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import type { Harness, OnboardingView } from '~/utils/onboarding'
 
-// Settings · Coding accounts (contracts §3.7). Sign-in happens in a terminal
-// on the Forge VM; this page shows what each harness reports and hands over
-// the two commands.
+// Account recovery shares the installation's durable device login.
 useHead({ title: 'Coding accounts' })
 
 const api = useForgeApi()
@@ -27,6 +25,12 @@ onMounted(async () => {
 })
 
 const state = poll.data
+const accountPoll = useResource<{ operation: { status?: string }; browser_providers: string[] }>('/api/accounts', path => api.get(path), {
+  interval, allowed: () => state.value?.phase === 'active',
+})
+onMounted(() => accountPoll.start())
+const browserSupported = (id: string) => state.value?.phase === 'active' && accountPoll.data.value?.browser_providers?.includes(id) === true
+const accountOperation = computed(() => accountPoll.data.value?.operation.status)
 const harnesses = computed(() => state.value?.harnesses ?? [])
 // §3.7: the error notice belongs to the page, and only to these two checks.
 const notice = computed(() => {
@@ -67,7 +71,7 @@ function openDialog(harness: Harness) {
       </div>
       <NuxtLink v-if="state && state.phase !== 'active'" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
     </div>
-    <p class="mt-2 text-muted">Manage sign-in from the Forge VM terminal.</p>
+    <p class="mt-2 text-muted">Connect Codex here. Other providers currently use the Forge CLI.</p>
 
     <UAlert
       v-for="alert in alerts"
@@ -79,7 +83,7 @@ function openDialog(harness: Harness) {
       :title="alert.title"
       :description="alert.description"
       :data-settings-account-alert="alert.provider"
-      :actions="[{ label: alert.actionLabel, color: alert.color, variant: 'solid', onClick: () => reconnect(alert.provider) }]"
+      :actions="[{ label: browserSupported(alert.provider) ? alert.actionLabel : 'CLI instructions', color: alert.color, variant: 'solid', onClick: () => reconnect(alert.provider) }]"
     />
 
     <UAlert v-if="notice" class="mt-5" color="warning" variant="subtle" :description="notice" />
@@ -94,12 +98,15 @@ function openDialog(harness: Harness) {
           :harness="harness"
           :activity="state.activity"
           :alert="alertFor(harness.id)"
+          :operation="harness.id === 'codex' ? accountOperation : undefined"
+          :browser="browserSupported(harness.id)"
           @open="openDialog"
         />
       </div>
-      <p class="mt-4 text-[13px] text-muted">Connected harnesses and models take turns across all roles. If one is unavailable, Forge uses another.</p>
+      <p class="mt-4 text-[13px] text-muted">Forge uses available accounts across build, review and audit.</p>
     </template>
 
-    <HarnessDialog :harness="selected" :open="open" @close="open = false" />
+    <LazyCodexAccountDialog v-if="selected && browserSupported(selected.id) && open" :harness="selected" :reconnect="alertFor('codex')?.status === 'sign_in_expired'" :open="open" @close="open = false; poll.refresh()" />
+    <HarnessDialog v-else :harness="selected" :open="open" @close="open = false" />
   </div>
 </template>

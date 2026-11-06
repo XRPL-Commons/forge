@@ -117,7 +117,7 @@ class Service:
         settings.refresh()
         repo = data['selected']
         if not settings.admission(repo['name'])['allowed']:
-            raise ValueError('Refresh all four GitHub App installations and grant access to the selected repository')
+            raise ValueError('Refresh GitHub access and grant the Forge App access to the selected repository')
         config = self.setup.runtime()
         github = self.github_class(settings, config)
         item = {'repo': repo['name'], 'repo_id': repo['id']}
@@ -421,6 +421,8 @@ class Service:
                        'ON CONFLICT(name) DO UPDATE SET heartbeat_at=excluded.heartbeat_at,updated_at=excluded.updated_at', (now, now))
         from .installation_web import InstallationWeb
         InstallationWeb(self.root, setup=self.setup).tick()
+        from .account_web import AccountWeb
+        AccountWeb(self.root, setup=self.setup).tick()
         data = self.setup.read()
         op = data.get('operation')
         scoped = bool(op and op['action'] == 'harness_check' and op.get('providers') and data['phase'] == 'active')

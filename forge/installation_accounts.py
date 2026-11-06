@@ -80,9 +80,10 @@ class DeviceAccount:
             require(not home.is_symlink() and home.stat().st_uid == os.getuid(), 'account_owner_changed')
             shutil.rmtree(home)
 
-    def call(self, provider, *, generation, setup_id, apply=False, retry=False):
+    def call(self, provider, *, generation, setup_id, apply=False, retry=False, reconnect=False):
         require(provider == 'codex', 'device_login_unsupported', 'This provider uses the existing guided terminal login.')
         require(type(apply) is bool and type(retry) is bool and (not retry or apply)
+                and type(reconnect) is bool and (not reconnect or retry)
                 and isinstance(setup_id, str) and re.fullmatch('[a-f0-9]{32}', setup_id))
         with login_lock(self.root, provider), identity_effect_lock(self.root):
             data = self.setup.read()
@@ -97,10 +98,10 @@ class DeviceAccount:
                 require(record['generation'] == generation and record['setup_id'] == setup_id,
                         'account_session_changed', 'This login belongs to an earlier setup; reset its owned login session first.')
             connected = next((item['connected'] for item in self.setup.harnesses(data) if item['id'] == provider), False)
-            if connected and not record:
+            if connected and not record and not reconnect:
                 return {'status': 'connected', 'provider': provider}
             if record and record['phase'] == 'complete':
-                if connected:
+                if connected and not reconnect:
                     return {'status': 'connected', 'provider': provider, 'session_id': record['id']}
                 if not retry:
                     return {'status': 'account_login_failed', 'provider': provider, 'session_id': record['id'],
@@ -116,7 +117,7 @@ class DeviceAccount:
                     self.cleanup(record); self.save(generation, {**record, 'phase': 'complete'})
                 return {'status': 'connected' if apply else 'account_login_saved', 'provider': provider, 'session_id': record['id']}
             if retry and record:
-                require(record['phase'] == 'failed' or record['phase'] == 'complete' and not connected
+                require(record['phase'] == 'failed' or record['phase'] == 'complete' and (not connected or reconnect)
                         or self.clock() >= record['expires_at'] or failed_start(self.inspect(record)), 'account_login_running',
                         'Finish the current device login before starting another one.')
                 self.cleanup(record)
@@ -201,7 +202,9 @@ class DeviceAccount:
                     'A different login is now connected; inspect it before replacing provider credentials.')
             record = {**record, 'phase': 'finishing', 'credential_digest': hashlib.sha256(value.encode()).hexdigest()}
             self.save(generation, record)
-            pending_login(self.setup, provider, generation, {'secret': None, 'value': value, 'models': None, 'kind': 'api_key'})
+            config = self.setup.active_runtime() if data['phase'] == 'active' else self.setup.runtime()
+            models = [entry['model'] for entry in config['provider_pool'] if entry['provider'] == provider] or None
+            pending_login(self.setup, provider, generation, {'secret': None, 'value': value, 'models': models, 'kind': 'api_key'})
             # Reuse the same credential/configuration handoff as trusted terminal
             # login. It owns controller serialization and cooldown removal.
             if not same_login:
