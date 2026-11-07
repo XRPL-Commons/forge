@@ -240,6 +240,52 @@ class HostKeyTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
 
+class HostArchitectureTests(unittest.TestCase):
+    def setUp(self):
+        for target, options in (
+            ('sys.platform', {'new': 'linux'}),
+            ('os.geteuid', {'return_value': 0}),
+            ('os.cpu_count', {'return_value': 4}),
+            ('os.statvfs', {'return_value': SimpleNamespace(f_bavail=40000, f_frsize=1048576)}),
+            ('Path.exists', {'return_value': True}),
+            ('Path.is_dir', {'return_value': True}),
+            ('Path.read_text', {'autospec': True, 'side_effect': lambda path: {
+                '/etc/os-release': 'ID=ubuntu\nVERSION_ID="24.04"\n',
+                '/sys/module/apparmor/parameters/enabled': 'Y\n',
+                '/proc/meminfo': 'MemTotal: 8388608 kB\n',
+            }[str(path)]}),
+        ):
+            context = patch('forge_client._install_host.' + target, **options)
+            context.start(); self.addCleanup(context.stop)
+
+    def test_x86_64_ubuntu_facts_match_supported_contract(self):
+        with patch.object(remote.platform, 'machine', return_value='x86_64'):
+            self.assertEqual(remote.facts(), FACTS)
+
+    def test_arm64_is_refused_before_planning_or_host_mutations(self):
+        for architecture in ('aarch64', 'arm64', 'i686'):
+            for action in ('plan', 'apply', 'resume'):
+                with self.subTest(architecture=architecture, action=action), \
+                     patch.object(remote.platform, 'machine', return_value=architecture), \
+                     patch.object(remote, 'read') as read, \
+                     patch.object(remote, 'private_directory') as directory, \
+                     patch.object(remote, 'write') as write, patch.object(remote, 'run') as run:
+                    with self.assertRaisesRegex(remote.InstallError, '^unsupported_architecture$'):
+                        remote.dispatch({'version': 1, 'action': action, 'intent': INTENT,
+                                         'source': PACK if action != 'plan' else None,
+                                         'upgrade_installer': False}, 'payload')
+                    read.assert_not_called(); directory.assert_not_called()
+                    write.assert_not_called(); run.assert_not_called()
+
+    def test_cli_preserves_architecture_error_and_explains_supported_host(self):
+        host = InstallerHost('anvil', run=Mock(return_value=b'{"ok":false,"error":"unsupported_architecture"}'))
+        with self.assertRaises(SetupError) as caught:
+            host.rpc('payload', {})
+        self.assertEqual(caught.exception.code, 'unsupported_architecture')
+        self.assertIn('x86-64 (amd64) Ubuntu 24.04', str(caught.exception))
+        self.assertIn('ARM64 servers are not supported', str(caught.exception))
+
+
 class RemoteInstallerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import pwd
 import re
@@ -69,6 +70,7 @@ def facts():
     need(sys.platform == 'linux' and os.geteuid() == 0, 'administrator_required')
     release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
     need(release.get('ID', '').strip('"') == 'ubuntu' and release.get('VERSION_ID', '').strip('"') == '24.04', 'unsupported_os')
+    need(platform.machine() == 'x86_64', 'unsupported_architecture')
     enabled = Path('/sys/module/apparmor/parameters/enabled')
     need(enabled.exists() and enabled.read_text().strip() == 'Y', 'apparmor_required')
     need(Path('/run/systemd/system').is_dir(), 'systemd_required')
