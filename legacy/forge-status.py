@@ -240,9 +240,11 @@ class H(BaseHTTPRequestHandler):
     def _auth_get(self, url):
         from forge.operator_auth import read_cookie, FLOW_COOKIE, cookie, failure_reason
         if url.path == '/api/auth/session':
+            from forge.factory_identity import display_name
             mode = self._auth.identity_settings()['mode'] if self._auth_config else None
             self._send(json.dumps({'ok': True, 'enabled': bool(self._auth_config),
                                   'operator': self._session['operator'] if self._session else None,
+                                  'factory_name': display_name(WD),
                                   **({'mode': mode} if self._auth_config else {}),
                                   **({'controls_token': self._action_token, 'via': self._session.get('via', 'github')} if self._session else {})}))
             return True

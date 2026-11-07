@@ -309,3 +309,20 @@ For host requirements, isolation qualification, capacity and upgrades, see
 
 Official login references: [Codex authentication](https://learn.chatgpt.com/docs/auth)
 and [Claude Code CLI](https://code.claude.com/docs/en/cli-reference).
+
+## Factory name
+
+The header and browser tab show the name chosen during `forge install`, for
+example **Anvil** and **Settings · Anvil · Forge**. The sign-in page shows the
+same name. Older factories without a saved display name show **Forge**.
+
+After updating an existing Anvil installation using the standard service paths,
+copy its original installation name into the runtime once:
+
+```sh
+ssh anvil 'sudo -u forge /home/forge/forge/bin/forge setup initialize --root /home/forge/.local/share/forge --name Anvil'
+```
+
+Use the original name from the approved installation, not an inferred hostname.
+This preserves existing factory data. Repeating the same name has no effect;
+a different name is refused. Reload the web page afterward.

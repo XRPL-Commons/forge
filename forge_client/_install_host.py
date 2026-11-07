@@ -334,7 +334,7 @@ def install_step(step, data):
         prepare_service_cache(data)
         need(service(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], capture=True) == data['intent']['revision'], 'source_conflict')
         need(not service(['git', '-C', str(SOURCE), 'status', '--porcelain', '--untracked-files=no'], capture=True), 'source_conflict')
-        service([str(SOURCE / 'bin/forge'), 'setup', 'initialize', '--root', str(ROOT)])
+        service([str(SOURCE / 'bin/forge'), 'setup', 'initialize', '--root', str(ROOT), '--name', data['intent']['name']])
         service([str(SOURCE / 'bin/forge'), 'setup', 'install', '--root', str(ROOT), '--bind', '127.0.0.1'])
         for name in ('forge-status', 'forge-ui', 'forge-supervisor'):
             need(service(['systemctl', '--user', 'is-active', name], capture=True) == 'active', 'services_unavailable')

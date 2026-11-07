@@ -2,6 +2,7 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
 import type { OnboardingView } from '~/utils/onboarding'
 const route = useRoute()
+const { name, named } = useFactoryIdentity()
 const { session, logout } = useOperator()
 const logoutError = ref('')
 async function signOut() {
@@ -30,9 +31,11 @@ const links = computed(() => [
 </script>
 <template>
   <header class="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 py-3 sm:px-7 sm:py-4">
-    <NuxtLink :to="settingUp ? '/onboarding' : '/'" aria-label="Forge home" class="flex items-center gap-2.5 text-lg font-bold tracking-tight text-white no-underline">
-      <span aria-hidden="true" class="grid size-7 -rotate-6 place-items-center rounded-md border border-mint-200 text-mint-200">F</span>
-      Forge
+    <NuxtLink :to="settingUp ? '/onboarding' : '/'" :aria-label="`${name} home`" class="flex min-w-0 max-w-full items-center gap-2.5 text-lg font-bold tracking-tight text-white no-underline">
+      <span aria-hidden="true" class="grid size-7 shrink-0 -rotate-6 place-items-center rounded-md border border-mint-200 text-mint-200">F</span>
+      <span class="min-w-0 break-words [overflow-wrap:anywhere]">
+        {{ name }}<span v-if="named" class="ml-2 text-xs font-normal text-muted">Forge</span>
+      </span>
     </NuxtLink>
     <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
       <ActivityPill />

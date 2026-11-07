@@ -1,6 +1,7 @@
 interface OperatorSession {
   ok: boolean
   enabled: boolean
+  factory_name?: string | null
   operator: { id: number; login: string } | null
   controls_token?: string
 }

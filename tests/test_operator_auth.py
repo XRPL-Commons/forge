@@ -243,9 +243,19 @@ class OperatorHTTPTests(unittest.TestCase):
     def test_public_session_has_no_action_capability_or_config(self):
         handler = self.request('/api/auth/session')
         result = json.loads(handler._send.call_args.args[0])
-        self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None, 'mode': 'github'})
+        self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None, 'mode': 'github', 'factory_name': None})
         handler = self.request('/api/auth/session', signed=True)
         self.assertEqual(json.loads(handler._send.call_args.args[0])['controls_token'], self.session['csrf'])
+
+    def test_factory_name_is_available_before_signin_without_private_configuration(self):
+        from forge.factory_identity import initialize
+        initialize(dashboard.WD, 'Anvil')
+        handler = self.request('/api/auth/session')
+        result = json.loads(handler._send.call_args.args[0])
+        self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None,
+                                  'mode': 'github', 'factory_name': 'Anvil'})
+        handler = self.request('/api/auth/session', signed=True)
+        self.assertEqual(json.loads(handler._send.call_args.args[0])['factory_name'], 'Anvil')
 
     def test_github_callback_accepts_optional_matching_issuer(self):
         from urllib.parse import urlencode

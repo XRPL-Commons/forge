@@ -4,7 +4,7 @@ import { RESETTING_SCREEN, resetComplete, resetStep, type OnboardingView } from 
 
 // Reset Forge (contracts §3.8, "Reset"). The page is the confirmation: it
 // says exactly what a reset does before the one danger button.
-useHead({ title: 'Reset Forge' })
+useHead({ title: 'Reset' })
 
 const STEPS = [
   ['01', 'Stop all Forge-managed work', 'Pause scheduling and terminate every owned worker.'],
