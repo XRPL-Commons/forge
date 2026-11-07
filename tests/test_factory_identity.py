@@ -55,13 +55,26 @@ class FactoryIdentityTests(unittest.TestCase):
                 initialize_host(self.root, 'Anvil')
         self.assertEqual(execute.call_args.args[1][-2:], ['--name', 'Anvil'])
 
-    def test_fresh_installer_passes_its_approved_name_to_host_setup(self):
+    def test_fresh_installer_discovers_name_support_in_each_pinned_target(self):
         from forge_client import _install_host as remote
         from unittest.mock import Mock
-        service = Mock(side_effect=lambda argv, **kwargs: 'a' * 40 if 'rev-parse' in argv else
-                       'active' if 'is-active' in argv else '')
-        with patch.object(remote, 'prepare_service_cache'), patch.object(remote, 'service', service):
-            remote.install_step('host', {'intent': {'name': 'Anvil', 'revision': 'a' * 40}})
-        calls = [call.args[0] for call in service.call_args_list]
-        self.assertIn([str(remote.SOURCE / 'bin/forge'), 'setup', 'initialize', '--root',
-                       str(remote.ROOT), '--name', 'Anvil'], calls)
+        for revision, help_text, supports_name in (
+            ('a' * 40, 'options:\n  --root ROOT\n  --name NAME  factory display name\n', True),
+            ('b' * 40, 'options:\n  --root ROOT\n  --hostname HOST  network name\n', False),
+        ):
+            with self.subTest(revision=revision):
+                def respond(argv, **kwargs):
+                    if 'rev-parse' in argv: return revision
+                    if 'is-active' in argv: return 'active'
+                    if '--help' in argv: return help_text
+                    return ''
+                service = Mock(side_effect=respond)
+                with patch.object(remote, 'prepare_service_cache'), patch.object(remote, 'service', service):
+                    remote.install_step('host', {'intent': {'name': 'Anvil', 'revision': revision}})
+                calls = [call.args[0] for call in service.call_args_list]
+                setup = [str(remote.SOURCE / 'bin/forge'), 'setup']
+                initialize = setup + ['initialize', '--root', str(remote.ROOT)]
+                if supports_name: initialize += ['--name', 'Anvil']
+                self.assertEqual([call for call in calls if 'initialize' in call], [initialize])
+                self.assertLess(calls.index(setup + ['--help']), calls.index(initialize))
+                self.assertIn(setup + ['install', '--root', str(remote.ROOT), '--bind', '127.0.0.1'], calls)
