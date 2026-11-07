@@ -28,12 +28,16 @@ async function submit() {
   <form class="space-y-2" @submit.prevent="submit">
     <label :for="id" class="block font-medium text-white">{{ label }}</label>
     <div class="flex flex-wrap items-center gap-3">
-      <select :id="id" v-model="draft" :disabled="!mounted || disabled || saving" :aria-describedby="id + '-help'" class="min-w-0 max-w-full rounded-lg border border-line bg-bg p-2 text-sm">
-        <option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option>
-      </select>
-      <UButton type="submit" color="neutral" variant="outline" :aria-label="`Save ${label.toLowerCase()}`" :disabled="!mounted || disabled || saving || draft === value" :loading="saving">Save</UButton>
+      <USelectMenu
+        :id="id" v-model="draft" :items="options" value-key="value" :search-input="false"
+        :disabled="!mounted || disabled || saving" :aria-label="label" :aria-describedby="id + '-help'"
+        class="w-full min-w-0 sm:w-96" :ui="{ value: 'whitespace-normal text-left', itemLabel: 'whitespace-normal' }"
+      />
+      <template v-if="draft !== value">
+        <UButton type="submit" color="neutral" variant="outline" :aria-label="`Save ${label.toLowerCase()}`" :disabled="!mounted || disabled || saving" :loading="saving">Save</UButton>
+        <UButton type="button" color="neutral" variant="ghost" :aria-label="`Discard ${label.toLowerCase()} changes`" :disabled="saving" @click="draft = value">Discard</UButton>
+      </template>
       <span v-if="saved" role="status" class="text-xs text-mint-200">Saved</span>
-      <span v-else-if="draft !== value && !saving" class="text-xs text-muted">Unsaved change</span>
     </div>
     <div :id="id + '-help'" class="text-sm text-muted"><slot :value="draft" /></div>
     <p v-if="error" role="alert" class="text-sm text-amber-200">{{ error }}</p>
