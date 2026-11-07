@@ -120,6 +120,8 @@ function onSaved(view: FactoryView) {
       <p v-else class="mt-2 text-sm text-muted">{{ poll.data.value ? 'The approver list is not available.' : 'Loading…' }}</p>
     </section>
 
+    <FactoryUpdates />
+
     <details class="mt-4 rounded-xl border border-line bg-panel p-4">
       <summary class="cursor-pointer text-sm text-muted">Reset factory</summary>
       <p class="mt-2 text-sm text-muted">Stop workers and clear this factory’s setup and connections.</p>

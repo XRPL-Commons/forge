@@ -716,6 +716,9 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
             except (ValueError, OSError, RuntimeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Installation progress is unavailable. Refresh to try again.'}))
+        elif u.path == '/api/updates':
+            from forge.updates import view
+            self._send(json.dumps(view(refresh=parse_qs(u.query).get('refresh') == ['1'])))
         elif u.path == '/api/onboarding':
             from forge.onboarding import Onboarding
             try:

@@ -31,7 +31,7 @@ async function submit() {
       <USelectMenu
         :id="id" v-model="draft" :items="options" value-key="value" :search-input="false"
         :disabled="!mounted || disabled || saving" :aria-label="label" :aria-describedby="id + '-help'"
-        class="w-full min-w-0 sm:w-96" :ui="{ value: 'whitespace-normal text-left', itemLabel: 'whitespace-normal' }"
+        class="min-h-11 w-full min-w-0 text-base sm:min-h-0 sm:w-96 sm:text-sm" :ui="{ value: 'whitespace-normal text-left', itemLabel: 'whitespace-normal' }"
       />
       <template v-if="draft !== value">
         <UButton type="submit" color="neutral" variant="outline" :aria-label="`Save ${label.toLowerCase()}`" :disabled="!mounted || disabled || saving" :loading="saving">Save</UButton>

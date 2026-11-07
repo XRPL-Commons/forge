@@ -39,7 +39,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow))
       <section aria-labelledby="sign-in-title" class="relative mx-auto -mt-2.5 w-full max-w-md space-y-5 rounded-xl border border-line bg-panel p-6 shadow-[0_18px_40px_-20px_rgba(0,0,0,.8)] sm:-mt-3 sm:p-8">
         <div class="flex items-center gap-2.5 text-lg font-bold tracking-tight text-white">
           <span aria-hidden="true" class="grid size-7 shrink-0 -rotate-6 place-items-center rounded-md border border-mint-200 text-mint-200">F</span>
-          <span class="min-w-0 break-words [overflow-wrap:anywhere]">{{ name }}<span v-if="named" class="ml-2 text-xs font-normal text-muted">Forge</span></span>
+          <span class="min-w-0 break-words [overflow-wrap:anywhere]">Forge<span v-if="named" class="ml-2 text-xs font-normal text-muted">{{ name }}</span></span>
         </div>
         <div class="space-y-2">
           <h1 id="sign-in-title" class="text-2xl font-semibold leading-tight text-balance">{{ setupPending ? 'Your factory is getting ready' : 'Welcome back to the factory floor' }}</h1>
