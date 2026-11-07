@@ -18,14 +18,10 @@ flowchart TD
 
 ## Workers and slots
 
-**Build** owns implementation and the assigned pull request. For an approved group,
-one logical builder plans tracked tasks, releases its planning lease, then
-resumes integration after accepted outputs and verified task cleanup. A task may
-cover several issues, and several tasks may contribute to one issue. The builder
-can execute a prerequisite task itself, delegate it to a child, or keep work for
-final integration. Every task uses an isolated checkout and exact prerequisite
-outputs. Independent tasks and separate deliveries share the same role slots,
-memory and account limits.
+**Build** owns implementation and the assigned pull request. One builder can
+coordinate an approved group of issues, delegate independent tasks to children,
+then integrate their accepted outputs. Each task has its own checkout. Builders
+and children share the same role slots, memory and account limits.
 **Review** checks the complete candidate, **Audit** checks security, and
 **Recovery** investigates a failed attempt before the next decision.
 
@@ -110,20 +106,13 @@ flowchart TD
   D -->|No| Wait
 ```
 
-Repository setup is also a delivery blocker. Implementation admission uses the
-same repository identity, App connection revision and fresh protection report
-shown in Settings. An unreadable observation or an
-expired report shows **Repository setup** on the affected issues, with a link to
-restore access or recheck the repository. The ordinary setup refresh and issue
-observation clear this blocker after verified readiness; independent holds stay
-in place. Dispatch saves its final protection read through that same report
-boundary, so a newly discovered failure is visible immediately.
-
-This readiness check does not change repository permissions or enablement.
-Protection report expiry does not revoke a running worker or its output. New
-work waits, and publication/merge retain their live policy checks. Auxiliary
-repository planning and failure diagnosis require access, without requiring
-publication readiness; loss of access still blocks them.
+If repository access or its latest check is unavailable or stale, affected issues
+show **Repository setup** with a link to restore access or recheck. Verified
+readiness clears this blocker; other holds remain. New implementation work waits,
+but an expired report does not cancel running workers or discard their outputs.
+Planning and diagnosis can continue while repository access remains available.
+Publication and merging still recheck current conditions. These checks do not
+change permissions or enable automation.
 
 A green worker result alone is not merge permission. Forge checks its App-bound Review and Audit evidence, required CI, verification, repository protections and current ownership; unresolved changes requested also prevent merging.
 
