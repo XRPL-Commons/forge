@@ -1,13 +1,16 @@
 """Read-only discovery of published Forge builds; never installs or fetches Git refs."""
+import http.client
+import json
 from pathlib import Path
 import re
 import subprocess
 import threading
 import time
+import urllib.request
 
 from .app_access import AppClient, AccessError
-from .release_artifacts import ASSETS, REPOSITORY
-from .request_metrics import request_scope, RequestBudgetExhausted
+from .release_artifacts import ASSETS, REPOSITORY, artifact_kinds, asset_url, manifest_shape
+from .request_metrics import request_scope, request_attempt, RequestBudgetExhausted
 
 SOURCE = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[a-f0-9]{40}')
@@ -24,9 +27,21 @@ def installed_revision():
         return None
 
 
+def public_manifest(revision):
+    """Validate the public release envelope without operator credentials or cache writes."""
+    with request_attempt() as (timeout, receipt):
+        with urllib.request.urlopen(asset_url(revision, 'manifest.json'), timeout=timeout) as response:
+            receipt.update(status=response.status, headers=response.headers)
+            raw = response.read(128 * 1024 + 1)
+    if len(raw) > 128 * 1024:
+        raise ValueError('Release manifest exceeded the size limit')
+    return json.loads(raw)
+
+
 class UpdateCheck:
-    def __init__(self, request=None, clock=time.time, monotonic=time.monotonic):
+    def __init__(self, request=None, clock=time.time, monotonic=time.monotonic, fetch_manifest=None):
         self.request = request or AppClient().request
+        self.fetch_manifest = fetch_manifest or public_manifest
         self.clock, self.monotonic = clock, monotonic
         self.lock = threading.Lock()
         self.cached = None
@@ -44,7 +59,7 @@ class UpdateCheck:
             try:
                 with request_scope(until=time.monotonic() + 10):
                     self._check(result)
-            except (AccessError, RequestBudgetExhausted, ValueError, TypeError, KeyError) as error:
+            except (AccessError, RequestBudgetExhausted, ValueError, TypeError, KeyError, OSError, http.client.HTTPException) as error:
                 result['error'] = ('GitHub releases are not publicly accessible yet.'
                                    if isinstance(error, AccessError) and error.status == 404 else
                                    'Could not check GitHub. Try again later.')
@@ -63,13 +78,18 @@ class UpdateCheck:
                     or not SHA.fullmatch(revision) or not release.get('published_at')):
                 continue
             assets = {item['name'] for item in release.get('assets', [])}
-            if not {*ASSETS.values(), 'manifest.json'} <= assets:
+            # Both delivery versions include the UI and a manifest; verify the
+            # selected release's declared artifact set below before offering it.
+            if not {ASSETS['ui'], 'manifest.json'} <= assets:
                 continue
-            candidates.append((release['published_at'], revision, tag))
+            candidates.append((release['published_at'], revision, tag, assets))
         if not candidates:
             result['status'] = 'no_release'
             return
-        published, revision, tag = max(candidates)
+        published, revision, tag, assets = max(candidates, key=lambda row: row[:3])
+        manifest = manifest_shape(self.fetch_manifest(revision), revision)
+        if not {ASSETS[kind] for kind in artifact_kinds(manifest)} <= assets:
+            raise ValueError('Release is missing declared artifacts')
         result['latest'] = dict(revision=revision, published_at=published, url=RELEASES + '/tag/' + tag)
         installed = result['installed_revision']
         if installed == revision:

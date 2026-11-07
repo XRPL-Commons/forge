@@ -9,15 +9,15 @@ from forge_client import release_delivery as delivery
 from forge_client.contracts import SetupError
 from forge_client.install import revision
 from tests.test_prepared_release_selection import release
-from tests.test_release_artifacts import REVISION, manifest
+from tests.test_release_artifacts import REVISION, manifest, local_manifest
 
 
-def fixture():
-    value = manifest()
+def fixture(value=None):
+    value = manifest() if value is None else value
     raw = json.dumps(value).encode()
     assets = [{'id': index + 10, 'name': name, 'size': value['artifacts'][kind]['size'],
                'digest': 'sha256:' + value['artifacts'][kind]['sha256']}
-              for index, (kind, name) in enumerate(ASSETS.items())]
+              for index, (kind, name) in enumerate(ASSETS.items()) if kind in value['artifacts']]
     assets.append({'id': 42, 'name': 'manifest.json', 'size': len(raw)})
     return value, raw, release(assets=assets)
 
@@ -36,6 +36,34 @@ class ReleaseDeliveryTests(unittest.TestCase):
         self.assertEqual(manifest_call.args[0][-1], 'repos/XRPL-Commons/forge/releases/assets/42')
         self.assertIn('Accept: application/octet-stream', manifest_call.args[0])
         self.assertEqual(manifest_call.kwargs['output_limit'], 128 * 1024)
+
+    def test_local_workers_release_selects_and_transfers_only_ui(self):
+        value, raw, metadata = fixture(local_manifest())
+        run = Mock(side_effect=[json.dumps([metadata]).encode(), json.dumps(metadata).encode(), raw])
+        with patch('shutil.which', return_value='gh'):
+            self.assertEqual(revision(run=run), REVISION)
+        run = Mock(side_effect=[json.dumps(metadata).encode(), raw, b'gho_local_only'])
+        opener = Mock(); opener.open.side_effect = redirect()
+        with patch('shutil.which', return_value='gh'):
+            result = delivery.access(REVISION, run=run, opener=opener)
+        self.assertEqual(set(result['urls']), {'ui'})
+        self.assertEqual(opener.open.call_count, 1)
+        self.assertEqual(result['manifest']['workers'], value['workers'])
+
+    def test_worker_download_requires_a_published_worker_not_a_local_recipe(self):
+        value, raw, metadata = fixture(local_manifest())
+        run = Mock(side_effect=[json.dumps(metadata).encode(), raw])
+        with patch('shutil.which', return_value='gh'), self.assertRaises(SetupError) as raised:
+            delivery.access(REVISION, ['runner'], run=run)
+        self.assertEqual(raised.exception.code, 'invalid_prepared_assets')
+        self.assertEqual(run.call_count, 2)
+
+    def test_incomplete_v1_does_not_become_local_build(self):
+        value, raw, metadata = fixture()
+        metadata['assets'] = [asset for asset in metadata['assets'] if asset['name'] != ASSETS['runner']]
+        run = Mock(side_effect=[json.dumps(metadata).encode(), raw])
+        with patch('shutil.which', return_value='gh'), self.assertRaises(SetupError):
+            delivery.read_manifest(REVISION, run=run)
 
     def test_scoped_access_returns_only_selected_assets_and_no_personal_token(self):
         value, raw, metadata = fixture()

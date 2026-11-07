@@ -268,7 +268,7 @@ def artifact_inputs():
     assets = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs/assets').glob('*.svg'))
     return {'runner': tree_digest(RUNNER_INPUTS, NODE_IMAGE, PYTHON_IMAGE),
             'full': tree_digest((*RUNNER_INPUTS, *FULL_RUNNER_INPUTS), NODE_IMAGE, PYTHON_IMAGE),
-            'ui': tree_digest(('ui', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)}
+            'ui': tree_digest(('ui', 'tools/ui_dependency_notices.py', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)}
 
 
 def prepared_release():
@@ -281,7 +281,8 @@ def prepared_release():
 
 def runner_image():
     release = prepared_release()
-    if release:
+    from .release_artifacts import local_worker
+    if release and not local_worker(release.manifest, 'runner'):
         return release.image('runner', run=subprocess.run)
     tag = 'forge-runner:' + tree_digest(RUNNER_INPUTS, NODE_IMAGE, PYTHON_IMAGE)[:16]
     inspect = ['docker', 'image', 'inspect', tag, '--format', '{{.Id}}']
@@ -296,7 +297,8 @@ def runner_image():
 
 def full_runner_image(base):
     release = prepared_release()
-    if release:
+    from .release_artifacts import local_worker
+    if release and not local_worker(release.manifest, 'full'):
         descriptor = release.manifest['artifacts']['runner']
         if base not in {descriptor[key] for key in ('image_id', 'image_manifest_id') if key in descriptor}:
             raise ValueError('Prepared full worker does not match the selected base image.')
@@ -340,7 +342,7 @@ def ui_release(root):
     root = Path(root)
     guides = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs').glob('*.md'))
     assets = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs/assets').glob('*.svg'))
-    release = tree_digest(('ui', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)[:16]
+    release = tree_digest(('ui', 'tools/ui_dependency_notices.py', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)[:16]
     target = root / 'ui/releases' / release
     if (target / 'server/index.mjs').exists():
         return release
