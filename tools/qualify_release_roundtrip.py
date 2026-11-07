@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load exported release images into isolated classic and containerd Docker stores.
+"""Verify prepared UI archives; retain exported-image qualification for legacy v1 releases.
 
 Run with sudo on the Linux CI host. Uses its installed dockerd binary and never
 connects to, stops, or changes the builder's Docker daemon.
@@ -144,6 +144,21 @@ def qualify(directory):
     revision = subprocess.check_output(['git', '-c', 'safe.directory=' + str(host_update.SOURCE),
                                         '-C', str(host_update.SOURCE), 'rev-parse', 'HEAD'], text=True).strip()
     validate_manifest(manifest, revision, inputs, host_update.NODE_IMAGE, host_update.PYTHON_IMAGE)
+    if manifest['version'] == 2:
+        with tempfile.TemporaryDirectory(prefix='forge-ui-roundtrip-') as temporary:
+            release = Release(manifest['source'], manifest)
+            def download(kind, target):
+                source = directory / manifest['artifacts'][kind]['filename']
+                verify_archive(source, manifest['artifacts'][kind])
+                shutil.copyfile(source, target)
+            release.download = download
+            target = Path(temporary) / 'ui'
+            release.ui(target)
+            notices = target / 'public/third-party-notices.txt'
+            if not notices.is_file() or not notices.read_text().strip():
+                raise ValueError('Prepared UI has no dependency notices.')
+        print('Prepared UI archive and notices roundtrip passed; workers build on the operator host.', flush=True)
+        return
     for containerd in (False, True):
         name = 'containerd' if containerd else 'classic'
         print('Qualifying exported images in the ' + name + ' Docker store…', flush=True)

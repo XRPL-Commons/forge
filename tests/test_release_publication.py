@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock
 
 from tools.prepare_release_publication import prepare
+from tests.test_release_artifacts import local_manifest, manifest
 
 REVISION = 'a' * 40
 
@@ -28,9 +29,23 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_published_release_is_never_modified_or_rebuilt(self):
-        run = Mock(return_value=response(draft(draft=False)))
+        assets = [{'name': name} for name in ('manifest.json', 'forge-ui-linux-amd64.tar.gz')]
+        run = Mock(side_effect=[response(draft(draft=False, assets=assets)), response(local_manifest())])
         self.assertEqual(prepare(REVISION, run=run), 'published')
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0][0:3], ['gh', 'release', 'download'])
+
+    def test_published_worker_assets_and_legacy_manifest_cannot_pass_ui_only_policy(self):
+        assets = [{'name': name} for name in ('manifest.json', 'forge-ui-linux-amd64.tar.gz')]
+        for extra in ('forge-runner-linux-amd64.tar.gz', 'unexpected.bin'):
+            run = Mock(return_value=response(draft(draft=False, assets=assets + [{'name': extra}])))
+            with self.assertRaisesRegex(ValueError, 'unexpected assets'):
+                prepare(REVISION, run=run)
+            self.assertEqual(run.call_count, 1)
+        run = Mock(side_effect=[response(draft(draft=False, assets=assets)), response(manifest())])
+        with self.assertRaisesRegex(ValueError, 'local worker builds'):
+            prepare(REVISION, run=run)
+        self.assertEqual(run.call_count, 2)
 
     def test_partial_owned_draft_is_replaced_without_deleting_tag(self):
         run = Mock(side_effect=[response(draft()), response({})])

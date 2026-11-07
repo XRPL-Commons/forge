@@ -5,10 +5,12 @@ from pathlib import Path
 import signal
 import subprocess
 import tempfile
+import tarfile
+import hashlib
 import unittest
 from unittest.mock import Mock, patch
 
-from tests.test_release_artifacts import BASE, FULL, manifest
+from tests.test_release_artifacts import BASE, FULL, INPUTS, REVISION, manifest, local_manifest
 
 spec = importlib.util.spec_from_file_location('release_roundtrip',
     Path(__file__).resolve().parents[1] / 'tools/qualify_release_roundtrip.py')
@@ -97,11 +99,45 @@ class RoundtripTests(unittest.TestCase):
         self.assertFalse(any(item.args[0][1] in ('run', 'load') or item.args[0][1:3] == ['image', 'load']
                              for item in docker.call_args_list))
 
+    def test_v2_ui_roundtrip_checks_notices_without_starting_docker(self):
+        for has_notices in (True, False):
+            with self.subTest(notices=has_notices), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                value = local_manifest()
+                archive = root / value['artifacts']['ui']['filename']
+                with tarfile.open(archive, 'w:gz') as bundle:
+                    files = {'server/index.mjs': b'server'}
+                    if has_notices:
+                        files['public/third-party-notices.txt'] = b'license text'
+                    for name, content in files.items():
+                        info = tarfile.TarInfo(name); info.size = len(content)
+                        bundle.addfile(info, io.BytesIO(content))
+                value['artifacts']['ui'].update(size=archive.stat().st_size,
+                                               sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
+                (root / 'manifest.json').write_text(json.dumps(value))
+                with patch.object(tool.platform, 'system', return_value='Linux'), \
+                        patch.object(tool.platform, 'machine', return_value='x86_64'), \
+                        patch.object(tool.os, 'geteuid', return_value=0), \
+                        patch.object(tool.subprocess, 'check_output', return_value=REVISION), \
+                        patch.object(tool.host_update, 'artifact_inputs', return_value=INPUTS), \
+                        patch.object(tool.host_update, 'NODE_IMAGE', value['node_image']), \
+                        patch.object(tool.host_update, 'PYTHON_IMAGE', value['python_image']), \
+                        patch.object(tool, 'isolated_daemon') as daemon:
+                    if has_notices:
+                        tool.qualify(root)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'no dependency notices'):
+                            tool.qualify(root)
+                    daemon.assert_not_called()
+
     def test_workflow_requires_roundtrip_before_publication(self):
-        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/prepared-release.yml').read_text()
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/prepared-ui-release.yml').read_text()
         self.assertLess(workflow.index('tools/build_release_artifacts.py'),
                         workflow.index('tools/qualify_release_roundtrip.py'))
         self.assertLess(workflow.index('tools/qualify_release_roundtrip.py'), workflow.index('gh release create'))
+        self.assertIn('assert RELEASE_MANIFEST_VERSION == 2', workflow)
+        self.assertNotIn('forge-runner-linux-amd64.tar.gz', workflow)
+        self.assertNotIn('forge-runner-full-linux-amd64.tar.gz', workflow)
 
 
 if __name__ == '__main__':

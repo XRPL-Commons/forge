@@ -1,0 +1,26 @@
+elkjs 0.9.3 — source availability
+
+The ELK/elkjs components distributed with Forge's UI remain available as Source
+Code under the Eclipse Public License 2.0. The full license is included in these
+notices and in the upstream source trees. Forge does not change these upstream
+sources; UI bundling and minification are build transformations.
+
+Obtain the elkjs 0.9.3 JavaScript API, build scripts and source from:
+https://github.com/kieler/elkjs/tree/a8304cf79fde75bc2ab1a89d28320f53f8637436
+https://github.com/kieler/elkjs/archive/a8304cf79fde75bc2ab1a89d28320f53f8637436.tar.gz
+
+The upstream 0.9.3 release describes its Java algorithm sources as ELK 0.9.1
+plus the port-placement correction in eclipse/elk pull request 955:
+https://github.com/kieler/elkjs/releases/tag/0.9.3
+
+ELK 0.9.1 source:
+https://github.com/eclipse-elk/elk/tree/62d5909f96fad541bc101ad52dabaece6b7eab7e
+https://github.com/eclipse-elk/elk/archive/62d5909f96fad541bc101ad52dabaece6b7eab7e.tar.gz
+
+Included correction (source change and patch):
+https://github.com/eclipse-elk/elk/commit/7ca51784e42a24201f29bc13e458728b6fc61cdc
+https://github.com/eclipse-elk/elk/commit/7ca51784e42a24201f29bc13e458728b6fc61cdc.patch
+
+Build instructions are in the elkjs README and build.gradle at the source
+revision above. This identifies the sources described by the upstream release;
+it is not a claim that Forge independently reproduced the upstream npm binary.

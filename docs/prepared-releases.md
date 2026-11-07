@@ -1,89 +1,153 @@
 # Prepared release assets
 
-Published Forge releases include the operator UI and worker images. A fresh
-Linux amd64 host downloads these assets instead of running `npm ci`, compiling
-the UI or building worker images. The CLI stages the standard and full worker
-archives so later environment preparation can continue without local GitHub
-access. The full worker is loaded and qualified when database services are needed.
+New Forge releases distribute the built operator UI. The installer builds the
+standard and full worker images on the operator's host from the exact release
+source and pinned inputs. Worker binaries are not uploaded to GitHub. Provider
+selection, credentials and host qualification keep their existing behavior.
 
-Each release is named `forge-build-<full commit SHA>`. Its `manifest.json` records:
+Each release is named `forge-build-<full commit SHA>`. Manifest version 2 records:
 
 - the exact source commit and Linux amd64 platform;
-- the pinned Node and Python base images;
-- fingerprints of the UI, documentation and worker build inputs;
-- asset sizes and SHA-256 checksums;
-- the configuration and OCI manifest digests for the base and full workers.
+- pinned Node and Python base images;
+- the UI archive's build fingerprint, size and SHA-256 checksum;
+- `delivery: local-build` and the input fingerprint for each worker recipe.
 
-The installer reads assets only from releases in `XRPL-Commons/forge`. It checks
-the source, platform, pinned toolchain and build inputs, then verifies each
-archive before extracting the UI or loading an image. Classic Docker identifies
-images by configuration digest; the containerd store uses the manifest digest.
-The publisher binds both to the same exported image. Loaded images must match
-one of those exact digests and the declared platform. The existing host isolation and environment
-canaries still run before workers are enabled. A failed or unavailable download
-never silently starts a source build.
+The installer verifies these pins against the checked-out source before using
+the UI or building workers. Build caches reuse matching local worker inputs.
+Isolation and environment canaries still run before workers are enabled. A
+missing UI download never silently starts a source build.
 
-The release publisher is the GitHub repository already trusted for Forge source.
-The checksums establish artifact integrity and the manifest binds assets to their
-source and build inputs; this is not a separate artifact signing authority.
+Version 1 manifests remain readable for existing published releases and pinned
+recovery. Those releases contain worker archives; their checksums, platform and
+image identities are still verified. Historical assets are not deleted by this
+change.
 
 ## Publishing
 
-The **Prepared release** workflow runs after **CI** succeeds for a push to this
-repository's `main` branch. It checks out that CI run's exact commit, builds the
-UI with the pinned Node container, builds both workers, and runs their environment
-and isolation canaries. It also loads both exported worker archives into fresh
-classic and containerd image stores and runs an offline execution probe in each.
-It creates a draft release with all assets and publishes
-only after uploads succeed. Published releases are never overwritten. A retry
-replaces an incomplete draft only when the draft belongs to `github-actions[bot]`
-and names the exact tested commit. Human-owned drafts are left for inspection.
-Each compressed asset must fit GitHub's 2 GiB release asset limit; the producer
-checks this before publishing.
+The **Prepared UI release** workflow runs after **CI** succeeds for a push to this
+repository's `main` branch. It checks out that exact commit, builds the UI with
+the pinned Node container, builds both worker recipes and runs their isolation
+and environment canaries. It then verifies that the UI archive can be consumed
+through the installer's extraction path and contains dependency notices. Worker
+images remain in the ephemeral CI job; no image export occurs.
 
-With no explicit revision, `forge install` and `forge self-update` select the
-latest complete published prepared release and verify its manifest. An explicit
-full commit SHA remains available for pinned recovery and development.
+The workflow uploads only `manifest.json` and `forge-ui-linux-amd64.tar.gz`, then
+publishes the draft after both uploads succeed. Published releases are never
+overwritten. A retry replaces an incomplete draft only when it belongs to
+`github-actions[bot]` and names the exact tested commit. Human-owned drafts remain
+untouched. The UI archive must fit GitHub's 2 GiB release asset limit.
 
-Only revisions with a published prepared release are ready for installation.
-After merging, wait for the Prepared release workflow before installing that
-revision.
+### Retiring the binary-publishing workflow
 
-## Private repository access
+The current workflow rejects source revisions whose producer does not declare
+manifest version 2. This stops an old CI completion event from using the new
+workflow to publish version 1 artifacts.
+
+**This does not secure a rerun of an old workflow execution.** GitHub reruns can
+execute historical workflow code, including its former publication permissions.
+The new publisher has a separate workflow identity,
+`.github/workflows/prepared-ui-release.yml`. At cutover, a maintainer with Actions
+write/admin access must cancel active runs of the retired `prepared-release.yml`
+workflow and disable that old workflow ID using GitHub administration. Confirm
+that the new UI workflow is active, the old one reports disabled, and attempting
+to rerun a historical publisher is refused. Record that result. Do not assume
+that changing today's YAML disables historical executions.
+
+This prevents accidental use of the retired publisher; an authorized maintainer
+can deliberately re-enable it. No workflow-run history, historical releases or
+assets are deleted by this change. If GitHub still allows a disabled workflow to
+rerun, stop publication cutover and choose an explicit administrative remedy
+before declaring the old path retired. Changing default token permissions or
+adding an environment only to the new workflow is not sufficient.
+
+### UI dependency notices
+
+The UI archive includes `/third-party-notices.txt`. It records package names,
+versions, license metadata, registry source URLs and integrity hashes, upstream
+repositories, and the license/notice files from the exact installed build tree.
+It conservatively includes build and test dependencies, since generated UI code
+can contain assets from packages outside the runtime dependency set. Packages
+without separate license text are listed explicitly with available README
+information; a metadata label alone is not a substitute for a license notice.
+
+Missing text for packages copied into the server output stops preparation.
+Four small upstream license supplements cover Lucide, Embla, wheel-gestures and
+vaul-vue, whose npm packages omit license files. Their package versions, upstream
+commit URLs, evidence and file hashes are recorded under
+`ui/third-party-licenses/`; changing a covered package version requires reviewing
+that supplement. The Lucide text includes its retained Feather attribution.
+
+ELK (`elkjs` 0.9.3, used by Mermaid) includes the EPL-2.0 license plus an explicit
+source-availability statement. It links to the immutable elkjs source revision,
+ELK0.9.1 source and additional PR955 patch identified in upstream's release
+notes. No upstream source edits are made by Forge. DOMPurify includes its
+MPL-2.0/Apache-2.0 choice and full license text.
+
+The present built output contains Lucide icons and the elkjs server dependency;
+no Embla component was found in the current generated chunks, so its supplements
+also cover future use. Remaining packages with no standalone text are reported
+as an installed-build superset, principally tooling. Absence of an identifiable
+name in minified code alone is not proof of exclusion: the complete installed
+notice inventory remains included, and package/version changes require renewed
+bundle review. This records the actual evidence and preserved terms without
+claiming comprehensive legal clearance from an inventory alone.
+
+## Upgrading an older CLI
+
+A version 1-only CLI expects all three prepared assets. Its existing
+`forge self-update` can stay on an old release or fail to select a version 2
+release; it cannot bootstrap support for the new manifest by itself.
+
+First reinstall the CLI directly from an exact, published version 2-capable
+Forge commit (replace `<FULL_COMMIT_SHA>` with that release's full commit):
+
+```sh
+uv tool install --force --refresh 'git+https://github.com/XRPL-Commons/forge.git@<FULL_COMMIT_SHA>'
+```
+
+Then use the upgraded `forge install` or update flow. Do this before removing
+legacy release availability. The repository's fresh-install instructions already
+use current source; this extra bootstrap is for existing older CLIs.
+
+## Installation and private repository access
+
+With no explicit revision, `forge install` and `forge self-update` choose the
+latest complete published prepared release. An explicit full commit SHA remains
+available for recovery and development. Wait for the Prepared UI release workflow
+before installing a newly merged revision.
 
 The CLI uses your local GitHub CLI login to read private release metadata and
-obtain short-lived, read-only links for the exact assets. It sends those links
-over the existing SSH connection. Your personal GitHub token stays local; it is
-never sent to the server. Links stay in memory and are excluded from journals,
-command arguments and normal output.
+obtain short-lived, read-only links for the UI. It sends those links over SSH;
+your personal GitHub token stays local. Links stay in memory and are excluded
+from journals, command arguments and normal output.
 
-The host immediately downloads and verifies each archive into a private cache
-at `~/.cache/forge/prepared/<revision>`. Fresh installation stages the cache under
-the installer before the Forge service account exists, then transfers the
-verified files to that account. Interrupted transfers do not become usable cache
-entries. Resume reuses verified files and obtains fresh download links for any
-remaining transfers. Worker and UI activation still checks the manifest against
-the exact source, toolchain and build inputs.
+The host downloads verified files into a private cache at
+`~/.cache/forge/prepared/<revision>`. Fresh installation stages this cache before
+the Forge service account exists, then transfers verified files to that account.
+Interrupted transfers do not become usable cache entries. Resume reuses valid
+files and requests fresh links for unfinished transfers. Worker builds use the
+existing pinned Docker recipes on the host and can reuse its local build cache.
 
-Use the local CLI for installing or updating a private Forge release. A direct
-host-side update needs an already staged cache or an explicitly selected source
-build; the host cannot fetch private releases using your personal credentials.
+Use the local CLI to install or update a private Forge release. A direct host
+update requires an already staged cache or an explicitly selected source build;
+it cannot fetch private releases using your personal credentials.
 
 ## Development builds
 
-Maintainers can deliberately build a local source checkout by setting
-`FORGE_BUILD_FROM_SOURCE=1` for the host-side setup/update command. The release
-producer uses the same explicit setting while building assets. This mode retains
-the existing build and host qualification path; it is slower and is not an
-automatic fallback for an unpublished release. Other platforms currently need
-this development path.
+Maintainers can deliberately build all assets from a source checkout by setting
+`FORGE_BUILD_FROM_SOURCE=1` for the host-side setup/update command. This remains
+an explicit development choice, not a fallback for missing release assets.
+Other platforms currently require this path.
 
-To build release files on a clean Linux amd64 checkout with Docker, sudo and
+To prepare release files on a clean Linux amd64 checkout with Docker, sudo and
 AppArmor available:
 
 ```sh
 python3 tools/build_release_artifacts.py --output /tmp/forge-prepared
+sudo python3 tools/qualify_release_roundtrip.py --assets /tmp/forge-prepared
 ```
 
-The destination must be empty. The command prepares and tests files locally; it
-does not publish a release or change GitHub permissions.
+The destination must be empty. These commands build and verify files locally;
+they do not publish a release or change GitHub permissions. The roundtrip tool
+also retains legacy version 1 image-store qualification for maintainers examining
+an existing release.
