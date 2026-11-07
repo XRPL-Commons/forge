@@ -12,7 +12,10 @@ export default async function(page, { base, scenario }) {
       await view.goto(base + path)
       await view.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
       assert.deepEqual(errors, [], `${path} hydrates without timezone or locale mismatches`)
-      if (!path.includes('github')) await view.locator('summary').filter({ hasText: 'Diagnostics' }).click()
+      if (!path.includes('github')) {
+        await view.locator('summary').filter({ hasText: 'More settings' }).click()
+        await view.locator('summary').filter({ hasText: 'Diagnostics' }).click()
+      }
       const text = await view.locator(path.includes('github') ? '#sync-status' : '#repo-checked-at').textContent()
       assert.ok(text.startsWith(path.includes('github') ? 'Last refresh ' : 'Last checked '))
       assert.ok(!/\d{4}-\d{2}-\d{2}T/.test(text), 'mounted dates use the browser locale')

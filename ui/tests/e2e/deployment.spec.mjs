@@ -27,7 +27,7 @@ export default async function (page, { base, scenario, requests }) {
   // and nothing saved yet.
   await page.goto(base + '/settings/repositories/1')
   await page.locator('summary').filter({ hasText: 'More settings' }).click()
-  await page.locator('summary').filter({ hasText: 'Deployment tracking' }).click()
+  await page.locator('summary').filter({ hasText: /^Deployment tracking/ }).click()
   await page.getByText('Inspection details', { exact: true }).click()
   await waitForText(page, 'Proposal ready')
   assert.equal(
@@ -56,7 +56,7 @@ export default async function (page, { base, scenario, requests }) {
   // Confirmed: the profile as one line, and what Forge last observed.
   await page.goto(base + '/settings/repositories/2')
   await page.locator('summary').filter({ hasText: 'More settings' }).click()
-  await page.locator('summary').filter({ hasText: 'Deployment tracking' }).click()
+  await page.locator('summary').filter({ hasText: /^Deployment tracking/ }).click()
   await waitForText(page, 'Tracked')
   assert.equal(
     (await page.locator('#deployment-facts li').innerText()).trim(),
