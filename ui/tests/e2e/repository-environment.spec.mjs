@@ -7,6 +7,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + path)
   await page.locator('#repository-platform-notice').waitFor()
   assert.ok((await page.locator('#repository-platform-notice').innerText()).includes('verification on a Mac'))
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   assert.ok((await page.locator('#test-databases').innerText()).includes('Workers run Linux'))
   assert.ok((await page.locator('#test-databases').innerText()).includes('App.xcodeproj/project.pbxproj'))
@@ -14,6 +15,7 @@ export default async function (page, { base, scenario, requests }) {
 
   await scenario('environment-idle')
   await page.goto(base + path)
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   const card = page.locator('#test-databases')
   await card.getByRole('button', { name: 'Scan requirements' }).click()
@@ -35,6 +37,7 @@ export default async function (page, { base, scenario, requests }) {
   const saved = (await requests()).filter(r => r.method === 'POST' && r.path === endpoint)
   assert.deepEqual(saved[0].body, { repo_id: 2, revision: 'settings-rev-1', environment_revision: 'env-proposed', action: 'confirm' })
   await page.reload()
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   await page.waitForFunction(() => document.querySelector('#test-databases')?.textContent.includes('Repository default: MongoDB'))
   assert.equal(await card.getByRole('button', { name: 'Save repository default' }).count(), 0)
@@ -43,6 +46,7 @@ export default async function (page, { base, scenario, requests }) {
 
   await scenario('environment-saved')
   await page.goto(base + path)
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   await card.getByRole('button', { name: 'Use automatic selection' }).click()
   await page.waitForFunction(() => document.querySelector('#test-databases')?.textContent.includes('Automatic selection is enabled'))
@@ -51,6 +55,7 @@ export default async function (page, { base, scenario, requests }) {
 
   await scenario('environment-failed')
   await page.goto(base + path)
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   await card.getByRole('alert').waitFor()
   assert.ok((await card.innerText()).includes('Repository default: MongoDB'), 'failure must preserve saved requirements')
@@ -59,6 +64,7 @@ export default async function (page, { base, scenario, requests }) {
 
   await scenario('environment-unavailable')
   await page.goto(base + path)
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   await card.getByText('Optional repository default', { exact: true }).click()
   await card.getByRole('button', { name: 'Save repository default' }).waitFor()
@@ -68,6 +74,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('environment-empty')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + path)
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   await card.getByText('Optional repository default', { exact: true }).click()
   await card.getByRole('button', { name: 'Save repository default' }).click()
@@ -83,6 +90,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('environment-proposed')
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(base + path)
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Test environment' }).click()
   await card.getByText('Optional repository default', { exact: true }).click()
   await card.getByRole('button', { name: 'Save repository default' }).waitFor()
