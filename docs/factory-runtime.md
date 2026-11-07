@@ -56,8 +56,8 @@ flowchart TD
   C --> T[Provider native tool sandbox]
   T --> F[Writable workspace and temporary files]
   T --> N[Allowed network destinations through proxy]
-  T -. denied .-> H[Host filesystem and Docker socket]
-  T -. denied .-> Secrets[Private provider credentials and agent configuration]
+  T -. denied .-> H[Unassigned host files and Docker socket]
+  T -. denied .-> Secrets[Controller credentials and persistent state]
 ```
 
 Repository commands run inside the provider's native sandbox as well as the container boundary. Workers get their own workspace and limited network access; they do not get the host's Docker socket or the Controller credential.
@@ -69,7 +69,8 @@ the supervisor checks before publishing role verdicts through the Forge App.
 Untracked native provider delegation is disabled; the supported fallback is
 Forge-managed children.
 
-The current production runner requires Linux, Docker and the installed isolation policies. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
+The supported runner requires Linux, Docker and the installed isolation policies.
+Containers share the host kernel; they do not provide a VM boundary. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
 
 For exact mounts, network rules and limits, read the [runtime reference](factory-runtime-reference.md) and the [isolation status](../SECURITY.md#isolation-status).
 
@@ -77,7 +78,12 @@ For exact mounts, network rules and limits, read the [runtime reference](factory
 
 Coding accounts authenticate the model providers. They are separate from the GitHub Apps that access repositories, and from your operator sign-in.
 
-Open **Settings → Coding accounts** to connect or repair an account using the displayed host instructions. Workers receive the selected account for their assignment; repository tool commands cannot read its private credential files.
+Open **Settings → Connections → Coding accounts**. Codex browser sign-in can
+connect or recover in the web app; other modes use the CLI. Claude API-key jobs
+use a host proxy with a job-scoped capability. Other modes supply provider
+authentication to the harness in the container and rely on the qualified native
+tool sandbox to keep repository commands away from it. See the
+[credential boundaries](../SECURITY.md#runtime-trust-boundaries).
 
 A quota or sign-in problem can make an account unavailable. Forge shows the reason and, when known, when it can retry; waiting for a provider does not charge the issue a failed code attempt.
 

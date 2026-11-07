@@ -32,7 +32,7 @@ interrupted after a fresh GitHub read; they are not replayed. Review the current
 issue, then resubmit the intended action or explicitly resume its migration pause.
 
 The [security guide](../SECURITY.md#isolation-status) holds the canonical
-live/staged/retired inventory. Supported `bin/forge` commands enter
+current isolation boundaries and qualification limits. Supported `bin/forge` commands enter
 `forge.launch`; the setup service selects the SQLite controller after cutover.
 A saved `legacy` onboarding phase becomes `setup`, never a tmux supervisor.
 Existing evidence: [launcher routing](../bin/forge),

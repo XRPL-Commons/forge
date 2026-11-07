@@ -1,88 +1,88 @@
 # Security
 
-Do not open a public issue with exploit details, credentials, private repository
-content, or unredacted worker output. Use GitHub's private vulnerability reporting
-for this repository when available. If it is unavailable, request a private
-reporting channel from the maintainer without including sensitive details.
+## Report a vulnerability
 
-Forge is experimental operator software. Coding agents execute tools with the
-credentials and filesystem access their deployment grants. Workers run in
-disposable containers with repository-scoped credentials; see
-[implementation status](docs/implementation.md) and [isolation status](#isolation-status)
-for what those boundaries do and do not establish.
+Use [GitHub's private vulnerability report](https://github.com/XRPL-Commons/forge/security/advisories/new)
+when available. Private reporting availability has **not yet been verified for
+this release**. If GitHub does not offer **Report a vulnerability**, open a
+[Security contact request](https://github.com/XRPL-Commons/forge/issues/new?title=Security%20contact%20request)
+asking the maintainers for a private channel. Include no vulnerability details
+in that public request; wait for the private channel before sending them.
 
-The dashboard exposes private operational details. Existing installations retain
-trusted-private-network access until [operator sign-in](docs/operator-sign-in.md)
-is configured. Configured instances require GitHub operator sign-in for every
-operational API read and mutation. Use verified HTTPS and an explicit operator
-allowlist before permitting additional users to reach the dashboard. The local
-host account and UI-to-API proxy secret remain trusted; authentication does not
-protect against a compromised controller host. Critical changes require qualifying human
-approval; an audit PASS, a shared agent identity, or a cached summary is not human
-approval. Do not weaken ownership, current-candidate, or cleanup checks to increase
-throughput.
+Do not publish exploit details, credentials, private source or raw worker output.
+A private report should identify the affected Forge revision, deployment type,
+impact and minimal reproduction. Use synthetic data and redact credentials.
+
+## Supported boundary
+
+Forge is experimental operator software. The supported installer targets a
+dedicated Linux host. The service account, Docker daemon, host kernel and
+administrators are trusted. Docker workers share the host kernel: this is **not
+VM isolation** and is not a claim that arbitrary hostile workloads cannot escape.
+Do not share this host with workloads that require a separate trust boundary.
+
+Fresh installations register one Forge GitHub App. Its private key and GitHub
+installation tokens stay on the host. Jobs receive source through a read-only
+mirror and return artifacts; the host publishes changes and merges approved
+candidates. “No GitHub credentials in jobs” does **not** mean “no credentials of
+any kind in jobs”: provider authentication depends on the selected account mode.
 
 ## Runtime trust boundaries
 
-“Live” below means implemented by the supported factory runtime. Host and provider
-qualification still apply to each installation. A compromised service account,
-Docker daemon or host kernel is outside the worker isolation boundary.
+| Boundary | Enforcement and limits |
+| --- | --- |
+| Operator → web app | Configured instances require an authorized operator session for operational reads and mutations. Identity comes from GitHub or a linked Tailscale user through the trusted Serve/UI proxy. HTTPS, host validation, session expiry and action tokens protect browser actions. The factory name is public sign-in metadata. |
+| UI → Python API | Loopback API, private upstream secret, restricted forwarded headers and routes. App keys and provider credentials are not mounted into the UI. The host service account can cross this boundary. |
+| External agent → Forge | Explicit operator approval, repository/capability scope, expiring credentials and revocation. Personal GitHub administration credentials stay in the agent's local CLI. These grants do not give direct host or worker control. |
+| Installation CLI → host | Explicit administrative SSH destination, verified host identity and saved installation intent. App credentials are transferred privately; personal GitHub administration tokens remain local. This authority is broader than an external agent connection. |
+| Controller → worker | Disposable workspace, unprivileged UID, read-only root, dropped capabilities, no-new-privileges, namespaces, seccomp/AppArmor and resource limits. A read-only job-input directory is mounted; the Docker socket, controller state and App credentials are not. Trusted frontends bridge narrowly scoped host services. |
+| Worker → Git mirror | Job-bound authority, pinned source revisions, current installation access and a repository deny list. Declared dependencies and permitted organization repositories can be fetched on demand; a deny entry overrides those allowances. Requests and outcomes are associated with the job. The mirror does not accept pushes. |
+| Worker → publication | Workers return retained artifacts, not GitHub writes. The host validates assignment, target ownership, expected revision, publication permissions and signing qualification before publishing. Workflow edits require the repository's explicit permission and App grant. Uncertain writes are reconciled rather than assumed successful. |
+| Worker → coding provider | Claude API-key mode uses a host proxy: the worker gets a job capability restricted by model, route, account generation, execution ownership and deadline. Other modes, including browser logins, still provide authentication to the harness inside the container and depend on the qualified native tool sandbox and credential scrubbing. Do not assume the proxy covers every provider or login mode. |
+| Worker → network | Internal per-job network and controlled frontends/egress. The egress proxy restricts HTTPS destinations and rejects private/non-global addresses. An allowed service can still receive data sent by a worker; an allowlist is not a data-loss prevention system. |
+| Controller → GitHub merge | The supervisor requires current Review/Audit evidence and applicable operator approval before its own merges. It observes existing GitHub protections and checks the expected head. Forge does not create a mandatory GitHub ruleset or govern merges performed outside Forge. GitHub App grants remain broader than an individual issue or branch. |
 
-| Boundary | Principal and credentials | Enforcing control and limit |
-| --- | --- | --- |
-| Browser → Nitro UI | Authorized operator; browser holds a session cookie and an action token | Verified HTTPS, allowed Host, same-origin mutation checks and bounded JSON requests. Python validates the operator session and action token. Before sign-in is configured, private-network access and the local control capability remain trusted. |
-| Nitro → Python API | Trusted UI proxy; configured with the upstream secret and transiently relays browser cookies/action tokens or approved client bearer tokens. App keys and the identity-app secret are not mounted into it | Python binds to loopback and checks the upstream secret and trusted Host. The UI forwards only allowed headers and routes. This is a service boundary, not protection from the host service account. |
-| External CLI/agent → Forge | Operator-approved connection, scoped to capabilities and repository identities; client credentials in the local OS keyring | Verified HTTPS, expiring credentials, server-side token hashes, explicit approval and revocation. Browser cookies cannot substitute for client credentials. Local `gh` administration tokens are used against GitHub locally and are never uploaded to Forge. |
-| Local administration CLI → host | Operator's SSH account, with permission to manage Forge and its Docker services | SSH host verification and host filesystem permissions. `forge server setup` transfers only the identity-app secret required by that setup; it is hidden input, not an argument. `forge migrate` performs the explicit maintenance/cutover protocol. Host administration is more privileged than a scoped Forge connection. |
-| Controller → private state | Dedicated service account; owns the selected SQLite store, App keys, provider credentials and identity-app secret | Private directories/files, schema and instance checks, qualified SQLite, transactions and revision checks. Long-lived App keys, provider authentication and the identity-app secret remain private referenced files. Token hashes, CSRF values and pending OAuth verifiers are private database state. The browser and worker do not receive database access. |
-| Controller → Docker worker | Trusted controller owns the Docker socket; worker receives an assignment and short-lived repository/role credentials | Disposable volume, UID 1000, read-only root, dropped capabilities, no-new-privileges, private namespaces, seccomp and the qualified runner AppArmor policy. No host directory, Docker socket or App private key is mounted into a job. Recovery receives a separate read-only token from the Controller App, not its merge-capable token. Docker access itself is administrative authority. |
-| Worker harness → repository tools | Provider client can authenticate; repository code is untrusted | Native tool sandbox, image-owned policy and credential scrubbing restrict repository tools. Each adapter needs a real sandbox canary; a model success message is insufficient. Resource limits do not establish credential isolation. |
-| Worker → network | Worker on an internal Docker network; separate egress proxy has no role App key | HTTPS CONNECT allowlist on port 443 and rejection of private/non-global destinations. The runner refuses a non-internal worker network. An allowed public service can still receive data a worker sends to it. |
-| Controller/worker → GitHub | Four role Apps; installation tokens scoped to the selected repository and role | Worker Review/Audit tokens are downscoped to read-only; Recovery uses a read-only Controller App token. Build can publish work. The controller validates candidate evidence and uses its own token for merge. GitHub protections and expected-head checks apply. App grants are repository-scoped, not per-issue or per-branch restrictions; prompts cannot enforce narrower API authority. |
+Older configurations may retain separate role Apps or a separate sign-in App.
+Those compatibility paths do not change the job credential boundary. Before
+operator authentication is configured, legacy deployments may still allow
+private-network reads; browser mutations require a signed-in operator. Complete
+sign-in setup before granting other users network access.
 
-Implementation: [proxy guards](ui/server/utils/proxy.ts),
-[API admission](legacy/forge-status.py), [client connections](docs/agent-connections.md),
-[host sign-in setup](docs/cli-server-setup.md), [runner](forge/factory/runner.py),
-and [runtime configuration and GitHub gates](docs/factory-runtime-reference.md).
+Relevant implementation: [worker boundary](forge/factory/worker_boundary.py),
+[runner](forge/factory/runner.py), [mirror policy](forge/mirror/policy.py),
+[publisher](forge/factory/publisher.py), [provider mode selection](forge/provider_runtime.py),
+[UI proxy](ui/server/utils/proxy.ts), [API admission](legacy/forge-status.py)
+and [operator identity](docs/operator-sign-in.md).
 
 ## Isolation status
 
-| Mechanism | Status | Meaning |
-| --- | --- | --- |
-| Disposable Docker worker, native tool sandbox, runner seccomp/AppArmor and internal egress network | Live | Used by the supported factory runner after host/provider qualification. |
-| SQLite runtime authority, managed launcher and legacy-writer fence | Live after explicit selection | Missing, incompatible or invalid selected state stops startup; it does not select JSON as a fallback. |
-| `safe-build`, memory admission, cgroup limits and build locks | Live resource controls | Bound resource usage and execution time. They do not isolate credentials or confer authorization. |
-| tmux fleet supervisor and its `legacy` onboarding phase | Retired | Supported launchers start the durable factory; old phase values become setup. There is no supported tmux startup path. |
-| JSON lifecycle/configuration stores | Pre-cutover compatibility only; retired on selected instances | The selected runtime fences old readers/writers. Frozen pre-migration data is private diagnosis material, not a recovery backend. |
+The mechanisms above are implemented contracts, not a claim that every host,
+provider or repository has passed live qualification. Setup checks the installed
+runner and provider; publication requires evidence for its current target and
+App context. Synthetic tests and sandbox canaries do not prove a complete
+production issue-to-merge journey. Track that acceptance separately in the
+[onboarding release audit](docs/onboarding-release-audit.md).
+
+Resource admission, timeouts and memory limits reduce resource exhaustion. They
+do not isolate credentials or establish authorization. Do not weaken ownership,
+current-revision, human-approval or cleanup checks to increase throughput.
 
 ## Storage, retention and recovery
 
-The selected store uses WAL with `synchronous=FULL`, private `0700` directories and
-`0600` files. The private, write-once `state/storage` marker binds its location
-and instance.
-Managed `forge.launch` entrypoints select a qualified SQLite library and validate
-schema checksums before opening runtime adapters. Selected state has one authority;
-staging databases cannot accept normal runtime writes. Qualification checks the
-SQLite library linked to Python, not the `sqlite3` shell version; use
-`bin/forge setup initialize` when the managed launcher reports an unqualified runtime.
+Persistent state uses one selected SQLite database with WAL and
+`synchronous=FULL`, private directories/files and a marker binding its location
+and instance. Managed launchers qualify the SQLite runtime and reject missing
+or incompatible selected state. There is no JSON runtime fallback. Long-lived
+App/provider credentials remain private referenced files outside the database;
+session hashes, CSRF values and pending OAuth verifiers are private database state.
 
-Fresh installations use `forge setup new`: the client owns privileged SSH host
-operations and initializes selected SQLite before starting services. Role App
-manifest handoffs require the configured operator and bind owner, role, server,
-generation and expiry. Personal GitHub administration stays local; only the
-server’s own App and provider credentials reach it. See
-[fresh-host setup](docs/cli-fresh-host.md).
+Back up the database using a consistent SQLite backup, together with its private
+instance metadata and referenced credential files. Copying only the main file
+while WAL writers run is not a coherent backup. Disposable workspaces and VM
+snapshots are not substitutes for those backups. See [upgrades and recovery](docs/store-migration.md).
 
-The migration from the JSON runtime was one-way and is complete; there is no JSON
-switch-back. Schema changes are applied with `forge migrate upgrade`, which drains
-workers and stops writers before one migration transaction. See the
-[upgrade procedure](docs/store-migration.md).
-
-Events and structured results are retained. Eligible raw job logs expire after
-30 days through bounded supervisor pruning; active work, current evidence,
-recovery/cleanup and pinned references are retained. Audit history is append-only
-and survives reset on selected SQLite instances. Private artifacts remain
-sensitive even after best-effort redaction. Back up the selected database using a consistent SQLite backup, with
-its private instance metadata and referenced credential files. Copying only the
-main database while WAL writers run is not a coherent backup. Do not initialize
-an empty store over unreconciled workers or GitHub publications.
+Events and structured results are retained. Eligible raw logs expire after
+30 days; active work, current evidence and pinned recovery/cleanup references
+are retained. Reset preserves lifecycle and audit history. Artifacts remain
+sensitive after best-effort redaction. Never replace the selected store with an
+empty one while workers or GitHub publications remain unreconciled.

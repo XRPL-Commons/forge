@@ -4,42 +4,49 @@ Operator sign-in is the authorization prerequisite for external agent connection
 (#15, #122). It protects dashboard data and actions; external CLI connection
 approval and scoped client tokens are described in [agent connections](agent-connections.md).
 
-## Configure an existing server once
+## Setup and identity
 
-For a private Tailscale host, use the local
-[`forge server setup` command](cli-server-setup.md). It resolves operator IDs,
-transfers the identity secret privately over SSH, configures services and HTTPS,
-and supports retries without revoking sessions.
+Start a fresh server with [`forge install`](cli-fresh-host.md). It registers one
+Forge App, uses that App for GitHub sign-in fallback, and links the installing
+operator's observed Tailscale identity to their authorized GitHub ID.
 
-This is once per Forge server, not per repository. Routine sign-in and sign-out
-happen in the UI. The [fresh-host wizard](cli-fresh-host.md) includes this stage
-and then guides role App registration under the configured operator session.
-`forge server setup` continues to require an existing host.
+In Tailscale mode, the UI accepts identity only through its trusted local Serve
+proxy. The API checks the UI's upstream secret and the stored operator link;
+client-supplied identity headers and tagged devices do not authorize an operator.
+GitHub sign-in remains available when the Tailscale identity is absent or unlinked.
+The service account and local proxy remain trusted administrative boundaries.
+
+An older server with a separate identity App can continue using
+[`forge server setup`](cli-server-setup.md). That command configures an existing
+host; it is not the default fresh-install path. Sign-in is configured per factory,
+not per repository. No personal GitHub administration token is uploaded to Forge.
 
 ## Sessions and recovery
 
-Sessions expire after eight hours and use Secure, HttpOnly, SameSite=Lax,
-`__Host-` cookies. Sign-in state expires after ten minutes, is bound to the browser,
-and is consumed before code exchange. PKCE binds that exchange to the sign-in
-attempt. GitHub identity tokens are used transiently for `/user`; Forge stores
-only the resulting ID/login, a session-token hash, expiry and CSRF value.
+GitHub sessions expire after eight hours and use Secure, HttpOnly, SameSite=Lax,
+`__Host-` cookies. Sign-in state expires after ten minutes, is browser-bound and
+consumed before code exchange. PKCE binds that exchange to the sign-in attempt.
+GitHub identity tokens are used transiently for `/user`; Forge stores the
+resulting identity and private session state, not that GitHub token.
 
-`forge server setup` configures sign-in once and refuses to replace a different
-existing configuration; there is no command to replace the operator list or the
-identity App (#259 moves operator identity to Tailscale). Explicit sign-out also revokes client connections
-approved by that operator; automatic browser-session expiry does not. The host account remains the administrative recovery
-boundary. On the selected SQLite runtime, identity, sessions, grants and audit
-history live in the private database. The identity client secret is a private,
-digest-checked file under its `credentials/` directory. Follow the
-[store backup procedure](factory-runtime-reference.md); copying an active WAL database as
-one ordinary file is not a consistent backup. Missing or invalid initialized
-state fails closed. Reconfigure through the CLI to recover access; do not delete
-the database. Before SQLite selection, the legacy private `state/operator-auth`
-directory remains the identity authority.
+Linked Tailscale sessions use eight-hour windows. Their derived tokens remain on
+the server and cannot be presented as browser session cookies. Explicit sign-out
+removes the active Tailscale link and revokes agent connections approved by that
+operator; automatic browser-session expiry does not revoke those connections.
+GitHub sign-in can establish the link again.
 
-Until first configuration, existing deployments retain their previous private
-network access model. Once configured, missing/corrupt state does not silently
-restore that mode. Do not expose an unconfigured instance publicly.
+Identity, sessions, grants and audit history live in the selected SQLite store.
+The sign-in client secret is a private, digest-checked credential file. Back up
+both consistently; do not delete the database to recover access. The host account
+is the administrative recovery boundary. The existing-server setup command
+refuses to overwrite a different identity configuration.
+
+Configured instances require operator authentication for operational reads and
+mutations. Public session metadata includes whether sign-in is enabled and the
+factory display name. Legacy unconfigured instances may retain private-network
+read access, but browser mutations require an operator session. Finish sign-in
+setup before allowing other users onto that network. Invalid selected state fails
+closed; it does not restore a JSON authority or anonymous write capability.
 
 ## Request attribution
 
@@ -81,16 +88,17 @@ local CLI/host configuration changes carry the actor `local:host` and have no
 HTTP request receipt.
 
 Reset preserves this history. One-way migration preserves legacy admission
-records as `admitted`; it does not invent outcomes for them. Before SQLite
-selection, legacy requests continue using the private JSONL admission log. No
-new operational JSONL audit writer is used after selection.
+records as `admitted`; it does not invent outcomes for them. The supported
+runtime has no operational JSONL audit writer.
 
 ## Credential boundary
 
 GitHub operator identity and approved Forge client credentials authorize actions
 inside Forge. The external agent's local GitHub administrative identity stays in
 its local CLI credential store. This change adds no endpoint accepting that
-identity or its token. Worker role Apps and coding provider logins are unchanged.
+identity or its token. Workers receive source from the read-only Git mirror,
+while the host holds GitHub publication authority. Provider authentication is a
+separate boundary; see [Security](../SECURITY.md#runtime-trust-boundaries).
 
 Protocol reference: [GitHub OAuth web application flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#web-application-flow).
 
