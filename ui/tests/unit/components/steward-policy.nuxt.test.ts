@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended, mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
+import SelectMenu from '@nuxt/ui/components/SelectMenu.vue'
 import RepositoryStewardPolicy from '../../../app/components/RepositoryStewardPolicy.vue'
 const { get, act } = vi.hoisted(() => ({ get: vi.fn(), act: vi.fn() }))
 mockNuxtImport('useForgeApi', () => () => ({ get, act }))
@@ -17,9 +18,9 @@ describe('steward repository policy', () => {
     const wrapper = await mountSuspended(RepositoryStewardPolicy, { props: { repoId } })
     await flushPromises()
     expect(get).toHaveBeenCalledWith(`/api/repositories/steward?repo_id=${repoId}`)
-    await wrapper.get('select').setValue('manual'); await wrapper.get('form').trigger('submit'); await flushPromises()
+    wrapper.getComponent(SelectMenu).vm.$emit('update:modelValue', 'manual'); await flushPromises(); await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(act).toHaveBeenCalledWith('/api/repositories/steward', { repo_id: repoId, revision: 2, policy: 'manual' })
-    expect(wrapper.get('select').element.value).toBe('manual')
+    expect(wrapper.getComponent(SelectMenu).props('modelValue')).toBe('manual')
     expect(wrapper.text()).toContain('Saved')
     wrapper.unmount()
   })
@@ -28,7 +29,7 @@ describe('steward repository policy', () => {
     get.mockResolvedValue({ ok: true, repo_id: repoId, name: 'owner/repo', policy: 'manual', revision: 3 })
     act.mockRejectedValue(new Error('lost reply'))
     const wrapper = await mountSuspended(RepositoryStewardPolicy, { props: { repoId } })
-    await flushPromises(); await wrapper.get('select').setValue('reversible'); await wrapper.get('form').trigger('submit'); await flushPromises()
+    await flushPromises(); wrapper.getComponent(SelectMenu).vm.$emit('update:modelValue', 'reversible'); await flushPromises(); await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(wrapper.text()).toContain('lost reply')
     expect(act).toHaveBeenCalledTimes(1)
     wrapper.unmount()

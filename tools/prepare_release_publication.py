@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from forge.release_artifacts import REPOSITORY, release_tag
+from forge.release_artifacts import ASSETS, REPOSITORY, manifest_shape, release_tag
 
 
 def prepare(revision, *, run=subprocess.run):
@@ -26,13 +26,28 @@ def prepare(revision, *, run=subprocess.run):
     if not isinstance(release, dict) or release.get('tag_name') != tag:
         raise ValueError('GitHub returned a different release; no publication state was changed.')
     if release.get('draft') is False:
+        assets = release.get('assets')
+        expected = {'manifest.json', ASSETS['ui']}
+        if (not isinstance(assets, list) or len(assets) != len(expected)
+                or {item.get('name') for item in assets if isinstance(item, dict)} != expected):
+            raise ValueError('Published release contains unexpected assets; it is not a UI-only release.')
+        result = run(['gh', 'release', 'download', tag, '--repo', REPOSITORY,
+                      '--pattern', 'manifest.json', '--output', '-'], capture_output=True, text=True)
+        if result.returncode:
+            raise ValueError('Could not verify the published UI-only manifest.')
+        try:
+            manifest = manifest_shape(json.loads(result.stdout), revision)
+        except (ValueError, TypeError):
+            raise ValueError('Could not verify the published UI-only manifest.') from None
+        if manifest['version'] != 2:
+            raise ValueError('Published release does not declare local worker builds.')
         return 'published'
     if (release.get('draft') is not True or release.get('target_commitish') != revision
             or not isinstance(release.get('author'), dict)
             or release['author'].get('login') != 'github-actions[bot]'):
         raise ValueError('Only this workflow’s unpublished draft for the exact commit can be retried.')
     # A failed upload can leave a partial draft. Rebuild all assets together,
-    # because rebuilding pinned source can still produce different image IDs.
+    # because rebuilding pinned UI source can still produce different asset bytes.
     # Keep the tag. Published releases and drafts owned by humans are untouched.
     run(['gh', 'release', 'delete', tag, '--repo', REPOSITORY, '--yes'],
         check=True, capture_output=True, text=True)

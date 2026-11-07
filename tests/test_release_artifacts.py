@@ -23,6 +23,14 @@ def manifest(payload=b'archive'):
                 for kind, filename in artifacts.ASSETS.items()}}
 
 
+def local_manifest(payload=b'archive'):
+    value = manifest(payload)
+    value['version'] = 2
+    value['workers'] = {kind: {'delivery': 'local-build', 'inputs': INPUTS[kind]} for kind in ('runner', 'full')}
+    value['artifacts'] = {'ui': value['artifacts']['ui']}
+    return value
+
+
 def validated(value):
     return artifacts.validate_manifest(value, REVISION, INPUTS, 'node@sha256:fixed', 'python@sha256:fixed')
 
@@ -63,6 +71,75 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(artifacts.ArtifactError, 'Linux amd64'):
                 artifacts.prepared(REVISION, INPUTS['runner'], INPUTS['full'], INPUTS['ui'], 'node', 'python')
             fetch.assert_not_called()
+
+
+class LocalWorkerReleaseTests(unittest.TestCase):
+    def test_policy_is_complete_explicit_and_bound_to_source_inputs(self):
+        value = local_manifest()
+        self.assertEqual(validated(value), value)
+        self.assertEqual(artifacts.manifest_shape(value, REVISION), value)
+        self.assertEqual(artifacts.artifact_kinds(value), ('ui',))
+        for mutate in (
+            lambda v: v.pop('workers'),
+            lambda v: v['workers'].pop('full'),
+            lambda v: v['workers']['runner'].update(delivery='prepared'),
+            lambda v: v['workers']['runner'].update(inputs='e' * 64),
+            lambda v: v['artifacts'].update(runner=manifest()['artifacts']['runner']),
+            lambda v: v['artifacts'].pop('ui'),
+        ):
+            candidate = local_manifest(); mutate(candidate)
+            with self.subTest(candidate=candidate), self.assertRaises(artifacts.ArtifactError):
+                validated(candidate)
+
+    def test_host_builds_workers_but_keeps_prepared_ui(self):
+        release = artifacts.Release(REVISION, validated(local_manifest()))
+        missing = subprocess.CompletedProcess([], 1, '', '')
+        built = subprocess.CompletedProcess([], 0, BASE + '\n', '')
+        def unpack(target):
+            (target / 'server').mkdir(parents=True)
+            (target / 'server/index.mjs').write_text('prepared')
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(host_update, 'prepared_release', return_value=release), \
+                patch.object(host_update.subprocess, 'run', return_value=missing), \
+                patch.object(host_update, 'command', return_value=built) as command, \
+                patch.object(release, 'image') as image, patch.object(release, 'ui', side_effect=unpack):
+            self.assertEqual(host_update.runner_image(), BASE)
+            self.assertEqual(host_update.full_runner_image(BASE), BASE)
+            key = host_update.ui_release(Path(temporary))
+            self.assertEqual((Path(temporary) / 'ui/releases' / key / 'server/index.mjs').read_text(), 'prepared')
+            builds = [call.args[0] for call in command.call_args_list if call.args[0][:2] == ['docker', 'build']]
+            self.assertEqual(len(builds), 2)
+            self.assertTrue(any('Dockerfile.full' in str(argv) for argv in builds))
+            image.assert_not_called()
+
+    def test_missing_or_corrupt_ui_never_becomes_a_source_ui_build(self):
+        release = artifacts.Release(REVISION, validated(local_manifest()))
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(host_update, 'prepared_release', return_value=release), \
+                patch.object(artifacts.urllib.request, 'urlopen', return_value=io.BytesIO(b'bad')), \
+                patch.object(host_update, 'command') as command:
+            with self.assertRaises(artifacts.ArtifactError):
+                host_update.ui_release(Path(temporary))
+            command.assert_not_called()
+        with self.assertRaises(artifacts.ArtifactError):
+            release.image('runner')
+
+    def test_only_ui_is_staged_promoted_and_reused(self):
+        payload = b'archive'
+        access = {'revision': REVISION, 'manifest': local_manifest(payload), 'urls': {
+            'ui': 'https://release-assets.githubusercontent.com/release/ui?sig=temporary'}}
+        opener = Mock(); opener.open.side_effect = lambda *a, **kw: io.BytesIO(payload)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(artifacts.urllib.request, 'build_opener', return_value=opener):
+            cache, promoted = Path(temporary) / 'cache', Path(temporary) / 'service'
+            self.assertEqual(artifacts.stage(access, cache)['cached'], ['ui'])
+            self.assertEqual(artifacts.stage(access, cache)['cached'], ['ui'])
+            self.assertEqual(opener.open.call_count, 1)
+            self.assertEqual(artifacts.copy_cache(REVISION, cache, promoted)['cached'], ['ui'])
+            self.assertEqual(artifacts.cached_manifest(REVISION, promoted), access['manifest'])
+            access['urls']['runner'] = access['urls']['ui']
+            with self.assertRaises(artifacts.ArtifactError):
+                artifacts.stage(access, cache)
 
 
 class ConsumptionTests(unittest.TestCase):

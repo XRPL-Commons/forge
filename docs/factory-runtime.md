@@ -18,14 +18,10 @@ flowchart TD
 
 ## Workers and slots
 
-**Build** owns implementation and the assigned pull request. For an approved group,
-one logical builder plans tracked tasks, releases its planning lease, then
-resumes integration after accepted outputs and verified task cleanup. A task may
-cover several issues, and several tasks may contribute to one issue. The builder
-can execute a prerequisite task itself, delegate it to a child, or keep work for
-final integration. Every task uses an isolated checkout and exact prerequisite
-outputs. Independent tasks and separate deliveries share the same role slots,
-memory and account limits.
+**Build** owns implementation and the assigned pull request. One builder can
+coordinate an approved group of issues, delegate independent tasks to children,
+then integrate their accepted outputs. Each task has its own checkout. Builders
+and children share the same role slots, memory and account limits.
 **Review** checks the complete candidate, **Audit** checks security, and
 **Recovery** investigates a failed attempt before the next decision.
 
@@ -56,8 +52,8 @@ flowchart TD
   C --> T[Provider native tool sandbox]
   T --> F[Writable workspace and temporary files]
   T --> N[Allowed network destinations through proxy]
-  T -. denied .-> H[Host filesystem and Docker socket]
-  T -. denied .-> Secrets[Private provider credentials and agent configuration]
+  T -. denied .-> H[Unassigned host files and Docker socket]
+  T -. denied .-> Secrets[Controller credentials and persistent state]
 ```
 
 Repository commands run inside the provider's native sandbox as well as the container boundary. Workers get their own workspace and limited network access; they do not get the host's Docker socket or the Controller credential.
@@ -69,7 +65,8 @@ the supervisor checks before publishing role verdicts through the Forge App.
 Untracked native provider delegation is disabled; the supported fallback is
 Forge-managed children.
 
-The current production runner requires Linux, Docker and the installed isolation policies. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
+The supported runner requires Linux, Docker and the installed isolation policies.
+Containers share the host kernel; they do not provide a VM boundary. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
 
 For exact mounts, network rules and limits, read the [runtime reference](factory-runtime-reference.md) and the [isolation status](../SECURITY.md#isolation-status).
 
@@ -77,7 +74,12 @@ For exact mounts, network rules and limits, read the [runtime reference](factory
 
 Coding accounts authenticate the model providers. They are separate from the GitHub Apps that access repositories, and from your operator sign-in.
 
-Open **Settings → Coding accounts** to connect or repair an account using the displayed host instructions. Workers receive the selected account for their assignment; repository tool commands cannot read its private credential files.
+Open **Settings → Connections → Coding accounts**. Codex browser sign-in can
+connect or recover in the web app; other modes use the CLI. Claude API-key jobs
+use a host proxy with a job-scoped capability. Other modes supply provider
+authentication to the harness in the container and rely on the qualified native
+tool sandbox to keep repository commands away from it. See the
+[credential boundaries](../SECURITY.md#runtime-trust-boundaries).
 
 A quota or sign-in problem can make an account unavailable. Forge shows the reason and, when known, when it can retry; waiting for a provider does not charge the issue a failed code attempt.
 
@@ -104,20 +106,13 @@ flowchart TD
   D -->|No| Wait
 ```
 
-Repository setup is also a delivery blocker. Implementation admission uses the
-same repository identity, App connection revision and fresh protection report
-shown in Settings. An unreadable observation or an
-expired report shows **Repository setup** on the affected issues, with a link to
-restore access or recheck the repository. The ordinary setup refresh and issue
-observation clear this blocker after verified readiness; independent holds stay
-in place. Dispatch saves its final protection read through that same report
-boundary, so a newly discovered failure is visible immediately.
-
-This readiness check does not change repository permissions or enablement.
-Protection report expiry does not revoke a running worker or its output. New
-work waits, and publication/merge retain their live policy checks. Auxiliary
-repository planning and failure diagnosis require access, without requiring
-publication readiness; loss of access still blocks them.
+If repository access or its latest check is unavailable or stale, affected issues
+show **Repository setup** with a link to restore access or recheck. Verified
+readiness clears this blocker; other holds remain. New implementation work waits,
+but an expired report does not cancel running workers or discard their outputs.
+Planning and diagnosis can continue while repository access remains available.
+Publication and merging still recheck current conditions. These checks do not
+change permissions or enable automation.
 
 A green worker result alone is not merge permission. Forge checks its App-bound Review and Audit evidence, required CI, verification, repository protections and current ownership; unresolved changes requested also prevent merging.
 

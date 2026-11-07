@@ -42,6 +42,7 @@ ERRORS = {
     'account_handoff_unconfirmed': 'A different login is now connected. Inspect it before replacing provider credentials.',
     'administrator_required': 'Use root or an SSH account with noninteractive sudo for this VM.',
     'unsupported_os': 'Fresh installation currently supports Ubuntu 24.04. Select a supported VM.',
+    'unsupported_architecture': 'Fresh installation requires an x86-64 (amd64) Ubuntu 24.04 server. ARM64 servers are not supported; select an x86-64 VM.',
     'apparmor_required': 'Use a VM with AppArmor enabled in its kernel.',
     'systemd_required': 'Use a VM running systemd.',
     'existing_installation': 'This host already has a forge account or installation. Use the existing-server commands or select a fresh VM.',
@@ -133,7 +134,7 @@ def revision(value=None, *, run=run_bounded, fetch_manifest=None):
         return value
     executable = shutil.which('gh')
     require(executable, 'github_cli_missing', 'Install the GitHub CLI locally before selecting a prepared Forge release.')
-    from forge.release_artifacts import ASSETS, ArtifactError
+    from forge.release_artifacts import ASSETS, ArtifactError, manifest_shape, artifact_kinds
     from .release_delivery import read_manifest
     try:
         raw = run([executable, 'api', '--hostname', 'github.com', '--method', 'GET',
@@ -141,7 +142,7 @@ def revision(value=None, *, run=run_bounded, fetch_manifest=None):
                    'repos/XRPL-Commons/forge/releases?per_page=100'])
         releases = json.loads(raw)
         require(isinstance(releases, list), 'prepared_release_unavailable')
-        required_assets = {'manifest.json', *ASSETS.values()}
+        required_assets = {'manifest.json', ASSETS['ui']}
         candidates = [item for item in releases if isinstance(item, dict)
                       and item.get('draft') is False and item.get('prerelease') is False
                       and isinstance(item.get('tag_name'), str)
@@ -153,14 +154,10 @@ def revision(value=None, *, run=run_bounded, fetch_manifest=None):
         selected = max(candidates, key=lambda item: item['published_at'])
         commit = selected['tag_name'].removeprefix('forge-build-')
         manifest = fetch_manifest(commit) if fetch_manifest else read_manifest(commit, run=run)
-        require(isinstance(manifest, dict) and manifest.get('version') == 1 and manifest.get('source') == commit
-                and manifest.get('platform') == 'linux/amd64' and isinstance(manifest.get('artifacts'), dict)
-                and set(manifest['artifacts']) == set(ASSETS), 'prepared_release_unavailable')
-        for kind, filename in ASSETS.items():
-            asset = manifest['artifacts'][kind]
-            require(isinstance(asset, dict) and asset.get('filename') == filename
-                    and isinstance(asset.get('sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])
-                    and type(asset.get('size')) is int and asset['size'] > 0, 'prepared_release_unavailable')
+        manifest_shape(manifest, commit)
+        require({ASSETS[kind] for kind in artifact_kinds(manifest)} <=
+                {asset.get('name') for asset in selected['assets'] if isinstance(asset, dict)},
+                'prepared_release_unavailable')
         return commit
     except (SetupError, ArtifactError, ValueError, TypeError):
         raise SetupError('prepared_release_unavailable',

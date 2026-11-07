@@ -1,4 +1,4 @@
-name: Prepared release
+name: Prepared UI release
 
 on:
   workflow_run:
@@ -38,12 +38,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          python3 -c "from tools.build_release_artifacts import RELEASE_MANIFEST_VERSION; assert RELEASE_MANIFEST_VERSION == 2"
           state=$(python3 tools/prepare_release_publication.py "$RELEASE_SHA")
           echo "state=$state" >> "$GITHUB_OUTPUT"
-      - name: Build UI and qualify pinned worker images
+      - name: Build distributable UI and qualify local worker recipes
         if: steps.publication.outputs.state == 'build'
         run: python3 tools/build_release_artifacts.py --output "$RUNNER_TEMP/forge-prepared"
-      - name: Qualify exported images in classic and containerd stores
+      - name: Verify prepared UI archive and dependency notices
         if: steps.publication.outputs.state == 'build'
         run: sudo python3 tools/qualify_release_roundtrip.py --assets "$RUNNER_TEMP/forge-prepared"
       - name: Publish the complete release
@@ -54,9 +55,7 @@ jobs:
           gh release create "forge-build-$RELEASE_SHA" \
             --target "$RELEASE_SHA" --draft \
             --title "Forge $RELEASE_SHA" \
-            --notes "Prepared Linux amd64 assets for the exact commit that passed CI. Worker images passed build-environment and isolation canaries, and exported archives passed loading and execution in classic and containerd Docker stores. Installations verify asset checksums and repeat host qualification." \
+            --notes "Prepared Linux amd64 UI for the exact commit that passed CI, including third-party notices. Worker recipes passed environment and isolation canaries in CI. Workers are built and qualified on the operator host; no worker binaries are distributed." \
             "$RUNNER_TEMP/forge-prepared/manifest.json" \
-            "$RUNNER_TEMP/forge-prepared/forge-ui-linux-amd64.tar.gz" \
-            "$RUNNER_TEMP/forge-prepared/forge-runner-linux-amd64.tar.gz" \
-            "$RUNNER_TEMP/forge-prepared/forge-runner-full-linux-amd64.tar.gz"
+            "$RUNNER_TEMP/forge-prepared/forge-ui-linux-amd64.tar.gz"
           gh release edit "forge-build-$RELEASE_SHA" --draft=false

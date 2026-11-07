@@ -240,9 +240,11 @@ class H(BaseHTTPRequestHandler):
     def _auth_get(self, url):
         from forge.operator_auth import read_cookie, FLOW_COOKIE, cookie, failure_reason
         if url.path == '/api/auth/session':
+            from forge.factory_identity import display_name
             mode = self._auth.identity_settings()['mode'] if self._auth_config else None
             self._send(json.dumps({'ok': True, 'enabled': bool(self._auth_config),
                                   'operator': self._session['operator'] if self._session else None,
+                                  'factory_name': display_name(WD),
                                   **({'mode': mode} if self._auth_config else {}),
                                   **({'controls_token': self._action_token, 'via': self._session.get('via', 'github')} if self._session else {})}))
             return True
@@ -714,6 +716,9 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
             except (ValueError, OSError, RuntimeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Installation progress is unavailable. Refresh to try again.'}))
+        elif u.path == '/api/updates':
+            from forge.updates import view
+            self._send(json.dumps(view(refresh=parse_qs(u.query).get('refresh') == ['1'])))
         elif u.path == '/api/onboarding':
             from forge.onboarding import Onboarding
             try:

@@ -1,0 +1,58 @@
+[
+  {
+    "file": "lucide.txt",
+    "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
+    "packages": {
+      "@iconify-json/lucide": "1.2.135"
+    },
+    "source": "https://github.com/lucide-icons/lucide/blob/e715245d62667c800e7f54c94b1b023692e900a3/LICENSE",
+    "revision": "e715245d62667c800e7f54c94b1b023692e900a3",
+    "version_evidence": "The exact @iconify-json/lucide 1.2.135 info.json identifies the Lucide ISC license URL. This is its latest LICENSE revision preceding the dataset lastModified timestamp 1789899190. The full text includes retained Feather attribution."
+  },
+  {
+    "file": "embla.txt",
+    "sha256": "992490064b90ec94c302fe5f29dcc14cb44145857064e46f9ffe6c8f511c1093",
+    "packages": {
+      "embla-carousel": "8.6.0",
+      "embla-carousel-vue": "8.6.0",
+      "embla-carousel-auto-height": "8.6.0",
+      "embla-carousel-auto-scroll": "8.6.0",
+      "embla-carousel-autoplay": "8.6.0",
+      "embla-carousel-class-names": "8.6.0",
+      "embla-carousel-fade": "8.6.0",
+      "embla-carousel-reactive-utils": "8.6.0"
+    },
+    "source": "https://github.com/davidjerleke/embla-carousel/blob/0fe65834136f1aa35e4c1a4a477e5ccb4bb5ee54/LICENSE",
+    "revision": "0fe65834136f1aa35e4c1a4a477e5ccb4bb5ee54",
+    "version_evidence": "npm embla-carousel@8.6.0 gitHead; shared repository license for same-version plugins."
+  },
+  {
+    "file": "embla-wheel.txt",
+    "sha256": "7f39dbc7f60672104601c72819d493d74a397c8118232c839460d27b97123c55",
+    "packages": {
+      "embla-carousel-wheel-gestures": "8.1.0"
+    },
+    "source": "https://github.com/xiel/embla-carousel-wheel-gestures/blob/a7515bb5d04f5e3f5f0a06dd6bc950bb21101820/LICENSE",
+    "revision": "a7515bb5d04f5e3f5f0a06dd6bc950bb21101820",
+    "version_evidence": "Upstream v8.1.0 tag."
+  },
+  {
+    "file": "vaul-vue.txt",
+    "sha256": "ba02930e278b4ed6b564150a261b50319b5cef2a965b7470ae13498ece835944",
+    "packages": {
+      "vaul-vue": "0.4.1"
+    },
+    "source": "https://github.com/Elliot-Alexander/vaul-vue/blob/1b1f6dfdba6a775410508884097443d35c9a8690/LICENSE",
+    "revision": "1b1f6dfdba6a775410508884097443d35c9a8690",
+    "version_evidence": "npm vaul-vue@0.4.1 gitHead and matching upstream vaul-vue@0.4.1 tag."
+  },
+  {
+    "file": "elkjs-source.txt",
+    "sha256": "c8e339d748b30209447310d06e61acfb8fb1840ddd12203b8d7976dfa8eade29",
+    "packages": {
+      "elkjs": "0.9.3"
+    },
+    "source": "https://github.com/kieler/elkjs/releases/tag/0.9.3",
+    "version_evidence": "Upstream release explicitly names ELK0.9.1 plus PR955; source-availability statement maintained by Forge."
+  }
+]

@@ -8,6 +8,10 @@ const deploymentOpen = ref(false)
 const wizard = ref(route.query.setup === '1')
 watch(() => route.query.setup, value => { if (value === '1') wizard.value = true })
 const { poll, live, row, report, displayReady, hint, busy, checking, error, deployment, deployError, environmentError, environmentNotice, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, mirrorNotice, updateMirrorPolicy, updateReviewScope, updateMergePolicy, disable } = useRepository(repoId, computed(() => !wizard.value), deploymentOpen)
+const settingsAttention = computed(() => [
+  (row.value?.environment?.error || environmentError.value) && 'Test environment',
+  (deployment.value?.error || deployment.value?.state === 'failed' || deployError.value) && 'Deployment tracking',
+].filter(Boolean).join(' and '))
 const disabling = ref(false)
 async function confirmDisable() { await disable(); if (!row.value?.enabled) disabling.value = false }
 const environmentSummary = computed(() => row.value?.environment?.external_verification
@@ -33,46 +37,48 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
         <h2 id="automation-heading" class="text-lg font-semibold text-white">Automation</h2>
         <div v-if="live">
           <USwitch :model-value="row.enabled" label="Enable automation" :disabled="busy" @update:model-value="value => value ? wizard = true : disabling = true" />
-          <p class="mt-2 text-muted">Let Forge pick up eligible issues and review pull requests in this repository.</p>
+          <p class="mt-2 text-muted">Work on issues and review pull requests.</p>
         </div>
         <RepositoryChoiceSetting v-if="live && row.configured && row.merge_policy && row.merge_check_revision" id="merge-policy" label="Merging" :value="row.merge_policy"
-          :options="[{ value: 'human', label: 'Require human approval' }, { value: 'auto', label: 'Merge automatically after checks' }]" :disabled="busy" :save="updateMergePolicy" v-slot="{ value }">
-          <p>Forge merges its work after CI, independent Review and Audit pass. Any additional approval requested during the work must also be resolved.</p>
-          <p v-if="value === 'human'" class="mt-1">An authorized person must also approve the pull request on GitHub. <NuxtLink to="/settings#approvers" class="text-sky-200 underline">See who can approve</NuxtLink>.</p>
+          :options="[{ value: 'human', label: 'Require human approval' }, { value: 'auto', label: 'Merge after checks' }]" :disabled="busy" :save="updateMergePolicy" v-slot="{ value }">
+          <p v-if="value === 'human'">An authorized reviewer must approve Forge’s pull requests. <NuxtLink to="/settings#approvers" class="text-sky-200 underline">Manage reviewers</NuxtLink></p>
+          <p v-else>Forge merges its pull requests after required checks and approvals pass.</p>
         </RepositoryChoiceSetting>
-        <RepositoryChoiceSetting v-if="live && row.configured && row.merge_check_revision" id="review-scope" label="Review pull requests" :value="row.merge_check_scope ?? 'all'"
-          :options="[{ value: 'all', label: 'All pull requests' }, { value: 'forge', label: 'Forge-created pull requests only' }]" :disabled="busy" :save="updateReviewScope" v-slot="{ value }">
-          <p>{{ value === 'forge' ? 'Forge reviews and audits only the pull requests it creates.' : 'Forge reviews and audits both its own pull requests and those opened by others.' }} Reviewing someone else's pull request does not authorize Forge to merge it.</p>
-        </RepositoryChoiceSetting>
-        <RepositoryStewardPolicy v-if="live && row.configured" :key="`steward-${row.id}`" :repo-id="row.id" />
       </section>
 
-      <section v-if="live" class="mt-6 space-y-3" aria-labelledby="advanced-heading">
-        <h2 id="advanced-heading" class="text-lg font-semibold text-white">Advanced</h2>
-        <RepositorySettingsSection title="Dependency access" :summary="row.mirror_denied_repositories?.length ? `${row.mirror_denied_repositories.length} blocked` : 'No repositories blocked'">
-          <RepositoryMirrorPolicyCard :key="`mirror-${row.id}`" :entries="row.mirror_denied_repositories ?? []" :busy="busy" :error="mirrorError" :notice="mirrorNotice" @save="updateMirrorPolicy" />
-        </RepositorySettingsSection>
-        <RepositorySettingsSection v-if="row.environment" title="Test environment" :summary="row.environment.error ? 'Needs attention' : environmentSummary">
-          <RepositoryEnvironmentCard :key="row.id" :environment="row.environment" :busy="busy" :action="environmentAction" :error="environmentError" :notice="environmentNotice" :access-ready="row.access_ready"
-            @scan="updateEnvironment('scan')" @confirm="updateEnvironment('confirm')" @automatic="updateEnvironment('automatic')" />
-        </RepositorySettingsSection>
-        <RepositorySettingsSection v-if="deployment" title="Deployment tracking" :summary="deployment.status" @update:open="deploymentOpen = $event">
-          <DeploymentCard :card="deployment" :busy="busy" :error="deployError"
-            @confirm="domain => decide('confirm', { domain })" @reject="rejecting = true" @reread="decide('reread')" />
-        </RepositorySettingsSection>
-      </section>
+      <RepositorySettingsSection class="mt-5" :attention="!!settingsAttention" title="More settings" :summary="settingsAttention ? `${settingsAttention} needs attention` : 'Reviews, recovery and environment'">
+        <div class="space-y-6">
+          <RepositoryChoiceSetting v-if="live && row.configured && row.merge_check_revision" id="review-scope" label="Review pull requests" :value="row.merge_check_scope ?? 'all'"
+            :options="[{ value: 'all', label: 'All pull requests' }, { value: 'forge', label: 'Forge pull requests' }]" :disabled="busy" :save="updateReviewScope" v-slot="{ value }">
+            <p>{{ value === 'forge' ? 'Review and audit Forge’s pull requests.' : 'Review and audit pull requests from everyone.' }}</p>
+          </RepositoryChoiceSetting>
+          <RepositoryStewardPolicy v-if="live && row.configured" :key="`steward-${row.id}`" :repo-id="row.id" />
 
-      <div class="mt-6">
-        <RepositorySettingsSection title="Diagnostics" :summary="row.access_ready && displayReady ? 'Repository checks ready' : 'Check repository setup'">
-          <p class="text-sm text-muted">GitHub access: {{ row.access_ready ? 'Connected' : 'Needs attention' }}</p>
-          <div class="mt-3 flex flex-wrap items-center gap-3">
-            <UButton color="neutral" variant="outline" :disabled="busy || !row.access_ready" :loading="checking" @click="check">Refresh repository</UButton>
-            <NuxtLink to="/settings/github" class="text-sm text-sky-200 underline">Manage GitHub access</NuxtLink>
-            <span id="repo-checked-at" class="text-xs text-muted">{{ checkedAtText(report, localTime) }}</span>
+          <div v-if="live" class="space-y-3">
+            <RepositorySettingsSection title="Dependency access" :summary="row.mirror_denied_repositories?.length ? `${row.mirror_denied_repositories.length} blocked` : 'No repositories blocked'">
+              <RepositoryMirrorPolicyCard :key="`mirror-${row.id}`" :entries="row.mirror_denied_repositories ?? []" :busy="busy" :error="mirrorError" :notice="mirrorNotice" @save="updateMirrorPolicy" />
+            </RepositorySettingsSection>
+            <RepositorySettingsSection v-if="row.environment" title="Test environment" :summary="row.environment.error ? 'Needs attention' : environmentSummary">
+              <RepositoryEnvironmentCard :key="row.id" :environment="row.environment" :busy="busy" :action="environmentAction" :error="environmentError" :notice="environmentNotice" :access-ready="row.access_ready"
+                @scan="updateEnvironment('scan')" @confirm="updateEnvironment('confirm')" @automatic="updateEnvironment('automatic')" />
+            </RepositorySettingsSection>
+            <RepositorySettingsSection v-if="deployment" title="Deployment tracking" :summary="deployment.status" @update:open="deploymentOpen = $event">
+              <DeploymentCard :card="deployment" :busy="busy" :error="deployError"
+                @confirm="domain => decide('confirm', { domain })" @reject="rejecting = true" @reread="decide('reread')" />
+            </RepositorySettingsSection>
           </div>
-          <RepositoryRulesPanel id-prefix="repo-" :diagnostics-only="true" :row="row" :live="live" :report="report" :display-ready="displayReady" :hint="hint" />
-        </RepositorySettingsSection>
-      </div>
+
+          <RepositorySettingsSection title="Diagnostics" :summary="row.access_ready && displayReady ? 'Repository checks ready' : 'Check repository setup'">
+            <p class="text-sm text-muted">GitHub access: {{ row.access_ready ? 'Connected' : 'Needs attention' }}</p>
+            <div class="mt-3 flex flex-wrap items-center gap-3">
+              <UButton color="neutral" variant="outline" :disabled="busy || !row.access_ready" :loading="checking" @click="check">Refresh repository</UButton>
+              <NuxtLink to="/settings/github" class="text-sm text-sky-200 underline">Manage GitHub access</NuxtLink>
+              <span id="repo-checked-at" class="text-xs text-muted">{{ checkedAtText(report, localTime) }}</span>
+            </div>
+            <RepositoryRulesPanel id-prefix="repo-" :diagnostics-only="true" :row="row" :live="live" :report="report" :display-ready="displayReady" :hint="hint" />
+          </RepositorySettingsSection>
+        </div>
+      </RepositorySettingsSection>
     </template>
     <RepositorySetupWizard v-if="wizard" :initial-repo-id="repoId" @close="closed" @enabled="closed" />
     <ConfirmDialog :open="disabling" :title="`Disable automation for ${row?.name}?`" text="Forge stops picking up work in this repository. Existing pull requests, branches and history are kept."

@@ -1,107 +1,83 @@
 # Implementation status
 
-`forge/factory` implements the [durable factory contract](software-factory-spec.md).
-It is Forge's only operating mode; the earlier tmux fleet supervisor has been removed.
-See [runtime setup](factory-runtime-reference.md) for the exact configuration and host policy.
+`forge/factory` is Forge's supported operating mode. It uses a durable supervisor,
+SQLite state and disposable Linux workers. The tmux supervisor and operational
+JSON stores are retired. See [runtime configuration](factory-runtime-reference.md).
 
-## Implemented
+## Installation and operation
 
-- Guided three-screen onboarding with GitHub App manifests, staged configuration,
-  server-owned readiness checks, and supervisor-applied Start and full reset.
-- Reset retains selected SQLite lifecycle and audit history after verified teardown.
-  Its journal survives restarts, and old reset intents cannot affect a newer installation.
+- `forge install` saves the approved plan, checks prerequisites, installs the host
+  and creates one GitHub App. Host preparation still precedes some browser consent.
+- The CLI hands work to the web app after the server confirms ownership. Web
+  progress shows preparation, account actions and the first-merge test. Codex
+  browser sign-in and recovery are available there; other account modes use the CLI.
+- Repository selection and activation are explicit. Per-repository settings cover
+  merge approval, review scope, planning and execution requirements.
+- GitHub branch protections are observed, not created by Forge. A paid GitHub plan
+  is not a general prerequisite. Existing repository rules can still block a merge.
+- Reset uses durable operations, verified teardown and generation checks. It
+  preserves lifecycle and audit history.
 
-- Supervisor-owned issue history and assignments, with serialized durable
-  reservations before launch and checked ownership invariants on load/save.
-- Sequential candidate Review, Audit and merge routing; one shared three-failure delivery budget,
-  mandatory bounded investigations, repeat-pattern holds and explicit human retry.
-- Exact PR submission metadata, revision-bound verdicts, role App publication,
-  shared repository admission and supervisor-owned gates for Forge merge requests.
-- Disposable container runners with native Codex policy, external reset, verified
-  teardown, stale-execution fencing and bounded evidence capture.
-- GitHub App discovery and multiple installations per role, repository-scoped
-  execution tokens, explicit activation, and versioned configuration shared with Settings through the selected storage authority.
-- A factory view with compact actions, confirmation dialogs, current attention
-  separated from historical failures, runner cleanup and issue history.
+## Execution and publication
+
+- The supervisor reserves assignments before launch, checks ownership and fences
+  stale work. Cleanup must be verified before resources are reused.
+- Jobs use disposable containers with native tool policy, seccomp/AppArmor,
+  resource limits and an internal network. Containers share the Linux host kernel;
+  no VM isolation or macOS worker is claimed by this implementation.
+- Source and private Git dependencies come through the host's read-only mirror.
+  Jobs hold no GitHub App keys or installation tokens. Mirror policy combines
+  declared dependencies, permitted organization installations, live access and
+  per-project deny entries.
+- Workers return artifacts. A host publisher validates them against the reserved
+  assignment and authorized target, then performs revision-checked GitHub writes.
+  Publication signing requires a qualification receipt for the current context;
+  workflow edits require explicit permission.
+- Independent Review and Audit produce revision-bound evidence. The supervisor
+  checks that evidence, applicable human approval and existing GitHub rules before
+  its own merge. Human-authored PR reviews also have visible work records.
+- New installations use one App for publication, checks and GitHub sign-in fallback.
+  Existing role-App identities remain recognized for compatibility and history.
+- Claude API-key execution has a host provider proxy with job-scoped capabilities.
+  Other providers/login modes still supply provider authentication to the harness
+  and rely on the native tool sandbox. Do not generalize the GitHub credential
+  boundary to all provider credentials; see [Security](../SECURITY.md).
 
 ## Repository planning and combined delivery
 
-- Persistent repository rules, revisioned notes and proposal rows. Manual, nightly and
-  relevant-event triage use a read-only worker, with sourced notes and a bounded
-  handoff retained after cleanup. Acceptance pins fresh requirements,
-  membership, source PRs and operator decisions before durable effects run.
-- Operator-approved compositions with existing-PR choices, one logical builder,
-  tracked owner and child tasks with isolated checkouts, exact retained prerequisite
-  outputs, owner integration and one candidate for independent Review and Audit.
-  Task scope may span issues or split one issue across several tasks; approved
-  delivery membership remains separate from that execution plan.
-- Exact member-scoped holds, environment choices and execution projections.
-  Shared failure budgets, fencing and verified cleanup survive rework or changed
-  membership; ordinary issue closure cannot silently close a grouped delivery.
-- Lazy delivery progress in Issue Details and repository-scoped CLI reads;
-  explicit membership operations preview their affected scope before approval.
-- Per-repository `human`/`auto` merge policy, with authenticated operator UI changes and
-  separately authorized CLI changes. External prerequisites distinguish completed
-  issues, merged PRs, other closure reasons and inaccessible identities.
+- Revisioned repository notes, rules and proposals support manual, scheduled and
+  event-triggered triage. Acceptance checks current membership, prerequisites,
+  source PRs and operator decisions before applying durable effects.
+- An approved group has one logical builder and one candidate PR. Tracked child
+  tasks use isolated checkouts; the owner integrates their results before Review
+  and Audit. Execution tasks and approved issue membership remain distinct.
+- Member-specific holds, execution requirements, failure budgets and cleanup
+  survive rework. Closing one issue does not silently complete a grouped delivery.
+- Activity and issue details expose progress, decisions and retained history.
 
-These describe implemented contracts. They do not establish that a real combined
-PR has completed the installation-to-merge qualification. The integrated regression
-matrix and normal two-issue GitHub merge remain the release acceptance gate.
+## Persistence
 
-## Qualification and deployment
+One selected SQLite store holds lifecycle, configuration, operator identity and
+supporting state. WAL with FULL durability, transactions, revisions and constraints
+protect local state. Managed launchers qualify the runtime and reject incompatible
+state. Long-lived credentials remain private referenced files. The earlier JSON
+migration was one-way; its archived input is not a current backup.
 
-The code has synthetic full-pipeline/restart tests and real credential-free runner
-and native sandbox canaries. The image policy was tested for successful workspace
-writes and denial of a synthetic provider authentication file. Those checks do not
-prove an authenticated production workflow against a particular repository.
+Do not run independent controller roots against the same repositories. Back up
+SQLite consistently with its instance metadata and credential references. The
+supervisor prunes eligible raw logs after 30 days while retaining events,
+structured results and active/pinned evidence. See [schema upgrades](store-migration.md).
 
-Production cutover still requires operator-owned App installations/keys, provider
-authentication, the named runner host policy/internal network, protected branches,
-and a successful setup readiness check. No global sandbox setting is relaxed.
-External-agent repository setup uses the operator's local GitHub CLI for
-administration; elevated GitHub tokens stay local. Forge receives the scoped
-role App credentials and dedicated identity-app secret it needs. The first
-adapter handles classic branch protection and conservative
-wildcard human CODEOWNERS gates; ruleset-only/merge-queue alternatives are held.
+## What remains to prove
 
-The standalone client supports [fresh-host setup](cli-fresh-host.md), including
-selected SQLite initialization, operator-bound role App registration, coding
-accounts, repository verification and explicit Start. Its first-merge receipt
-requires the normal Build/Review/Audit pipeline and independent GitHub evidence.
-Existing hosts retain the [sign-in setup](cli-server-setup.md) and scoped
-repository workflows.
+Implemented behavior is distinct from release qualification. Synthetic lifecycle,
+restart and boundary tests and real sandbox canaries provide specific evidence;
+they do not prove an authenticated production workflow for every deployment.
 
-## Retired components
-
-A setup state left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
-or stops tmux sessions.
-
-## Selected SQLite runtime
-
-The one-way migration selects one private SQLite database for lifecycle,
-configuration, identity and supporting state. The database uses WAL and FULL
-durability; transactions, revisions and constraints protect local state. Managed
-launchers qualify the SQLite runtime and reject missing or incompatible selected
-state. JSON readers and writers are fenced after selection. See
-[schema upgrades](store-migration.md).
-
-This is not a distributed claim service. Do not operate separate controller roots
-against the same repositories. Long-lived App/provider credentials remain
-private referenced files outside the database. Session/token hashes, CSRF values and pending OAuth verifiers are
-private database state. Back up the selected database coherently with its
-instance metadata and credential references; a live copy of only the main database file omits WAL
-state. Do not use the old JSON directory as a current backup.
-
-The supervisor expires eligible raw logs after 30 days in bounded batches, while
-retaining active/pinned evidence, events and structured results. Reset retains SQL
-history. Logs remain private diagnostic data even after redaction.
-
-GitHub grants are coarser than individual builder actions; role prompts are
-cooperative restrictions for those writes, while submission acceptance and
-protected-target merge authority are independently checked. See the
-[live/staged/retired security inventory](../SECURITY.md#isolation-status).
-
-Storage cutover and synthetic delivery tests do not by themselves establish
-#209's latency target or real ordinary/combined issue-to-merge qualification.
-Track those acceptance receipts separately; time from CLI installation to first
-normal merge remains the north-star metric.
+The release acceptance batch must follow the public setup instructions on a clean
+supported host, recover interrupted consent and login, complete the first-merge
+test, and finish ordinary and combined work with the intended approval policy.
+Measure the full operator journey separately from the saved installation timer,
+which currently starts after the interview. Track receipts and remaining gaps in
+the [onboarding release audit](onboarding-release-audit.md). This document does not
+claim that those live acceptance runs or the historical latency target have passed.

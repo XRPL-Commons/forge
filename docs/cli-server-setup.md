@@ -4,11 +4,10 @@
 host**. Run it once per server. After setup, operators sign in through the UI;
 adding repositories does not require repeating this command.
 
-For a fresh VM, start with [`forge setup new`](cli-fresh-host.md). That wizard
-handles installation, private networking, sign-in, role Apps, a coding account,
-repository checks and explicit Start, then follows the first issue to a verified
-merge. It runs host commands and file transfers through the CLI; no separate
-remote terminal is required. Each stage also has a noninteractive JSON command.
+For a fresh VM, use [`forge install`](cli-fresh-host.md). That flow registers one
+App for repository access and GitHub sign-in, links the installing Tailscale
+operator and hands preparation to the web app. The command documented here is
+for existing servers using a separate sign-in App.
 
 The local CLI uses your SSH authority for host configuration and your local
 GitHub CLI to resolve operator usernames to numeric IDs. GitHub administrative
@@ -30,11 +29,9 @@ controller state, outside workers and the UI container.
   `*.ts.net` name. This command supports private Serve on port 443.
 - Sign in to `gh` locally. Operator names are resolved using GitHub's user API.
 
-`forge server setup` covers sign-in and HTTPS only. For a host installed through
-`forge setup new`, use `forge setup sign-in --ssh HOST` for the guided sign-in
-stage, then `forge setup continue --ssh HOST` for role Apps, coding account and
-repository setup. These commands resume the saved installation. GitHub,
-Tailscale and provider browser approvals remain explicit operator handoffs.
+`forge server setup` covers sign-in and HTTPS only. For an installation started
+with `forge install`, use `forge install --ssh HOST --resume` to continue its
+saved setup. GitHub, Tailscale and provider approvals remain explicit.
 
 ## Inspect the plan
 
@@ -53,7 +50,8 @@ Without a client ID, an unconfigured server returns `identity_app_required`, a
 GitHub registration link, and the exact homepage and callback fields. Create or
 reuse a **dedicated identity-only GitHub OAuth App** with those fields. Complete
 GitHub's registration, consent and passkey checks in your browser. This App is
-separate from Forge's four role Apps and requests no OAuth scopes.
+separate from the repository-access App used by that installation and requests
+no OAuth scopes.
 
 Repeat the command with `--client-id YOUR_IDENTITY_APP_CLIENT_ID` to inspect the
 setup steps. Repeat `--operator` for additional operator accounts. Planning
@@ -99,7 +97,7 @@ configuration, or public Funnel configuration. It serializes concurrent
 bootstraps and rejects changed plans or reset generations. It never automatically
 replaces a conflicting identity or proxy configuration.
 
-To intentionally replace a client secret or change authorized operators, use
-the [host recovery command](operator-sign-in.md#sessions-and-recovery). That
-separate operation revokes sessions. There is no web endpoint accepting bootstrap
-secrets and no anonymous first-visitor claim.
+This legacy bootstrap command cannot rotate a configured secret or replace its
+operator list. Preserve the existing state and arrange identity maintenance if
+those settings must change. There is no web endpoint accepting bootstrap secrets
+and no anonymous first-visitor claim.

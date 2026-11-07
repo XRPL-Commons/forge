@@ -309,3 +309,33 @@ For host requirements, isolation qualification, capacity and upgrades, see
 
 Official login references: [Codex authentication](https://learn.chatgpt.com/docs/auth)
 and [Claude Code CLI](https://code.claude.com/docs/en/cli-reference).
+
+## Factory name
+
+Forge remains the main product name. The header and sign-in screen show the
+deployment name chosen during `forge install` as a smaller secondary label,
+for example **Anvil**. Browser titles include both: **Settings · Forge · Anvil**. Older factories without a saved display name show **Forge**.
+
+After updating an existing Anvil installation using the standard service paths,
+copy its original installation name into the runtime once:
+
+```sh
+ssh anvil 'sudo -u forge /home/forge/forge/bin/forge setup initialize --root /home/forge/.local/share/forge --name Anvil'
+```
+
+Use the original name from the approved installation, not an inferred hostname.
+This preserves existing factory data. Repeating the same name has no effect;
+a different name is refused. Reload the web page afterward.
+
+## Check for updates
+
+Open **Settings → General → Updates** to see the installed revision and the
+latest complete published build from `XRPL-Commons/forge`. **Check for updates**
+refreshes the result; release notes and the supported upgrade instructions are
+linked there. Checking does not install anything or interrupt workers.
+
+Checks use GitHub’s public API without credentials. The server caches results
+for an hour, with a one-minute minimum between manual checks. Private repository
+access, rate limits and network failures are reported as unavailable. Forge
+compares commit ancestry before offering an update, so a development build is
+not mistaken for an older release.

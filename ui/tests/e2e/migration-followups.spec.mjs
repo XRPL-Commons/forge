@@ -68,6 +68,7 @@ export default async function (page, { base, scenario, observeIssue }) {
   })
   await page.goto(base + '/settings/repositories/2')
   await page.getByRole('button', { name: 'Continue setup', exact: true }).waitFor()
+  await page.locator('summary').filter({ hasText: 'More settings' }).click()
   await page.locator('summary').filter({ hasText: 'Diagnostics' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Refresh repository' && button.disabled))
   await page.unroute('**/api/repositories?repo_id=2')

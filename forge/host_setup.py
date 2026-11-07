@@ -74,7 +74,7 @@ def user_manager():
                          '(sudo loginctl enable-linger ' + getpass.getuser() + '), then rerun setup; see docs/installation.md') from None
 
 
-def initialize(root):
+def initialize(root, name=None):
     """Prepare the qualified SQLite authority before fresh-install services."""
     from .store.db import qualified_sqlite
     if not qualified_sqlite():
@@ -82,9 +82,12 @@ def initialize(root):
         prepared = prepare(root)
         environment = {**os.environ, 'LD_LIBRARY_PATH': prepared['library_directory']}
         os.execve(sys.executable, [sys.executable, '-m', 'forge.launch', 'forge.host_setup',
-                                  'initialize', '--root', str(root)], environment)
+                                  'initialize', '--root', str(root), *(['--name', name] if name is not None else [])], environment)
     from .store.fresh import initialize as initialize_store
     store = initialize_store(root)
+    if name is not None:
+        from .factory_identity import initialize as initialize_identity
+        initialize_identity(root, name)
     print('SQLite initialized for instance ' + store.instance_id)
 
 
@@ -378,6 +381,7 @@ def main():
     parser.add_argument('action', nargs='?', choices=['initialize', 'install', 'update', 'login', 'check', 'status', 'full-environment'], default=None)
     parser.add_argument('provider', nargs='?', choices=list(manifests()))
     parser.add_argument('--root', default=str(Path.home() / '.local/share/forge'))
+    parser.add_argument('--name', help='initialize: factory display name; cannot rename an existing factory')
     parser.add_argument('--bind', help='Operator UI address: loopback (default) or a private tailnet address; kept across updates')
     parser.add_argument('--no-pull', action='store_true', help='update: apply the checkout as it is, without fetching')
     parser.add_argument('--yes', action='store_true', help='Replace service or policy files that were edited outside Forge')
@@ -388,11 +392,13 @@ def main():
     auth.add_argument('--import-login')
     parser.add_argument('--model', action='append', help='Repeat to rotate equally between models of this harness')
     args = parser.parse_args()
+    if args.name is not None and args.action != 'initialize':
+        parser.error('--name is only supported with initialize')
     os.umask(0o077)
     try:
         root = private_root(args.root)
         if args.action == 'initialize':
-            initialize(root)
+            initialize(root, args.name)
         if args.action == 'update':
             if not args.no_pull and host_update.pull():
                 # Run the reconciliation that shipped with the new source, not this one.

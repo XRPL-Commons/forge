@@ -25,9 +25,9 @@ async function save(policy: string) {
 <template>
   <div>
     <RepositoryChoiceSetting v-if="current" id="recovery-policy" label="Recovery" :value="current.policy"
-      :options="[{ value: 'reversible', label: 'Handle routine recovery automatically' }, { value: 'manual', label: 'Ask before recovery actions' }]"
+      :options="[{ value: 'reversible', label: 'Automatic' }, { value: 'manual', label: 'Ask me' }]"
       :disabled="saving || resource.stale.value" :save="save">
-      Forge can retry, wait for dependencies and rebuild when the next step is clear. Splitting, closing or combining issues still needs your approval.
+      Retry routine failures automatically, or ask you first.
     </RepositoryChoiceSetting>
     <p v-else role="status" class="text-sm text-muted">{{ resource.error.value || 'Loading recovery setting…' }}</p>
     <UButton v-if="resource.stale.value || resource.error.value" class="mt-2" color="neutral" variant="outline" :disabled="saving" @click="resource.refresh()">Refresh recovery setting</UButton>

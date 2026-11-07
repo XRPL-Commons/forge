@@ -349,6 +349,7 @@ const server = http.createServer(async (req, res) => {
     const enabled = scenario.startsWith('auth-')
     const signed = enabled && (req.headers.cookie ?? '').includes('synthetic_operator=yes')
     return send(res, 200, { ok: true, enabled, operator: signed ? { id: 123, login: 'forge-operator' } : null,
+      ...(scenario.startsWith('auth-identity') ? { factory_name: scenario.endsWith('-long') ? 'A' + 'verylongfactoryname'.repeat(3) : 'Anvil' } : {}),
       ...(signed ? { controls_token: 'synthetic' } : {}) })
   }
   if (pathname === '/api/auth/logout') {

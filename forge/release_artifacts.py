@@ -1,8 +1,9 @@
 """Prepared release assets from the Forge repository, verified before use.
 
 The publisher is the same GitHub repository trusted for Forge source. A manifest
-binds each asset's checksum, build inputs and image ID to one exact source commit.
-Host-specific runner qualification still runs after an image is loaded.
+binds each asset's checksum and build inputs to one exact source commit. Version 1
+ships worker images; version 2 declares local worker builds and ships only the UI.
+Host-specific runner qualification runs for both delivery methods.
 """
 from functools import lru_cache
 import hashlib
@@ -55,13 +56,35 @@ def asset_url(revision, name):
     return 'https://github.com/' + REPOSITORY + '/releases/download/' + release_tag(revision) + '/' + name
 
 
+def artifact_kinds(value):
+    """Prepared payloads are explicit; v2 builds both workers on the host."""
+    require(isinstance(value, dict) and type(value.get('version')) is int
+            and value['version'] in (1, 2), 'Unsupported prepared manifest version.')
+    return tuple(ASSETS) if value['version'] == 1 else ('ui',)
+
+
+def local_worker(value, kind):
+    require(kind in ('runner', 'full'), 'Invalid worker kind.')
+    return value['version'] == 2 and value['workers'][kind]['delivery'] == 'local-build'
+
+
 def validate_manifest(value, revision, inputs, node_image, python_image):
-    require(isinstance(value, dict) and set(value) == {'version', 'source', 'platform', 'node_image', 'python_image', 'artifacts'},
+    kinds = artifact_kinds(value)
+    keys = {'version', 'source', 'platform', 'node_image', 'python_image', 'artifacts'}
+    require(set(value) == keys | ({'workers'} if value['version'] == 2 else set()),
             'Invalid prepared artifact manifest.')
-    require(value['version'] == 1 and value['source'] == revision and value['platform'] == 'linux/amd64'
+    require(value['source'] == revision and value['platform'] == 'linux/amd64'
             and value['node_image'] == node_image and value['python_image'] == python_image,
             'Prepared artifacts do not match this source revision, platform or pinned toolchain.')
-    require(isinstance(value['artifacts'], dict) and set(value['artifacts']) == set(ASSETS), 'Incomplete prepared release.')
+    require(isinstance(value['artifacts'], dict) and set(value['artifacts']) == set(kinds), 'Incomplete prepared release.')
+    if value['version'] == 2:
+        require(isinstance(value['workers'], dict) and set(value['workers']) == {'runner', 'full'},
+                'Incomplete local worker build policy.')
+        for kind, worker in value['workers'].items():
+            require(isinstance(worker, dict) and set(worker) == {'delivery', 'inputs'}
+                    and worker['delivery'] == 'local-build', 'Invalid local worker build policy.')
+            require(isinstance(worker['inputs'], str) and SHA256.fullmatch(worker['inputs'])
+                    and worker['inputs'] == inputs[kind], 'Local ' + kind + ' build inputs differ from the checked-out source.')
     for kind, asset in value['artifacts'].items():
         keys = {'filename', 'sha256', 'size', 'inputs'} | ({'image_id'} if kind != 'ui' else set())
         allowed_keys = (keys, keys | {'image_manifest_id'}) if kind != 'ui' else (keys,)
@@ -69,7 +92,8 @@ def validate_manifest(value, revision, inputs, node_image, python_image):
         require(isinstance(asset['sha256'], str) and SHA256.fullmatch(asset['sha256'])
                 and type(asset['size']) is int and 0 < asset['size'] < 2 * 1024**3,
                 'Invalid prepared asset checksum or size.')
-        require(asset['inputs'] == inputs[kind], 'Prepared ' + kind + ' build inputs differ from the checked-out source. '
+        require(isinstance(asset['inputs'], str) and SHA256.fullmatch(asset['inputs'])
+                and asset['inputs'] == inputs[kind], 'Prepared ' + kind + ' build inputs differ from the checked-out source. '
                 'Use a clean published revision or explicitly set FORGE_BUILD_FROM_SOURCE=1 for development.')
         if kind != 'ui':
             require(isinstance(asset['image_id'], str) and IMAGE_ID.fullmatch(asset['image_id']), 'Invalid prepared runner image ID.')
@@ -110,6 +134,7 @@ class Release:
         self.revision, self.manifest = revision, manifest
 
     def download(self, kind, destination):
+        require(kind in artifact_kinds(self.manifest), 'This release builds the worker locally.')
         asset = self.manifest['artifacts'][kind]
         digest, size = hashlib.sha256(), 0
         cached = cache_directory(self.revision) / asset['filename']
@@ -130,6 +155,7 @@ class Release:
         require(size == asset['size'] and digest.hexdigest() == asset['sha256'], 'Prepared ' + kind + ' artifact checksum mismatch.')
 
     def image(self, kind, *, run=subprocess.run):
+        require(kind in artifact_kinds(self.manifest), 'This release builds the worker locally.')
         asset = self.manifest['artifacts'][kind]
         # Docker's classic store identifies images by config digest; containerd
         # uses the OCI manifest digest. Both pins come from the published archive.
@@ -199,12 +225,18 @@ def private_directory(path, *, uid=None, gid=None):
 
 
 def manifest_shape(value, revision):
-    require(isinstance(value, dict) and isinstance(value.get('artifacts'), dict)
-            and set(value['artifacts']) == set(ASSETS), 'Invalid prepared artifact manifest.')
+    kinds = artifact_kinds(value)
+    require(isinstance(value.get('artifacts'), dict) and set(value['artifacts']) == set(kinds),
+            'Invalid prepared artifact manifest.')
     require(isinstance(value.get('node_image'), str) and isinstance(value.get('python_image'), str),
             'Invalid prepared toolchain descriptor.')
+    descriptors = dict(value['artifacts'])
+    if value['version'] == 2:
+        require(isinstance(value.get('workers'), dict) and set(value['workers']) == {'runner', 'full'},
+                'Incomplete local worker build policy.')
+        descriptors.update(value['workers'])
     inputs = {}
-    for kind, item in value['artifacts'].items():
+    for kind, item in descriptors.items():
         require(isinstance(item, dict) and isinstance(item.get('inputs'), str)
                 and SHA256.fullmatch(item['inputs']), 'Invalid prepared build inputs.')
         inputs[kind] = item['inputs']
@@ -278,7 +310,7 @@ def stage(access, cache_root=None):
             'Invalid prepared asset handoff.')
     revision = access['revision']; directory = cache_directory(revision, cache_root)
     manifest = manifest_shape(access['manifest'], revision)
-    require(isinstance(access['urls'], dict) and set(access['urls']) <= set(ASSETS), 'Invalid prepared asset selection.')
+    require(isinstance(access['urls'], dict) and set(access['urls']) <= set(artifact_kinds(manifest)), 'Invalid prepared asset selection.')
     urls = {kind: _signed_url(url) for kind, url in access['urls'].items()}
     raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
     require(len(raw) <= 128 * 1024, 'Prepared artifact manifest is too large.')

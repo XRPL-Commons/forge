@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from forge.release_artifacts import ASSETS, ArtifactError, release_tag, validate_manifest
+from forge.release_artifacts import ASSETS, ArtifactError, release_tag, manifest_shape, artifact_kinds
 from .contracts import SetupError, require
 from .github import run_bounded
 
@@ -43,7 +43,7 @@ def metadata(revision, *, run=run_bounded):
                     and type(asset.get('size')) is int and 0 < asset['size'] < 2 * 1024**3,
                     'prepared_release_unavailable')
             selected[name] = asset
-        require(set(selected) == needed and selected['manifest.json']['size'] <= MANIFEST_LIMIT,
+        require({'manifest.json', ASSETS['ui']} <= set(selected) and selected['manifest.json']['size'] <= MANIFEST_LIMIT,
                 'prepared_release_unavailable')
         return selected
     except (SetupError, ArtifactError, ValueError, TypeError):
@@ -60,14 +60,9 @@ def read_manifest(revision, *, assets=None, run=run_bounded):
                   output_limit=MANIFEST_LIMIT)
         require(len(raw) == assets['manifest.json']['size'], 'prepared_release_unavailable')
         manifest = json.loads(raw)
-        require(isinstance(manifest, dict) and isinstance(manifest.get('artifacts'), dict)
-                and set(manifest['artifacts']) == set(ASSETS)
-                and all(isinstance(value, dict) for value in manifest['artifacts'].values()),
+        manifest_shape(manifest, revision)
+        require({ASSETS[kind] for kind in artifact_kinds(manifest)} <= set(assets),
                 'prepared_release_unavailable')
-        # Structural checks here. The host separately compares these fingerprints
-        # and toolchain pins with its exact checked-out source before use.
-        inputs = {kind: descriptor['inputs'] for kind, descriptor in manifest['artifacts'].items()}
-        validate_manifest(manifest, revision, inputs, manifest['node_image'], manifest['python_image'])
         for kind, descriptor in manifest['artifacts'].items():
             asset = assets[ASSETS[kind]]
             require(asset['size'] == descriptor['size'], 'prepared_release_unavailable')
@@ -115,11 +110,12 @@ def access(revision, kinds=None, *, run=run_bounded, opener=None):
     Redirects are stopped locally, so that token never reaches an asset host.
     The returned URLs grant time-limited access only to these release files.
     """
-    kinds = tuple(ASSETS) if kinds is None else tuple(kinds)
-    require(len(set(kinds)) == len(kinds) and all(kind in ASSETS for kind in kinds),
-            'invalid_prepared_assets', 'Select UI, runner or full prepared assets.')
     assets = metadata(revision, run=run)
     manifest = read_manifest(revision, assets=assets, run=run)
+    available = artifact_kinds(manifest)
+    kinds = available if kinds is None else tuple(kinds)
+    require(len(set(kinds)) == len(kinds) and all(kind in available for kind in kinds),
+            'invalid_prepared_assets', 'Select only artifacts delivered by this release.')
     if not kinds:
         return {'revision': revision, 'manifest': manifest, 'urls': {}}
     try:

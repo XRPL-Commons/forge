@@ -233,19 +233,37 @@ class OperatorHTTPTests(unittest.TestCase):
 
     def test_signed_out_reads_and_mutations_are_protected_before_services(self):
         with patch.object(dashboard, 'settings_service') as service:
-            for path in ('/api/settings', '/api/factory', '/api/factory/output?id=x', '/api/onboarding', '/onboarding/github/callback', '/api/issues'):
+            for path in ('/api/updates', '/api/settings', '/api/factory', '/api/factory/output?id=x', '/api/onboarding', '/onboarding/github/callback', '/api/issues'):
                 with self.subTest(path=path):
                     self.request(path).send_error.assert_called_once_with(401)
             for path in ('/api/settings/sync', '/api/onboarding', '/api/repositories/enable', '/api/factory/action', '/api/runtime'):
                 self.request(path, {}).send_error.assert_called_once_with(401)
             service.assert_not_called()
 
+    def test_update_check_requires_operator_and_is_read_only(self):
+        with patch('forge.updates.view', return_value={'ok': True, 'status': 'current'}) as view:
+            self.request('/api/updates').send_error.assert_called_once_with(401)
+            view.assert_not_called()
+            handler = self.request('/api/updates?refresh=1', signed=True)
+            self.assertEqual(json.loads(handler._send.call_args.args[0])['status'], 'current')
+            view.assert_called_once_with(refresh=True)
+
     def test_public_session_has_no_action_capability_or_config(self):
         handler = self.request('/api/auth/session')
         result = json.loads(handler._send.call_args.args[0])
-        self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None, 'mode': 'github'})
+        self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None, 'mode': 'github', 'factory_name': None})
         handler = self.request('/api/auth/session', signed=True)
         self.assertEqual(json.loads(handler._send.call_args.args[0])['controls_token'], self.session['csrf'])
+
+    def test_factory_name_is_available_before_signin_without_private_configuration(self):
+        from forge.factory_identity import initialize
+        initialize(dashboard.WD, 'Anvil')
+        handler = self.request('/api/auth/session')
+        result = json.loads(handler._send.call_args.args[0])
+        self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None,
+                                  'mode': 'github', 'factory_name': 'Anvil'})
+        handler = self.request('/api/auth/session', signed=True)
+        self.assertEqual(json.loads(handler._send.call_args.args[0])['factory_name'], 'Anvil')
 
     def test_github_callback_accepts_optional_matching_issuer(self):
         from urllib.parse import urlencode

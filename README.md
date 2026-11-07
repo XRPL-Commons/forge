@@ -60,6 +60,7 @@ for supported hosts, credential storage and troubleshooting.
 - **Settings → Repositories:** add repositories and choose whether Forge needs
   your approval before merging. The default is to require approval.
 - **Settings → Connections:** manage GitHub access, coding accounts and external agents.
+- **Settings → General → Updates:** check published GitHub releases and open update instructions.
 
 Label an issue `ready` to make it eligible for work. To group related issues,
 open **Plan repository work**, request triage and approve the proposed group.
