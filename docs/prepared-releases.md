@@ -46,12 +46,20 @@ workflow to publish version 1 artifacts.
 **This does not secure a rerun of an old workflow execution.** GitHub reruns can
 execute historical workflow code, including its former publication permissions.
 The new publisher has a separate workflow identity,
-`.github/workflows/prepared-ui-release.yml`. At cutover, a maintainer with Actions
+`.github/workflows/prepared-ui-release.yml`. Keep the old `prepared-release.yml`
+path registered as the inert notice checked into this repository. A live check
+on 7 November 2026 found that GitHub accepted historical reruns after that file
+was deleted, while refusing both enable and disable operations on its `deleted`
+workflow record. The probe's already-published release made every build and
+publication step skip; no assets changed.
+
+At cutover, a maintainer with Actions
 write/admin access must cancel active runs of the retired `prepared-release.yml`
 workflow and disable that old workflow ID using GitHub administration. Confirm
-that the new UI workflow is active, the old one reports disabled, and attempting
-to rerun a historical publisher is refused. Record that result. Do not assume
-that changing today's YAML disables historical executions.
+that the new UI workflow is active, the old one reports `disabled_manually`, and
+attempting to rerun a historical publisher is refused. Record that result.
+[GitHub documents that disabled workflows cannot be rerun](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+Do not delete the inert workflow file after disabling it.
 
 This prevents accidental use of the retired publisher; an authorized maintainer
 can deliberately re-enable it. No workflow-run history, historical releases or
