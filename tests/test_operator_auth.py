@@ -72,6 +72,16 @@ class OperatorAuthTests(unittest.TestCase):
             self.auth.callback(state, 'code', browser)
         self.identity.assert_not_called()
 
+    def test_installation_return_destination_is_saved_without_allowing_arbitrary_redirects(self):
+        url, _ = self.auth.begin('/installation')
+        state = parse_qs(urlsplit(url).query)['state'][0]
+        with self.database.read_snapshot() as db:
+            row = db.execute('SELECT return_path FROM operator_flows WHERE state_hash=?', (digest(state),)).fetchone()
+        self.assertEqual(row['return_path'], '/installation')
+        for path in ('//external.example', 'https://external.example', '/installation?next=//external.example', '/installation/../settings'):
+            with self.subTest(path=path), self.assertRaises(AuthError):
+                self.auth.begin(path)
+
     def test_denied_account_and_renamed_login_cannot_claim_operator(self):
         self.identity.return_value = {'id': 999, 'login': 'operator'}
         with self.assertRaises(AuthError):
