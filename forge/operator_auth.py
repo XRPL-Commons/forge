@@ -132,7 +132,7 @@ def github_identity(config, code, verifier):
 
 def sign_in_destination(value):
     return isinstance(value, str) and (value == '/' or re.fullmatch(
-        r'/settings/agents(?:\?code=[A-Z2-9]{4}-[A-Z2-9]{4})?|/onboarding/cli/github/start\?state=[A-Za-z0-9_-]{43}', value))
+        r'/installation|/settings/agents(?:\?code=[A-Z2-9]{4}-[A-Z2-9]{4})?|/onboarding/cli/github/start\?state=[A-Za-z0-9_-]{43}', value))
 
 
 class OperatorAuth:

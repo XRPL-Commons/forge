@@ -38,7 +38,7 @@ export function signInNotice({ error, returnTo, unavailable, setupPending }: Sig
     return {
       kind: 'setup', mood: 'hopeful', tone: 'mint', role: 'status',
       title: 'Setup is still in progress',
-      text: 'The installer will guide you through GitHub approval and account sign-in. Keep it running, then return here when it confirms sign-in is ready.',
+      text: 'Complete the approvals in your terminal. This page updates automatically.',
     }
   }
   if (unavailable) {

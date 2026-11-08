@@ -1,20 +1,36 @@
 <script setup lang="ts">
 import { signInNotice } from '~/utils/signIn'
+import { signInDestination } from '~/utils/signInDestination'
 
 definePageMeta({ layout: false })
 useHead({ title: 'Sign in' })
 const route = useRoute()
 const { name, named } = useFactoryIdentity()
-const setupPending = useRuntimeConfig().public.forgeSetupPending
-const signInUrl = computed(() => '/auth/github/start' + (typeof route.query.return_to === 'string' ? '?return_to=' + encodeURIComponent(route.query.return_to) : ''))
+const setupHint = useRuntimeConfig().public.forgeSetupPending
 const { session, refresh } = useOperator()
+const setupPending = computed(() => setupHint && !session.value?.enabled)
+const destination = computed(() => signInDestination(route.query.return_to, setupHint ? '/installation' : '/'))
+const signInUrl = computed(() => '/auth/github/start' + (destination.value === '/' ? '' : '?return_to=' + encodeURIComponent(destination.value)))
 const unavailable = ref(!session.value)
 const retrying = ref(false)
+let mounted = false
+const readiness = usePoll(refresh, {
+  interval: 5000,
+  onChange(value) {
+    if (!mounted) return
+    unavailable.value = false
+    if (value.enabled) readiness.stop()
+    if (value.enabled && value.operator) void navigateTo(destination.value, { replace: true })
+  },
+})
+watch(readiness.error, error => { unavailable.value = Boolean(error) })
 async function retry() {
   retrying.value = true
-  try { await refresh(); unavailable.value = false } catch { unavailable.value = true } finally { retrying.value = false }
+  try { await readiness.refresh(); unavailable.value = Boolean(readiness.error.value) } finally { retrying.value = false }
 }
-const notice = computed(() => signInNotice({ error: route.query.error, returnTo: route.query.return_to, unavailable: unavailable.value, setupPending }))
+onMounted(() => { mounted = true; if (setupPending.value) readiness.start() })
+onBeforeUnmount(() => { mounted = false; readiness.stop() })
+const notice = computed(() => signInNotice({ error: route.query.error, returnTo: route.query.return_to, unavailable: unavailable.value, setupPending: setupPending.value }))
 const mood = computed(() => notice.value?.mood ?? 'waving')
 const TONE = {
   coral: 'border-coral/45 bg-coral/10 [&_strong]:text-coral',
@@ -55,7 +71,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow))
           <strong class="block font-semibold">{{ notice.title }}</strong>
           {{ notice.text }}
         </div>
-        <UButton v-if="setupPending" color="primary" size="lg" icon="i-lucide-rotate-cw" @click="reloadNuxtApp({ force: true })">Check setup progress</UButton>
+        <UButton v-if="setupPending" color="primary" size="lg" icon="i-lucide-rotate-cw" :loading="retrying" @click="retry">Check setup progress</UButton>
         <UButton v-else-if="unavailable" color="primary" size="lg" icon="i-lucide-rotate-cw" :loading="retrying" @click="retry">Try again</UButton>
         <a
           v-else
