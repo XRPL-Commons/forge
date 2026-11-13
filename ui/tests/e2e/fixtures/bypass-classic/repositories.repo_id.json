@@ -74,7 +74,7 @@
         "code_owner_reviews": false,
         "bypass": {
           "status": "missing",
-          "detail": "Add the Forge controller App (ID 4959034) as a pull request bypass actor, or Forge cannot merge approved work.",
+          "detail": "Add the Forge controller App (ID 123456) as a pull request bypass actor, or Forge cannot merge approved work.",
           "sources": [
             {
               "kind": "classic",
@@ -89,7 +89,7 @@
               }
             }
           ],
-          "controller_app_id": 4959034
+          "controller_app_id": 123456
         },
         "required_approvals": 2
       },
@@ -150,7 +150,7 @@
         "code_owner_reviews": false,
         "bypass": {
           "status": "missing",
-          "detail": "Add the Forge controller App (ID 4959034) as a pull request bypass actor, or Forge cannot merge approved work.",
+          "detail": "Add the Forge controller App (ID 123456) as a pull request bypass actor, or Forge cannot merge approved work.",
           "sources": [
             {
               "kind": "classic",
@@ -165,7 +165,7 @@
               }
             }
           ],
-          "controller_app_id": 4959034
+          "controller_app_id": 123456
         },
         "required_approvals": 2
       },

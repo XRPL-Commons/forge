@@ -8,7 +8,7 @@ from forge.factory.github import GitHub, GitHubUnavailable, GitHubBudgetExhauste
 def classic(count=2, stale=True, owners=False):
     return {'required_pull_request_reviews': {'required_approving_review_count': count,
             'dismiss_stale_reviews': stale, 'require_code_owner_reviews': owners,
-            'bypass_pull_request_allowances': {'apps': [{'id': 4959034}]}}}
+            'bypass_pull_request_allowances': {'apps': [{'id': 123456}]}}}
 
 
 # Ruleset fields follow https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset
@@ -24,7 +24,7 @@ class RepositoryRuleTests(unittest.TestCase):
     item = {'repo_id': 71, 'repo': 'example/project'}
 
     def reader(self, protection=None, rules=None, bypass='always'):
-        settings = Mock(); settings.load.return_value = {'repositories': [], 'connections': {'controller': {'app_id': 4959034}}}
+        settings = Mock(); settings.load.return_value = {'repositories': [], 'connections': {'controller': {'app_id': 123456}}}
         github = GitHub(settings, {'human_reviewers': ['maintainer']}, clock=lambda: 1234)
         def read(role, item, method, suffix, payload=None):
             self.assertEqual(method, 'GET')
@@ -49,17 +49,17 @@ class RepositoryRuleTests(unittest.TestCase):
         return github
 
     def shared(self,reader,scope='all'):
-        connection={'app_id':4959034,'installation_id':1,'private_key_env':'FORGE_KEY'}
+        connection={'app_id':123456,'installation_id':1,'private_key_env':'FORGE_KEY'}
         reader.settings.load.return_value={'repositories': [], 'connections':{role:dict(connection) for role in ('build','review','audit','controller')}}
         reader.runtime={'repository_merge_check_scopes':{'71':scope}}
         return reader
 
-    def policy_rule(self,app_id=4959034):
+    def policy_rule(self,app_id=123456):
         return {'type':'required_status_checks','ruleset_id':13,
                 'parameters':{'required_status_checks':[{'context':'forge/merge-policy','integration_id':app_id}]}}
 
     def test_shared_app_observes_existing_checks_without_requiring_a_forge_ruleset(self):
-        for app_id in (None, -1, 4959035, True, 4959034):
+        for app_id in (None, -1, 123457, True, 123456):
             reader = self.shared(self.reader(None, [rule(4), self.policy_rule(app_id)]))
             report = reader.protection_report(self.item, {'base_ref': 'main'})
             self.assertTrue(reader.protections(self.item, {'base_ref': 'main'}))

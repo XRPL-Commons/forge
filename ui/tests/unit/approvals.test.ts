@@ -6,13 +6,13 @@ describe('approvalLines', () => {
   const time = () => '16:03'
   it('says whether each review counted, in words and with an icon', () => {
     const lines = approvalLines([
-      { login: 'lucbocahut', state: 'APPROVED', at: 1790000000, counted: true, why: null },
+      { login: 'octo-operator', state: 'APPROVED', at: 1790000000, counted: true, why: null },
       { login: 'x', state: 'APPROVED', at: null, counted: false, why: 'No write access to the repository' },
       { login: 'y', state: 'CHANGES_REQUESTED', at: 1790000000, counted: false, why: 'Requested changes' },
       { login: 'z', state: 'DISMISSED', at: 1790000000, counted: false, why: 'Approval was dismissed' },
     ], time)
     expect(lines.map(line => line.text)).toEqual([
-      '@lucbocahut approved · 16:03 · counted',
+      '@octo-operator approved · 16:03 · counted',
       '@x approved · not counted: No write access to the repository',
       '@y requested changes · 16:03 · blocks the merge',
       '@z approval dismissed · 16:03 · not counted',

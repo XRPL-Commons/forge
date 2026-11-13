@@ -150,7 +150,7 @@ describe('statusRows · github', () => {
 })
 
 describe('statusRows · shared App', () => {
-  const connections = { build: { app_id: 5333360 }, review: { app_id: 5333360 }, audit: { app_id: 5333360 }, controller: { app_id: 5333360 } }
+  const connections = { build: { app_id: 234567 }, review: { app_id: 234567 }, audit: { app_id: 234567 }, controller: { app_id: 234567 } }
   function github(roles?: Record<string, unknown>) {
     return row(statusRows({ factory: null, onboarding: null, settings: settings({ config: { connections }, ...(roles ? { roles } : {}) }) }, now), 'github')
   }

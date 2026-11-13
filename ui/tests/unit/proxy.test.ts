@@ -12,7 +12,7 @@ import type { IncomingMessage } from 'node:http'
 import { allowedHosts, guardAction, guardHost, proxyPaths, tailscaleIdentity, TAILSCALE_UPSTREAM_HEADER, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
-  host: '100.111.151.38:8787', origin: 'http://100.111.151.38:8787', 'sec-fetch-site': 'same-origin',
+  host: '100.64.0.7:8787', origin: 'http://100.64.0.7:8787', 'sec-fetch-site': 'same-origin',
   'content-type': 'application/json', 'x-forge-action': 'tok' } }
 
 describe('guardAction', () => {
@@ -52,8 +52,8 @@ describe('proxyPaths', () => {
 // The DNS-rebinding defence: reaching this process is not enough, the name
 // the browser used has to be one the app is served on.
 describe('guardHost', () => {
-  const allowed = allowedHosts({ HOST: '100.111.151.38', PORT: '8787' })
-  it('accepts the exact configured address', () => expect(guardHost('100.111.151.38:8787', allowed)).toBe(true))
+  const allowed = allowedHosts({ HOST: '100.64.0.7', PORT: '8787' })
+  it('accepts the exact configured address', () => expect(guardHost('100.64.0.7:8787', allowed)).toBe(true))
   it('rejects a rebound name on the same port', () => expect(guardHost('evil.example:8787', allowed)).toBe(false))
   it('rejects a missing Host header', () => {
     expect(guardHost(undefined, allowed)).toBe(false)
@@ -66,7 +66,7 @@ describe('guardHost', () => {
     expect(guardHost('localhost', allowed)).toBe(true)
     expect(guardHost('LOCALHOST:8787', allowed)).toBe(true)
   })
-  it('rejects the right address on the wrong port', () => expect(guardHost('100.111.151.38:9999', allowed)).toBe(false))
+  it('rejects the right address on the wrong port', () => expect(guardHost('100.64.0.7:9999', allowed)).toBe(false))
 })
 
 describe('allowedHosts', () => {
@@ -76,8 +76,8 @@ describe('allowedHosts', () => {
     expect(guardHost('evil.example:3999', set)).toBe(false)
   })
   it('falls back to the address Nitro reports when HOST/PORT are unset', () => {
-    const set = allowedHosts({}, { address: '::ffff:100.111.151.38', port: 8787 })
-    expect(guardHost('100.111.151.38:8787', set)).toBe(true)
+    const set = allowedHosts({}, { address: '::ffff:100.64.0.7', port: 8787 })
+    expect(guardHost('100.64.0.7:8787', set)).toBe(true)
   })
   it('never trusts a wildcard bind as a name', () => {
     const set = allowedHosts({ HOST: '0.0.0.0', PORT: '8787' })
@@ -85,10 +85,10 @@ describe('allowedHosts', () => {
     expect(guardHost('127.0.0.1:8787', set)).toBe(true)
   })
   it('is replaced wholesale by NITRO_ALLOWED_HOSTS', () => {
-    const set = allowedHosts({ HOST: '100.111.151.38', PORT: '8787', NITRO_ALLOWED_HOSTS: 'forge.example:8787, forge.example.ts.net' })
+    const set = allowedHosts({ HOST: '100.64.0.7', PORT: '8787', NITRO_ALLOWED_HOSTS: 'forge.example:8787, forge.example.ts.net' })
     expect(set).toEqual(['forge.example:8787', 'forge.example.ts.net'])
     expect(guardHost('forge.example.ts.net', set)).toBe(true)
-    expect(guardHost('100.111.151.38:8787', set)).toBe(false)
+    expect(guardHost('100.64.0.7:8787', set)).toBe(false)
   })
 })
 
@@ -297,7 +297,7 @@ describe('Tailscale Serve operator identity', () => {
   })
   it('refuses a header sent straight to the tailnet address or under another name', () => {
     expect(tailscaleIdentity(serve, '100.101.102.103', env)).toBeUndefined()
-    expect(tailscaleIdentity({ ...serve, host: '100.111.151.38:8787' }, '127.0.0.1', env)).toBeUndefined()
+    expect(tailscaleIdentity({ ...serve, host: '100.64.0.7:8787' }, '127.0.0.1', env)).toBeUndefined()
   })
   it('is off unless identity mode and an HTTPS origin are configured', () => {
     expect(tailscaleIdentity(serve, '127.0.0.1', {})).toBeUndefined()

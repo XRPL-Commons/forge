@@ -15,7 +15,7 @@ class StewardEffectsTests(unittest.TestCase):
     def setUp(self):
         self.f = core.StewardCoreTests(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
         self.store = self.f.store
-        self.service = StewardService(store=self.store, actor_id='github:1609016', clock=lambda:self.f.now)
+        self.service = StewardService(store=self.store, actor_id='github:1000', clock=lambda:self.f.now)
         self.github = Mock()
         self.github.publisher.return_value = 'controller[bot]'
         self.issues = {1: {'number':1,'state':'open','labels':[],'assignees':[]}}

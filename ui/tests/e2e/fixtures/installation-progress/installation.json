@@ -78,15 +78,15 @@
   "repositories": [
     {
       "id": 1,
-      "name": "lucbocahut/anton"
+      "name": "octo-operator/anton"
     },
     {
       "id": 2,
-      "name": "lucbocahut/dd-frigate"
+      "name": "octo-operator/dd-frigate"
     },
     {
       "id": 3,
-      "name": "lucbocahut/mises"
+      "name": "octo-operator/mises"
     }
   ]
 }
