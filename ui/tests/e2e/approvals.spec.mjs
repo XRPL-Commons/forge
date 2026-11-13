@@ -20,7 +20,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   await scenario('approval')
   const now = () => Math.floor(Date.now() / 1000)
   const approvals = [
-    { login: 'lucbocahut', state: 'APPROVED', at: now() - 60, counted: true, why: null },
+    { login: 'octo-operator', state: 'APPROVED', at: now() - 60, counted: true, why: null },
     { login: 'x', state: 'APPROVED', at: null, counted: false, why: 'No write access to the repository' },
   ]
   await observeIssue('1:614', { approvals, last_checked: now() - 20 })
@@ -35,7 +35,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   const approveBox = await page.locator('#issue-actions').getByRole('button', { name: 'Approve…', exact: true }).boundingBox()
   assert.ok(benchBox.y + benchBox.height <= listBox.y && listBox.y + listBox.height <= approveBox.y, 'bench, then reviews, then Approve')
   const list = await page.locator('#issue-approvals').innerText()
-  assert.match(list, /@lucbocahut approved · \d{1,2}:\d{2}[^·]* · counted/)
+  assert.match(list, /@octo-operator approved · \d{1,2}:\d{2}[^·]* · counted/)
   // Not colour alone: every row carries an icon next to its words.
   assert.equal(await page.locator('#issue-approvals li svg, #issue-approvals li .iconify, #issue-approvals li [class*="i-lucide"]').count(), 2)
   await waitForText(page, 'Checked on GitHub')

@@ -43,7 +43,7 @@ class OperatorTests(unittest.TestCase):
     def setUp(self):
         helpers.ResultControllerTests.setUp(self)
         self.github=Remote();self.now=100
-        self.actions=OperatorActions(self.store,self.github,actor_id='github:1609016',config=validate({}),clock=lambda:self.now)
+        self.actions=OperatorActions(self.store,self.github,actor_id='github:1000',config=validate({}),clock=lambda:self.now)
     def revision(self):
         with self.store.read_snapshot() as db:return action_revision(db,'i')
     def request(self,action,reason='Operator reason',**kwargs):
@@ -197,7 +197,7 @@ class OperatorTests(unittest.TestCase):
         self.assertTrue(self.actions.step(undo)['applied'])
         self.assertEqual(self.github.issue_value['state'],'open')
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT actor_id FROM operator_observation_requests WHERE issue_id=?',('i',)).fetchone()[0],'github:1609016')
+            self.assertEqual(db.execute('SELECT actor_id FROM operator_observation_requests WHERE issue_id=?',('i',)).fetchone()[0],'github:1000')
         self.github.calls.clear()
         self.assertEqual(self.actions.reopen('i',request),undo)
         self.actions.step(undo)
@@ -299,7 +299,7 @@ class OperatorTests(unittest.TestCase):
         job=self.reserve();identifier=self.actions.stop_job(job,'Stop this run')
         self.assertEqual(self.view()['current_blocker']['code'],'operator_pause')
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT actor_id FROM decisions WHERE request_id=?',(identifier,)).fetchone()[0],'github:1609016')
+            self.assertEqual(db.execute('SELECT actor_id FROM decisions WHERE request_id=?',(identifier,)).fetchone()[0],'github:1000')
             self.assertEqual(db.execute('SELECT fenced FROM jobs WHERE id=?',(job,)).fetchone()[0],1)
         self.assertEqual(self.github.calls,[])
 

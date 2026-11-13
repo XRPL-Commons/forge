@@ -25,18 +25,18 @@ describe('Tailscale identity across server rendering', () => {
       const login = requestTailscaleIdentity(event, env)
       calls.push({ path: event.path, login, socket: event.node.req.socket?.remoteAddress })
       const forwarded = upstreamHeaders(event.node.req.headers as Record<string, string>, 'GET', 'localhost:8788', 'private', false, login)
-      return { ok: true, operator: forwarded['x-forge-tailscale-user-login'] ? { id: 1609016 } : null }
+      return { ok: true, operator: forwarded['x-forge-tailscale-user-login'] ? { id: 1000 } : null }
     }))
     // This is Nitro's localFetch adapter, used by useRequestFetch during SSR.
     const localFetch = (path: string, init: any) => fetchNodeRequestHandler(toNodeListener(app), path, init)
     for (const path of ['/api/auth/session', '/api/onboarding']) {
       const response = await fetchWithEvent(page, path, {}, { fetch: localFetch as typeof fetch })
-      expect((await response.json()).operator).toEqual({ id: 1609016 })
+      expect((await response.json()).operator).toEqual({ id: 1000 })
     }
     // useForgeApi retains raw response access for ETags and timing headers.
     const request = createFetch({ fetch: localFetch as typeof fetch })
     const response = await request.raw('/api/issues', { headers: { host: origin }, ...{ context: page.context } })
-    expect(response._data.operator).toEqual({ id: 1609016 })
+    expect(response._data.operator).toEqual({ id: 1000 })
     expect(calls).toHaveLength(3)
     expect(calls.every(row => !row.socket && row.login === 'operator@example.com')).toBe(true)
     expect(page.node.req.headers.cookie).toBeUndefined()

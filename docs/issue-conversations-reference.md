@@ -1,6 +1,6 @@
 # Issue conversations — implementation reference
 
-For the operator walkthrough, read [Talking to a worker](issue-conversations.md). The storage description below applies to selected SQLite installations; qualification dates describe historical checks, not a guarantee about a future release.
+For the operator walkthrough, read [Talking to a worker](issue-conversations.md).
 
 An issue's **Discuss blocker** control opens a durable conversation. The agent receives the issue, candidate identity, the four latest attempt summaries, recent decisions and twelve recent conversation messages. It has job-bound read-only mirror access and its own disposable runner; GitHub credentials remain outside the worker. Its logical role is the steward, using the same dossier-v1 and decision-v1 contract as planning and recovery. It can explain findings and rank up to four available issue actions. **Choose this option** opens the existing operator confirmation flow; confirming it, or an authenticated exact close command described in the operator guide, submits a stable operator request through normal controller validation. The discussion worker cannot approve a merge or security exception.
 
@@ -12,22 +12,22 @@ Selecting an offered action sends the assistant message ID and stored choice ID.
 
 The result, subject and execution identity remain immutable. Later messages or captures do not overwrite them. Existing discussion leases and operator receipts govern execution and application; no synthetic delivery is created for a conversation. Historical discussion results retain their original validation path.
 
-## Historical session continuity qualification (26 September 2026)
+## Session continuity
 
-Checked the actual installed image `forge-runner:stuck-recovery` without credentials or network access:
+Forge does not resume native provider sessions. Each discussion turn starts a new worker with saved evidence:
 
-| Provider | Installed CLI | Native capability | Existing Forge artifact | Implementation |
-| --- | --- | --- | --- | --- |
-| Codex | 0.153.4 | `codex exec resume SESSION_ID` | Fresh `exec` per assignment; disposable home removed on reset, no durable session mapping | New discussion with saved evidence |
-| Claude | 2.1.273 | `--resume`, `--fork-session` | Adapter explicitly uses `--no-session-persistence` | New discussion with saved evidence |
+| Provider | Native capability | Forge behavior |
+| --- | --- | --- |
+| Codex | `codex exec resume SESSION_ID` | Fresh `exec` per assignment; disposable home removed on reset, no durable session mapping |
+| Claude | `--resume`, `--fork-session` | Adapter explicitly uses `--no-session-persistence` |
 
-CLI help establishes the flags, not successful native resumption. Native resume is deliberately **not qualified or enabled** here. Authentication and session history are different: existing ChatGPT and Claude logins are retained, but sharing a login cannot restore deleted conversations. Old issues and unavailable sessions always have the reconstructed-context route.
+Native resume is deliberately **not enabled**. Authentication and session history are different: existing ChatGPT and Claude logins are retained, but sharing a login cannot restore deleted conversations. Old issues and unavailable sessions always have the reconstructed-context route.
 
 The latest attempt's provider is preferred if verified and available; another connected provider can answer when it is not. The UI identifies the source attempt and labels reconstructed context. No active worker conversation or worktree is modified. A future native-resume implementation would need explicit issue/attempt/session binding, selective transcript persistence excluding credentials, expiry/deletion, isolated forks and real tests across cleanup/restart. Never copy a provider home directory as a session archive or resume `--last` on a shared account.
 
 ## Lifecycle and limits
 
-In the selected runtime, SQLite discussion rows store conversations and retained job intent; the pre-cutover compatibility implementation used `state/issues/discussions.json`. The selected runtime does not read that file as a fallback. One discussion worker runs at a time, after productive dispatch. It obeys existing memory admission and provider leases, uses a ten-minute execution deadline and gives up queued admission after ten minutes. It never consumes issue failure attempts. Each authenticated message allows at most three physical worker executions, including failed or cancelled executions. At the limit, the thread records an explanation and becomes unavailable. Send a new question or instruction to continue; repeating the same unanswered text is a retry of the same turn and cannot reset the cap. Setup/reset cancels discussions before touching accounts. Cleanup failure retains the job and lease until absence is verified.
+SQLite discussion rows store conversations and retained job intent. One discussion worker runs at a time, after productive dispatch. It obeys existing memory admission and provider leases, uses a ten-minute execution deadline and gives up queued admission after ten minutes. It never consumes issue failure attempts. Each authenticated message allows at most three physical worker executions, including failed or cancelled executions. At the limit, the thread records an explanation and becomes unavailable. Send a new question or instruction to continue; repeating the same unanswered text is a retry of the same turn and cannot reset the cap. Setup/reset cancels discussions before touching accounts. Cleanup failure retains the job and lease until absence is verified.
 
 The UI polls bounded snapshots, including public assistant text emitted so far, every 2.5 seconds while open; this is incremental delivery, not token-level SSE. Private reasoning and tool input/output are excluded. Reopening restores server history; older messages paginate twenty at a time. User messages are limited to 4,000 characters. Decision metadata bounds the captured reply to 8 KiB; the displayed answer is trimmed to 1,500 characters and its proposed reason to 400. Retained conversations have a 1,000-message limit per issue. Twelve recent messages and bounded attempt summaries form the handoff; earlier turns remain readable but may be absent from the prompt.
 
@@ -57,24 +57,3 @@ Undo uses another stable request in those same canonical tables, with the authen
 Activity, header and detail share the factory resource; issue list queries and detail keys have separate entries. The request-scoped Nuxt app owns the cache, with no cross-request singleton data or local-storage persistence. One poll owner per key, shared requests, five-second default freshness, at most eighty idle entries and five-minute idle retention. Active subscribers are retained. Readiness middleware uses a five-second freshness window and a five-second request timeout, revalidating a known-active state in the background; explicit lifecycle invalidation forces a fresh check; server guards remain authoritative.
 
 Actions invalidate cached generations before and after the request so an older poll cannot overwrite a newer decision. Views revalidate promptly and retain last-known data on failure. Reset and rejected authorization clear cached data. No optimistic worker-start, merge, approval or eligibility claims. Issue filters and Activity's completed-section state survive client navigation.
-
-#49 still owns whole-page initial SSR, ETag/304 and heavy-section response work. This change does not change those backend contracts.
-
-
-## Historical release verification (September 2026)
-
-- Linux: 1,283 Python tests passed (four skips). The broad macOS run is not a passing result because legacy tests require Linux process/cgroup behavior; focused portable tests passed locally.
-- UI: 272 unit tests, Vue/server typechecks and production build passed on macOS and Linux. All twelve Chromium browser suites passed locally, including conversation send/apply/reload, plain-HTTP message identity, keyboard controls and no horizontal overflow at 320/390/1440 px.
-- Authenticated read-only qualification passed for Codex and Claude using the current accounts and the discussion result schema. Both containers were verified removed afterward. This qualifies reconstructed context, not native session resume.
-- The deployed API-to-scheduler-to-Claude-to-UI path completed a read-only question on an existing blocked issue. Its two messages persisted; no proposal was applied. Repeated message identity was deduplicated; a missing-token/cross-origin POST returned 403.
-
-Controlled navigation benchmark (local Chrome on the Mac development machine, identical fixtures and 750 ms injected latency on client API GETs):
-
-| Activity measured | Pre-release installed UI artifact | New UI |
-| --- | ---: | ---: |
-| Reopen a previously viewed issue, through the Issues list, to next paint | 1,525 ms | 17 ms |
-| Factory GETs during this specific journey | 7 | 2 |
-| Issue-detail GETs during this journey | 3 | 1 |
-| Issue-list GETs during this journey | 5 | 2 |
-
-These are individual controlled runs, not production latency percentiles. Request totals include polling during the journey; the slower baseline also spends longer polling. The old artifact was tested separately without changing production. Reproduce with `FORGE_E2E_SPEC=resources.spec.mjs`; `FORGE_E2E_OUTPUT_DIR` selects a saved build and `FORGE_BENCH_BASELINE=1` records the comparison without imposing the new warm-render target. Browser executable selection follows the normal e2e runner.

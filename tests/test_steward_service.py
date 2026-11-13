@@ -15,7 +15,7 @@ class StewardServiceTests(unittest.TestCase):
         self.fixture = core.StewardCoreTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        self.service = StewardService(store=self.fixture.store, actor_id='github:1609016', clock=lambda: 100)
+        self.service = StewardService(store=self.fixture.store, actor_id='github:1000', clock=lambda: 100)
 
     def choice(self, **changes):
         identifier, _, _ = self.fixture.accepted(judgement='judgement')
@@ -34,7 +34,7 @@ class StewardServiceTests(unittest.TestCase):
         self.assertEqual(self.service.choose(**request), result)
         with self.fixture.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT actor_id FROM decisions WHERE request_id=?',
-                (request['request_id'],)).fetchone()[0], 'github:1609016')
+                (request['request_id'],)).fetchone()[0], 'github:1000')
             self.assertEqual(db.execute('SELECT count(*) FROM steward_applications').fetchone()[0], 0)
         self.fixture.life.apply(self.fixture.command(), decision_id=request['decision_id'], apply_move=lambda *args: {})
         self.assertEqual(self.service.view('i')['decision']['application']['status'], 'applied')

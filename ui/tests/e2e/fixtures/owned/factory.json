@@ -3,7 +3,7 @@
   "controls_token": "synthetic",
   "active": true,
   "operator": {
-    "title": "Assigned to @lucbocahut",
+    "title": "Assigned to @octo-operator",
     "detail": "Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it.",
     "action_url": "/issues?issue=1:610",
     "action_label": "View issue"

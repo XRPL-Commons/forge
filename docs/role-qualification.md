@@ -3,13 +3,13 @@
 After upgrading an idle test instance, inspect its installed image and coding account:
 
 ```sh
-forge setup qualify-roles --ssh anvil --repo lucbocahut/dd-frigate --issue 10 --json
+forge setup qualify-roles --ssh anvil --repo example/repo --issue 10 --json
 ```
 
 Add `--apply` to run Build, Review, Audit, Recovery, Triage, Strategist, Discussion and Steward serially. Select particular roles with repeated `--role` options. For example, qualify just the new steward contract with:
 
 ```sh
-forge setup qualify-roles --ssh anvil --repo lucbocahut/dd-frigate --issue 10 --role steward --apply --json
+forge setup qualify-roles --ssh anvil --repo example/repo --issue 10 --role steward --apply --json
 ```
 
 The factory and merge settings must be disabled, with no unfinished jobs or account login. The CLI reads configuration itself and runs as the service account using the qualified SQLite runtime. It takes the normal controller lock; it does not activate or pause the factory.

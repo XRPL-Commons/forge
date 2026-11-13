@@ -12,7 +12,7 @@
       "ready"
     ],
     "assignees": [
-      "lucbocahut"
+      "octo-operator"
     ],
     "key": "1:610",
     "repo": "XRPL-Commons/academy",
@@ -57,7 +57,7 @@
     ],
     "reviews": [],
     "summary": {
-      "headline": "Assigned to @lucbocahut",
+      "headline": "Assigned to @octo-operator",
       "plain": "Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it."
     }
   },

@@ -21,7 +21,7 @@ export default async function (page, { base, scenario }) {
   })
   const panel = page.locator('[role="dialog"][data-side="right"]')
   await panel.waitFor()
-  await panel.getByText('Assigned to @lucbocahut', { exact: true }).waitFor()
+  await panel.getByText('Assigned to @octo-operator', { exact: true }).waitFor()
   assert.match(await panel.innerText(), /Unassign it on GitHub/)
   await page.keyboard.press('Escape')
   await panel.waitFor({ state: 'hidden' })

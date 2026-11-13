@@ -4,10 +4,9 @@ The runner routes installation-owned Claude API-key accounts through a host
 broker. Pipeline jobs, discussions and setup probes share this path. Browser
 sign-in and Grok are unchanged. No browser account is converted to API billing.
 
-The production wiring is implemented; native Linux qualification of the complete
-boundary and Bash credential isolation remains pending. Do not close #265 until
-that qualification passes for the deployed image. Browser credential isolation
-and Grok support remain separate work.
+Native Linux qualification of the complete boundary and Bash credential
+isolation must pass for the deployed image (see below). Browser credential
+isolation and Grok support are not covered.
 
 ## Proven behavior
 
@@ -22,7 +21,7 @@ injection. The fake upstream received the host API-key fixture, not the worker's
 job bearer capability. API-key provider acceptance remains a separate deployment
 qualification; this test does not establish browser subscription compatibility.
 
-Grok 1.0.34 (3736acbc8658) could not start its strict sandbox under the available
+Grok 1.0.34 could not start its strict sandbox under the available
 ARM Docker host's x86 emulation. Its namespace lockdown returned ENOSYS. The test
 did not disable its sandbox. Qualify Grok on native x86 Linux before implementing
 its routes; no Grok support is claimed by this module.
@@ -128,8 +127,7 @@ docker run --rm --network none \
   --entrypoint python3 "$FORGE_TEST_RUNNER_IMAGE" /test.py
 ```
 
-Validated locally using image `forge-runner:e8c319a511e453c8` (image ID begins
-`58004769ca52`). The script provides its own fake upstream and supplies no real
+The script provides its own fake upstream and supplies no real
 credentials. Existing user homes and workspaces are not mounted.
 
 Official protocol reference:

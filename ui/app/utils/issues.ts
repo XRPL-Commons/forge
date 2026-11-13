@@ -388,7 +388,7 @@ export function reviewRequestText(request: ReviewRequest | null | undefined, now
 }
 
 // One line per review Forge found, in words and an icon, never colour alone:
-// "@lucbocahut approved · 16:03 · counted". `time` formats `at`; pass nothing
+// "@octo-operator approved · 16:03 · counted". `time` formats `at`; pass nothing
 // before mount, when the operator's time zone is not known yet.
 interface ApprovalLine { login: string; text: string; counted: boolean; icon: string }
 export function approvalLines(approvals: IssueApproval[] | null | undefined, time?: (at: number) => string): ApprovalLine[] {
