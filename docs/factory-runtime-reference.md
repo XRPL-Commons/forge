@@ -131,9 +131,9 @@ are serialized per reference and saved using compare-and-swap before teardown;
 API-key and long-lived-token jobs retain full configured concurrency. Refreshed
 credentials never replace a newer manual login or mutate an external imported login file.
 
-Set `codex_parallel_auth: true` in runtime settings (`runtime.json` domain) to share an existing ChatGPT
-subscription across Codex workers. The controller gives each worker an access-only
-`chatgptAuthTokens` snapshot, without the refresh token. It checks that the access
+Codex workers share an existing ChatGPT subscription in parallel. The controller
+gives each worker an access-only `chatgptAuthTokens` snapshot; the refresh token
+never enters a worker container. It checks that the access
 token lasts beyond the job deadline plus five minutes. When needed, the pinned
 Codex app-server renews the login under the installation credential lock, in a
 bounded container with no repository, no model turn, and a private durable auth

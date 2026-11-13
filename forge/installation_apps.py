@@ -34,14 +34,16 @@ class FreshAppConsent:
         from .operator_auth import configuration
         from .app_access import missing_app_permissions
         from .sqlite_identity import identity_effect_lock
-        fields(binding, ('setup_id', 'owner', 'operators', 'origin', 'codex_parallel_auth', 'workflow_edits', 'repositories'))
+        # Older clients still send the retired `codex_parallel_auth` choice.
+        binding = {key: value for key, value in binding.items() if key != 'codex_parallel_auth'} if isinstance(binding, dict) else binding
+        fields(binding, ('setup_id', 'owner', 'operators', 'origin', 'workflow_edits', 'repositories'))
         require(isinstance(binding['setup_id'], str) and re.fullmatch('[a-f0-9]{32}', binding['setup_id']))
         fields(binding['owner'], ('id', 'login', 'type'))
         owner = binding['owner']
         require(type(owner['id']) is int and owner['id'] > 0 and owner['type'] in ('User', 'Organization')
                 and isinstance(owner['login'], str) and re.fullmatch('[A-Za-z0-9-]{1,39}', owner['login']))
         configuration(binding['origin'], 'validation', 'a' * 40, binding['operators'])
-        require(type(binding['codex_parallel_auth']) is bool and type(binding['workflow_edits']) is bool)
+        require(type(binding['workflow_edits']) is bool)
         require(isinstance(binding['repositories'], list) and 1 <= len(binding['repositories']) <= 25)
         from forge_client.contracts import repository
         for target in binding['repositories']: repository(target)
@@ -121,9 +123,6 @@ class FreshAppConsent:
                     current.pop('challenge', None)
                     current.update(checks={}, error=None)
                 self.identity(binding)
-                runtime = self.setup.runtime()
-                runtime['codex_parallel_auth'] = binding['codex_parallel_auth']
-                self.setup.save_runtime(runtime, active=False)
             if action == 'refresh':
                 fields(parameters, ())
                 self.identity(binding)

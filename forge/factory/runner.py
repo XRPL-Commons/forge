@@ -75,6 +75,8 @@ def scrub(text, secrets=()):
     text = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,})\b', '[REDACTED]', text)
     # Login files carry OAuth access/refresh tokens as JWTs.
     text = re.sub(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b', '[REDACTED]', text)
+    # Refresh tokens are often opaque; redact any value labelled as one.
+    text = re.sub(r'''(refresh[_-]?token\\?["']?\s*[:=]\s*\\?["']?)[^\s"'\\,;&}]+''', r'\1[REDACTED]', text, flags=re.IGNORECASE)
     return text
 
 
@@ -411,14 +413,17 @@ class ContainerRunner:
                 raise RunnerUnavailable('Provider authentication file is unavailable')
             try:
                 raw = auth_path.read_bytes()
-                credentials['FORGE_HARNESS_AUTH'] = json.loads(raw)
-                if self.config.get('provider', 'codex') == 'codex' and self.config.get('codex_parallel_auth'):
+                if self.config.get('provider', 'codex') == 'codex':
+                    # Workers run untrusted repository code: they receive access
+                    # that outlives their deadline, never the refresh token.
                     from .codex_auth import snapshot, renew_in_container
                     root = self.environ.get('FORGE_CREDENTIAL_ROOT')
                     if not root:
-                        raise ValueError('Shared login must be installation-owned')
+                        raise ValueError('Codex login must be installation-owned')
                     credentials['FORGE_HARNESS_AUTH'] = snapshot(root, auth_ref, job['deadline'],
                         lambda directory, **kwargs: renew_in_container(self, directory, **kwargs))
+                else:
+                    credentials['FORGE_HARNESS_AUTH'] = json.loads(raw)
                 credentials['FORGE_AUTH_DIGEST'] = hashlib.sha256(raw).hexdigest()
             except (RunnerError, OSError, ValueError, KeyError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded or renewed') from None
@@ -452,9 +457,6 @@ class ContainerRunner:
             self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
 
     def refresh_auth(self, current):
-        if self.config.get('provider', 'codex') == 'codex' and self.config.get('codex_parallel_auth'):
-            # Access-only workers cannot write back into the managed login.
-            return 'controller_managed'
         ref, root = self.config.get('provider_auth_file_env'), self.environ.get('FORGE_CREDENTIAL_ROOT')
         if not ref or not root:
             return 'not_managed'
@@ -475,8 +477,9 @@ class ContainerRunner:
             if self.config.get('provider', 'codex') == 'codex':
                 from .codex_auth import renewable
                 if renewable(json.loads(value)):
-                    # An access-only worker copy (e.g. launched while parallel auth was on)
-                    # must never replace the managed login it was cut from.
+                    # A worker's access-only copy must never replace the managed
+                    # login it was cut from. Only a full login, from a worker
+                    # launched before snapshots were the only path, is saved.
                     return 'access_only'
             return 'saved' if Credentials(root).refresh(ref, expected, value) else 'superseded'
         except (RunnerError, OSError, ValueError, tarfile.TarError, UnicodeError):

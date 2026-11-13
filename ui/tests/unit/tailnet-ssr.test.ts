@@ -4,13 +4,23 @@ import { createApp, createEvent, defineEventHandler, fetchWithEvent, toNodeListe
 import { IncomingMessage, ServerResponse, fetchNodeRequestHandler } from 'node-mock-http'
 import { createFetch } from 'ofetch'
 import { requestTailscaleIdentity, upstreamHeaders } from '../../server/utils/proxy'
+const procTable = vi.hoisted(() => [
+  '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+  // Serve's root-owned loopback connection from port 40000 to the UI on 8787.
+  '   0: 0100007F:9C40 0100007F:2253 01 00000000:00000000 00:00000000 00000000     0        0 13 1',
+].join('\n'))
+vi.mock('node:fs', async (original) => {
+  const fs = await original<typeof import('node:fs')>()
+  const readFileSync = ((path: unknown, ...rest: unknown[]) => path === '/proc/net/tcp' ? procTable : (fs.readFileSync as any)(path, ...rest)) as typeof fs.readFileSync
+  return { ...fs, default: { ...fs, readFileSync }, readFileSync }
+})
 
 const origin = 'anvil.example.ts.net'
 const env = { NITRO_FORGE_TAILSCALE_IDENTITY: 'serve', NITRO_FORGE_PUBLIC_ORIGIN: 'https://' + origin }
 function outer(remoteAddress = '127.0.0.1', login = 'operator@example.com') {
   const req = new IncomingMessage()
   req.url = '/'; req.headers = { host: origin, 'tailscale-user-login': login }
-  req.socket.remoteAddress = remoteAddress
+  Object.assign(req.socket, { remoteAddress, remotePort: 40000, localAddress: '127.0.0.1', localPort: 8787 })
   return createEvent(req as any, new ServerResponse(req) as any)
 }
 afterEach(() => vi.unstubAllEnvs())

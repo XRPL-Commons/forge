@@ -73,7 +73,10 @@ def provider_available(db, provider, provider_id, config, now):
             return False
     if not reference:
         return True
-    parallel = provider == 'codex' and config.get('codex_parallel_auth') is True
+    # Codex workers hold access-only snapshots and the controller alone
+    # refreshes, so they share an account; other refreshable logins do not.
+    def shared(other_provider):
+        return provider == 'codex' and other_provider == 'codex'
     # Every execution domain pins the credential reference before launching.
     # A legacy unknown lease remains fail closed until verified teardown.
     for lease_table, runtime_table in (('discussion_leases','discussion_runtime'), ('auxiliary_leases','auxiliary_runtime')):
@@ -85,15 +88,13 @@ def provider_available(db, provider, provider_id, config, now):
             if row[0] is None:
                 return False
             other = json.loads(row[0]).get('runner_config') or {}
-            if other.get('provider_auth_file_env') == reference and (
-                    not parallel or other.get('provider') != 'codex' or other.get('codex_parallel_auth') is not True):
+            if other.get('provider_auth_file_env') == reference and not shared(other.get('provider')):
                 return False
-    rows = db.execute('SELECT l.provider,l.runner_config_json FROM job_launches l '
+    rows = db.execute('SELECT l.provider FROM job_launches l '
                       'JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 '
                       "AND json_extract(l.runner_config_json,'$.provider_auth_file_env')=?", (reference,))
     for row in rows:
-        other = json.loads(row['runner_config_json'])
-        if not parallel or row['provider'] != 'codex' or other.get('codex_parallel_auth') is not True:
+        if not shared(row['provider']):
             return False
     return True
 

@@ -57,7 +57,6 @@ class InstallConsent:
                 'Sign in locally with one of the installation operators.')
         self.binding = {'setup_id': self.host_state['intent']['id'], 'owner': selected['owner'],
                         'operators': sorted({row['id'] for row in selected['operators']}), 'origin': self.host_state['origin'],
-                        'codex_parallel_auth': selected['codex_parallel_auth'],
                         'workflow_edits': any(row['allow_workflow_edits'] for row in selected['repositories']),
                         'repositories': [{'id': row['id'], 'name': row['name']} for row in
                             (repositories if repositories is not None else [row['target'] for row in selected['repositories']])]}

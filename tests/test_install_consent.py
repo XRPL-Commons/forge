@@ -58,7 +58,7 @@ class FreshConsentTests(unittest.TestCase):
         self.host.rpc.side_effect = lambda program, request, **kw: {'ok': True, 'result': self.server.call(request['setup'])}
         self.installation = SimpleNamespace(journal=self.local, host=self.host, ssh='anvil')
         self.selected = {'owner': self.owner, 'operators': [{'id': 7, 'login': 'operator'}],
-                         'codex_parallel_auth': True, 'repositories': [{'target': self.discovered[0], 'allow_workflow_edits': False}]}
+                         'repositories': [{'target': self.discovered[0], 'allow_workflow_edits': False}]}
         self.vault = Vault()
         self.events = []
         self.client = self.make_client()
@@ -84,7 +84,6 @@ class FreshConsentTests(unittest.TestCase):
         config = OperatorAuth(self.root).config()
         self.assertEqual(config['operators'], [7])
         self.assertEqual(config['client_id'], self.app['client_id'])
-        self.assertTrue(self.setup.runtime()['codex_parallel_auth'])
         self.assertFalse(self.setup.runtime()['enabled'])
         self.installed = True
         result = self.client.apply()

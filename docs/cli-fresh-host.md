@@ -155,8 +155,7 @@ Example intent:
     {"name": "OWNER/REPO", "merge_policy": "human", "allow_workflow_edits": false}
   ],
   "providers": [{"id": "codex", "kind": "browser"}],
-  "smoke_target": "scratch",
-  "codex_parallel_auth": true
+  "smoke_target": "scratch"
 }
 ```
 
