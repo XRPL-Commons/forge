@@ -73,11 +73,3 @@ structured results and active/pinned evidence. See [schema upgrades](store-migra
 Implemented behavior is distinct from release qualification. Synthetic lifecycle,
 restart and boundary tests and real sandbox canaries provide specific evidence;
 they do not prove an authenticated production workflow for every deployment.
-
-The release acceptance batch must follow the public setup instructions on a clean
-supported host, recover interrupted consent and login, complete the first-merge
-test, and finish ordinary and combined work with the intended approval policy.
-Measure the full operator journey separately from the saved installation timer,
-which currently starts after the interview. Track receipts and remaining gaps in
-the [onboarding release audit](onboarding-release-audit.md). This document does not
-claim that those live acceptance runs or the historical latency target have passed.

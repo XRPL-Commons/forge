@@ -41,7 +41,6 @@ The four operator Help guides (shown in the UI) are marked **Help**.
 ## Status and direction
 
 - [Implementation status](implementation.md)
-- [Current architecture target](target-architecture.md)
 - Security boundaries: [SECURITY.md](../SECURITY.md)
 
 ## Operator UI

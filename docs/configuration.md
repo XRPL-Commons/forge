@@ -12,7 +12,7 @@ Configuration refers to stored credentials by name (`private_key_env`, `provider
 
 | Variable | Read by | Default | Purpose |
 |---|---|---|---|
-| `FORGE_ROOT` | `legacy/forge-status.py`, UI help route | `~/ops/forge-watchdog` (API); `/app` in the UI container | Runtime root: state, configuration, credentials |
+| `FORGE_ROOT` | `legacy/forge-status.py`, UI help route | set by setup for the API; `/app` in the UI container | Runtime root: state, configuration, credentials |
 | `FORGE_BIND_ADDRESS` | `legacy/forge-status.py` | none; must be `127.0.0.1` | Status API listen address. The API refuses to start otherwise |
 | `FORGE_PORT` | `legacy/forge-status.py` | `8787` in code; setup writes `8788` | Status API port (the UI takes 8787) |
 | `FORGE_UPSTREAM_SECRET_FILE` | `legacy/forge-status.py` | `<root>/state/ui-upstream.secret` | Secret proving requests came through the UI proxy |
@@ -42,5 +42,3 @@ Forge sets these itself. Do not set them by hand.
 | `FORGE_EGRESS_IMAGE`, `FORGE_EGRESS_USER` | `forge/host_update.py` | Egress proxy build inputs |
 | `FORGE_ASSIGNMENT`, `FORGE_RESULT`, `FORGE_HARNESS_AUTH`, `FORGE_AUTH_DIGEST`, `FORGE_PROBE_SECRET`, `GH_TOKEN` | runner → worker container | Per-job assignment, result path, provider login and scoped GitHub token |
 | `FORGE_REQUIRED_SERVICES` | runner (full tier) | Services `forge-services` starts for a job; see `docs/job-environments.md` |
-
-The legacy tmux supervisor's `MAX_SESSIONS*`, `FORGE_*_BIN` and triage variables were removed with it (#110) and are no longer read.

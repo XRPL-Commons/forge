@@ -2,12 +2,10 @@
 
 ## Report a vulnerability
 
-Use [GitHub's private vulnerability report](https://github.com/XRPL-Commons/forge/security/advisories/new)
-when available. Private reporting availability has **not yet been verified for
-this release**. If GitHub does not offer **Report a vulnerability**, open a
-[Security contact request](https://github.com/XRPL-Commons/forge/issues/new?title=Security%20contact%20request)
-asking the maintainers for a private channel. Include no vulnerability details
-in that public request; wait for the private channel before sending them.
+Report vulnerabilities privately through GitHub: open the repository's
+**Security** tab and choose **Report a vulnerability**, or go directly to
+[the private report form](https://github.com/XRPL-Commons/forge/security/advisories/new).
+Do not open a public issue for a vulnerability.
 
 Do not publish exploit details, credentials, private source or raw worker output.
 A private report should identify the affected Forge revision, deployment type,
@@ -60,8 +58,7 @@ The mechanisms above are implemented contracts, not a claim that every host,
 provider or repository has passed live qualification. Setup checks the installed
 runner and provider; publication requires evidence for its current target and
 App context. Synthetic tests and sandbox canaries do not prove a complete
-production issue-to-merge journey. Track that acceptance separately in the
-[onboarding release audit](docs/onboarding-release-audit.md).
+production issue-to-merge journey.
 
 Resource admission, timeouts and memory limits reduce resource exhaustion. They
 do not isolate credentials or establish authorization. Do not weaken ownership,

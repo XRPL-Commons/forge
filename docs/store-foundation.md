@@ -1,10 +1,7 @@
 # SQLite store foundation
 
-This implements phase 1 of [#209](https://github.com/XRPL-Commons/forge/issues/209),
-consolidating [#212](https://github.com/XRPL-Commons/forge/pull/212) and
-[#213](https://github.com/XRPL-Commons/forge/pull/213) into one `forge.store` API.
-The running supervisor, API, UI and CLI still use their existing stores. Importing
-`forge.store` creates no files and selects no backend.
+`forge.store` is Forge's SQLite store API. Importing `forge.store` creates no
+files and selects no backend.
 
 ## Store and commands
 
@@ -42,8 +39,7 @@ the database or authorize a transition by supplying its own report.
 ## Worker execution adapter
 
 `forge.factory.execution_controller.ExecutionController` is an explicit SQLite
-caller. It is not yet selected by the production supervisor. It uses the existing
-container runner and role-scoped GitHub token issuer, without a JSON ledger shim.
+caller. It uses the existing container runner and role-scoped GitHub token issuer, without a JSON ledger shim.
 
 - `Lifecycle.reserve_job(..., launch=Launch(...))` saves immutable launch inputs
   and the capacity lease in one transaction. The adapter currently accepts units
@@ -77,10 +73,9 @@ They do not establish a real GitHub first merge or full public-view parity.
 
 ### Explicit SQLite supervisor
 
-`forge.factory.sqlite_supervisor.SqliteSupervisor` now composes bounded cleanup,
+`forge.factory.sqlite_supervisor.SqliteSupervisor` composes bounded cleanup,
 ordered GitHub observations, result validation, merge authorization, durable
-GitHub effects and dispatch. It is an explicit adapter, not a production backend
-selector. Import-only stores reject controller execution.
+GitHub effects and dispatch. Import-only stores reject controller execution.
 
 - Observation generations are reserved before remote reads. Issue facts, configured
   hold labels, ownership and repository readiness commit together. New holds fence
@@ -106,18 +101,8 @@ selector. Import-only stores reject controller execution.
 
 Local integration tests compose the real row controllers with simulated GitHub
 and worker engines through build, review, audit, human approval and confirmed merge,
-including supervisor restarts and failure investigation before retry. The combined
-local checkpoint passed 328 store regressions and 14 migration/runtime CLI tests
-on SQLite 3.53.1. This is not real
-GitHub or production acceptance; Linux and full application qualification remain
-at the integrated batch boundary.
-
-Still required before selecting this runtime: automatic memory/service escalation
-and durable environment selection; revision-bound dependency fulfillment and
-operator/API routing for verification and other actions; supporting-domain writers
-(discussions, deployment, configuration, identity and client operations); API/UI/CLI
-read adapters; managed-launcher guards, activation, fresh parity and live qualification.
-No legacy reconciliation gate is cleared merely because these adapters exist.
+including supervisor restarts and failure investigation before retry. They are
+not real GitHub or production acceptance.
 
 ### Recovery and verification adapters
 
@@ -136,7 +121,6 @@ independently verifies the original assignment, branch, base, requirements and
 policy. Findings alone cannot publish, select a candidate or reset a budget. An
 investigation may request exact-candidate human or configured CI verification;
 that request cannot pass Review/Audit or refund a failure by itself.
-Imported historical failures remain under explicit legacy reconciliation.
 
 `VerificationController` completes configured CI verification only for the exact
 candidate and operator-selected check names/App identities. An explicit human
@@ -167,23 +151,7 @@ current candidate evidence, and explicit durable pins. Callers must use
 `Artifacts.pin_in()` in the transaction that records a durable raw-log reference.
 Structured results, summaries, launch manifests and all events remain retained.
 An expired chunk keeps its metadata and returns `ArtifactExpired`; retries do not
-recreate its bytes. The explicit SQLite supervisor schedules bounded retention;
-production still uses the existing runtime until qualified cutover.
-
-## Consolidation checklist
-
-| Capability from the two PRs | Combined implementation |
-| --- | --- |
-| Private identity, migrations, WAL qualification, snapshots and backup | `db.py` and one versioned SQL schema; FULL durability retained |
-| Closed codes, wording, scope/release rules and legal state edges | `codes.py`, `status.py`, matching SQL registries and constraint tests |
-| Exact candidate evidence, shared failure budget, stale work and cleanup fencing | Typed lifecycle commands; a lease lasts until verified cleanup |
-| Ordered issue observations, retry, merge/closure and dissolution | Typed commands with version, evidence and replay checks |
-| Applied and rejected decisions | Atomic command journaling, immutable events and full request identity checks |
-| Compression and log expiry | Bounded, digest-checked artifact API with durable pins and 30-day raw-log policy |
-| Concurrency and crash behavior | Concurrent command tests, transaction rollback tests and killed writer tests |
-
-The consolidation retains one module/schema layout. It does not introduce a
-second backend or a generic state setter that bypasses candidate evidence.
+recreate its bytes. The SQLite supervisor schedules bounded retention.
 
 ## Local development
 
@@ -218,26 +186,3 @@ failure accounting, cleanup, retention, transaction crashes, disk-full rollback
 and consistent backups. No test copies live state.
 
 Schema upgrades are described in [the upgrade guide](store-migration.md).
-
-## Remaining #209 work
-
-[#209](https://github.com/XRPL-Commons/forge/issues/209) remains the release plan.
-Label removal and repaired repository readiness resume eligible work; completed
-external closure shows done; batches may include existing PRs with approval.
-The store supports these rules, but existing runtime adapters must still adopt it.
-
-1. **Import and parity:** the captured production stores now have resumable entity
-   mappings and independent fact checks. Public-view parity and fresh reconciliation
-   of unfinished work remain; see the migration guide for the dry-run evidence.
-2. **Supervisor and API/UI/CLI cutover:** replace every relevant reader and writer,
-   reconcile external effects, schedule retention, and measure latency on the host.
-3. **Units and batches:** migrate existing work without losing candidate evidence
-   or budget history; add approved composition, dependency-aware execution,
-   integration, member dropping and a normal merged batch PR. Schema support and
-   guarded dissolution do not constitute end-to-end batch execution.
-4. **Retire JSON:** remove runtime JSON writes and complete CLI update, backup and
-   forward-recovery documentation and rehearsals.
-
-Legacy migration is one-way. A pre-migration source copy is kept for diagnosis;
-there is no JSON switch-back. This PR performs no live migration or service restart.
-#209 stays open until all release criteria pass.
