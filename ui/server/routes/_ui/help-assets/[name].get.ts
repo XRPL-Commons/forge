@@ -12,7 +12,7 @@ export default defineEventHandler((event) => {
   catch { throw createError({ statusCode: 404, statusMessage: 'Help image unavailable' }) }
   setHeader(event, 'Content-Type', 'image/svg+xml; charset=utf-8')
   setHeader(event, 'X-Content-Type-Options', 'nosniff')
-  setHeader(event, 'Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+  setHeader(event, 'Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'")
   // Release names change on asset edits; do not retain a previous release forever.
   setHeader(event, 'Cache-Control', 'private, max-age=300')
   return body
