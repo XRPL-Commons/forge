@@ -196,9 +196,10 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(self.controller.step('u')['reserved'])
 
     def test_provider_rotation_and_account_lease_survive_controller_restart(self):
-        self.config['provider_pool'] = [dict(id='first', provider='codex', model=None,
+        # A refreshable non-Codex login has one writer per account.
+        self.config['provider_pool'] = [dict(id='first', provider='claude', model=None,
             provider_environment=[], provider_auth_file_env='AUTH_ONE'),
-            dict(id='second', provider='codex', model='second-model', provider_environment=[], provider_auth_file_env='AUTH_TWO')]
+            dict(id='second', provider='claude', model='second-model', provider_environment=[], provider_auth_file_env='AUTH_TWO')]
         def prepare(snapshot, role):
             return PreparedDispatch(BASE, role + '[bot]', deepcopy(self.config))
         first = self.driver(prepare).step('u')
@@ -212,11 +213,11 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT cursor FROM runtime_controls WHERE name='provider_cursor'").fetchone()[0], '0')
 
     def test_transaction_rechecks_account_and_rolls_back_entire_reservation(self):
-        self.config['provider_auth_file_env'] = 'AUTH_ONE'
+        self.config.update(provider='claude', provider_auth_file_env='AUTH_ONE')
         self.prepare = GitHubPrepare(self.github, self.config)
         first = self.driver().step('u')
         added = self.admit('v', 2)
-        launch = replace(Launch('forge/issue-2', 'build[bot]', 'codex', 200, self.config, {}))
+        launch = replace(Launch('forge/issue-2', 'build[bot]', 'claude', 200, self.config, {}))
         with self.assertRaisesRegex(TransitionError, 'provider account'):
             self.life.reserve_job(self.command('v'), 'build', slot='build-2', execution_fence='fence-two',
                 input_manifest={'requirements_revision_id': added['revision_id'], 'base_oid': BASE, 'policy_hash': 'policy'},
@@ -227,23 +228,13 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 1)
         self.assertEqual(self.job(first)['cleanup'], 0)
 
-    def test_codex_parallel_snapshots_drain_old_refresh_writer(self):
+    def test_codex_access_snapshots_share_one_account(self):
         self.config['provider_auth_file_env'] = 'AUTH_ONE'
         def prepare(snapshot, role):
             return PreparedDispatch(BASE, role + '[bot]', deepcopy(self.config))
-        first = self.driver(prepare).step('u')
+        self.assertTrue(self.driver(prepare).step('u')['reserved'])
         self.admit('v', 2)
-        self.config['codex_parallel_auth'] = True
-        self.assertEqual(self.driver(prepare).step('v')['reason'], 'provider_unavailable')
-        job = self.job(first)
-        self.life.fence_execution(Command('fence', 'test', 'u', job['unit_version']), job['id'], execution_fence=job['execution_fence'], reason='test')
-        self.now += 1
-        self.life.verify_cleanup(self.command(), job['id'], execution_fence=job['execution_fence'],
-                                 evidence={'process_stopped': True, 'resources_released': True})
-        self.now += 30
         self.assertTrue(self.driver(prepare).step('v')['reserved'])
-        self.admit('w', 3)
-        self.assertTrue(self.driver(prepare).step('w')['reserved'])
 
     def test_provider_cooldown_and_observation_fail_closed(self):
         with self.store.write() as db:

@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from forge.credentials import Credentials
 from forge.factory.codex_auth import snapshot, expires_at, renew_in_container, renewable
 from forge.factory.config import validate
-from forge.factory.runner import ContainerRunner
+from forge.factory.runner import ContainerRunner, scrub
 from forge.settings import write_json
 
 
@@ -83,8 +83,8 @@ class SharedAuthTests(unittest.TestCase):
         self.assertEqual(self.current()['tokens']['refresh_token'], 'rotated-refresh')
 
     def test_runner_only_delivers_access_snapshot_to_worker(self):
-        config = validate({'provider_auth_file_env': REF, 'provider_environment': [],
-                           'codex_parallel_auth': True})
+        # The default configuration: a single Codex run gets the same snapshot.
+        config = validate({'provider_auth_file_env': REF, 'provider_environment': []})
         runner = ContainerRunner(config, environ=self.credentials.environment())
         runner.inspect = Mock(return_value={'status': 'created', 'id': 'worker'})
         runner.call = Mock()
@@ -98,6 +98,18 @@ class SharedAuthTests(unittest.TestCase):
         self.assertEqual(delivered['FORGE_HARNESS_AUTH']['tokens']['refresh_token'], '')
         self.assertNotIn('GH_TOKEN', delivered)
         self.assertNotIn(b'synthetic-refresh', raw)
+        self.assertNotIn('synthetic-refresh', json.dumps(runner.call.call_args_list, default=str))
+
+    def test_retired_parallel_setting_is_accepted_and_ignored(self):
+        for value in (True, False):
+            self.assertNotIn('codex_parallel_auth', validate({'codex_parallel_auth': value}))
+
+    def test_scrub_redacts_labelled_refresh_tokens(self):
+        for text in ('{"refresh_token": "opaque-refresh-value"}', 'refresh_token=opaque-refresh-value&x=1',
+                     '"refreshToken":"opaque-refresh-value"', '{\\"refresh_token\\": \\"opaque-refresh-value\\"}'):
+            scrubbed = scrub(text)
+            self.assertNotIn('opaque-refresh-value', scrubbed, text)
+            self.assertIn('[REDACTED]', scrubbed)
 
     def test_reconnect_does_not_restore_old_staged_credentials(self):
         def crash(directory, *, reconcile):
@@ -124,14 +136,9 @@ class SharedAuthTests(unittest.TestCase):
             self.credentials.put(REF, json.dumps(value), file=True)
             with self.assertRaises(ValueError): snapshot(self.root, REF, 5000, Mock())
 
-    def test_access_only_workers_never_persist_back_into_login(self):
-        runner = ContainerRunner(validate({'codex_parallel_auth': True}))
-        runner.call = Mock(side_effect=AssertionError('must not read worker auth'))
-        self.assertEqual(runner.refresh_auth({'id': 'worker'}), 'controller_managed')
-
     def test_an_access_only_copy_never_replaces_the_managed_login(self):
-        # Live incident: parallel auth was switched off while access-only workers ran;
-        # their copy was saved back and the login could no longer renew.
+        # Live incident: an access-only copy was saved back and the login
+        # could no longer renew.
         import hashlib
         stored = Path(self.credentials.environment()[REF]).read_bytes()
         copy = {'auth_mode': 'chatgptAuthTokens', 'tokens': {**login()['tokens'], 'refresh_token': ''}}

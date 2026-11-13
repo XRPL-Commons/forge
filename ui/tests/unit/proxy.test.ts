@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import { PassThrough } from 'node:stream'
 import type { IncomingMessage } from 'node:http'
-import { allowedHosts, guardAction, guardHost, proxyPaths, tailscaleIdentity, TAILSCALE_UPSTREAM_HEADER, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody } from '../../server/utils/proxy'
+import { allowedHosts, guardAction, guardHost, loopbackPeerUid, proxyPaths, tailscaleIdentity, TAILSCALE_UPSTREAM_HEADER, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
   host: '100.64.0.7:8787', origin: 'http://100.64.0.7:8787', 'sec-fetch-site': 'same-origin',
@@ -290,23 +290,44 @@ describe('bounded request bodies', () => {
 describe('Tailscale Serve operator identity', () => {
   const env = { NITRO_FORGE_TAILSCALE_IDENTITY: 'serve', NITRO_FORGE_PUBLIC_ORIGIN: 'https://forge.example.ts.net' }
   const serve = { host: 'forge.example.ts.net', 'tailscale-user-login': 'Alice@Example.com' }
-  it('trusts the login only on the loopback hop from Serve under the public name', () => {
-    expect(tailscaleIdentity(serve, '127.0.0.1', env)).toBe('alice@example.com')
-    expect(tailscaleIdentity(serve, '::ffff:127.0.0.1', env)).toBe('alice@example.com')
-    expect(tailscaleIdentity(serve, '::1', env)).toBe('alice@example.com')
+  const hop = { remoteAddress: '127.0.0.1', remotePort: 40000, localAddress: '127.0.0.1', localPort: 8787 }
+  const root = () => 0
+  it('trusts the login only on a root-owned loopback hop from Serve under the public name', () => {
+    expect(tailscaleIdentity(serve, hop, env, root)).toBe('alice@example.com')
+    expect(tailscaleIdentity(serve, { ...hop, remoteAddress: '::ffff:127.0.0.1' }, env, root)).toBe('alice@example.com')
+  })
+  it('refuses a forged header from another local account on the same loopback hop', () => {
+    expect(tailscaleIdentity(serve, hop, env, () => 1001)).toBeUndefined()
+    expect(tailscaleIdentity(serve, hop, env, () => undefined)).toBeUndefined()
   })
   it('refuses a header sent straight to the tailnet address or under another name', () => {
-    expect(tailscaleIdentity(serve, '100.101.102.103', env)).toBeUndefined()
-    expect(tailscaleIdentity({ ...serve, host: '100.64.0.7:8787' }, '127.0.0.1', env)).toBeUndefined()
+    expect(tailscaleIdentity(serve, { ...hop, remoteAddress: '100.101.102.103' }, env)).toBeUndefined()
+    expect(tailscaleIdentity({ ...serve, host: '100.64.0.7:8787' }, hop, env, root)).toBeUndefined()
   })
   it('is off unless identity mode and an HTTPS origin are configured', () => {
-    expect(tailscaleIdentity(serve, '127.0.0.1', {})).toBeUndefined()
-    expect(tailscaleIdentity(serve, '127.0.0.1', { ...env, NITRO_FORGE_TAILSCALE_IDENTITY: '1' })).toBeUndefined()
-    expect(tailscaleIdentity(serve, '127.0.0.1', { ...env, NITRO_FORGE_PUBLIC_ORIGIN: 'http://forge.example.ts.net' })).toBeUndefined()
+    expect(tailscaleIdentity(serve, hop, {}, root)).toBeUndefined()
+    expect(tailscaleIdentity(serve, hop, { ...env, NITRO_FORGE_TAILSCALE_IDENTITY: '1' }, root)).toBeUndefined()
+    expect(tailscaleIdentity(serve, hop, { ...env, NITRO_FORGE_PUBLIC_ORIGIN: 'http://forge.example.ts.net' }, root)).toBeUndefined()
   })
   it('refuses tagged devices, repeated and malformed logins', () => {
     for (const login of ['tagged-devices', 'tagged-devices@example.ts.net', 'alice@example.com,mallory@example.com', 'alice', '', 'a b@example.com'])
-      expect(tailscaleIdentity({ ...serve, 'tailscale-user-login': login }, '127.0.0.1', env)).toBeUndefined()
+      expect(tailscaleIdentity({ ...serve, 'tailscale-user-login': login }, hop, env, root)).toBeUndefined()
+  })
+  it('reads the connecting socket owner from the kernel socket table', () => {
+    // Little-endian hosts print 127.0.0.1 as 0100007F; ports 40000 and 8787 are 9C40 and 2253.
+    const table = [
+      '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+      '   0: 0100007F:2253 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11 1',
+      '   1: 0100007F:2253 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 12 1',
+      '   2: 0100007F:9C40 0100007F:2253 01 00000000:00000000 00:00000000 00000000     0        0 13 1',
+      '   3: 0100007F:9C41 0100007F:2253 01 00000000:00000000 00:00000000 00000000  1001        0 14 1',
+    ].join('\n')
+    const read = (path: string) => { expect(path).toBe('/proc/net/tcp'); return table }
+    expect(loopbackPeerUid(hop, read)).toBe(0)
+    expect(loopbackPeerUid({ ...hop, remotePort: 40001 }, read)).toBe(1001)
+    expect(loopbackPeerUid({ ...hop, remotePort: 40002 }, read)).toBeUndefined()
+    expect(loopbackPeerUid({ ...hop, remoteAddress: '100.64.0.2' }, read)).toBeUndefined()
+    expect(loopbackPeerUid(hop, () => { throw new Error('no /proc') })).toBeUndefined()
   })
   it('forwards only the derived identity, never a client-supplied identity header', () => {
     const spoofed = { host: 'x', 'tailscale-user-login': 'mallory@example.com', [TAILSCALE_UPSTREAM_HEADER]: 'mallory@example.com' }

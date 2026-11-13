@@ -11,7 +11,8 @@ Forge App, uses that App for GitHub sign-in fallback, and links the installing
 operator's observed Tailscale identity to their authorized GitHub ID.
 
 In Tailscale mode, the UI accepts identity only through its trusted local Serve
-proxy. The API checks the UI's upstream secret and the stored operator link;
+proxy: the loopback connection must be owned by root, as `tailscaled` is, so
+another local account cannot present the identity header. The API checks the UI's upstream secret and the stored operator link;
 client-supplied identity headers and tagged devices do not authorize an operator.
 GitHub sign-in remains available when the Tailscale identity is absent or unlinked.
 The service account and local proxy remain trusted administrative boundaries.

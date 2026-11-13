@@ -159,7 +159,8 @@ class DeploymentTests(unittest.TestCase):
             'provider_ready': ['codex-browser'], 'provider_pool': [
                 {'id': 'unverified', 'provider': 'codex', 'model': 'ignored',
                  'provider_environment': ['OPENAI_API_KEY'], 'provider_auth_file_env': None},
-                {'id': 'codex-browser', 'provider': 'codex', 'model': 'selected-model',
+                # Leasing is exclusive for a refreshable non-Codex login.
+                {'id': 'codex-browser', 'provider': 'claude', 'model': 'selected-model',
                  'provider_environment': [], 'provider_auth_file_env': 'FORGE_SETUP_CODEX_AUTH'}]}
 
     def test_deployment_pins_verified_browser_pool_account_instead_of_default_api_key(self):
@@ -596,8 +597,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.entry()['error'], 'The repository workflows could not be read')
         self.assertFalse(self.engine)
 
-    def pipeline_job(self, reference, number=3):
-        """A pipeline worker holding a capacity lease with this coding account."""
+    def pipeline_job(self, reference, number=3, provider='claude'):
+        """A pipeline worker holding a capacity lease with this refreshable coding account."""
         with self.database.write() as db:
             unit_id = unit(db, 7, number, state='building')
             db.execute("INSERT INTO attempts(id,unit_id,membership_generation,assignment_generation,input_manifest_json,budget_generation,created_at) "
@@ -607,8 +608,8 @@ class DeploymentTests(unittest.TestCase):
                        (job, unit_id, 'attempt-' + unit_id))
             db.execute('INSERT INTO job_leases VALUES(?,?,?,100)', ('build-' + unit_id, job, 'fence-' + job))
             db.execute("INSERT INTO job_launches(job_id,slot,execution_fence,branch,publisher,provider,runner_config_json,policy_json,context_json,deadline) "
-                       "VALUES(?,?,?,'forge/work','forge-build[bot]','codex',?,'{}','{}',700)",
-                       (job, 'build-' + unit_id, 'fence-' + job, json.dumps({'provider_auth_file_env': reference})))
+                       "VALUES(?,?,?,'forge/work','forge-build[bot]',?,?,'{}','{}',700)",
+                       (job, 'build-' + unit_id, 'fence-' + job, provider, json.dumps({'provider_auth_file_env': reference})))
         return job
 
     def release(self, job):
@@ -618,7 +619,7 @@ class DeploymentTests(unittest.TestCase):
             db.execute('DELETE FROM job_leases WHERE job_id=?', (job,))
 
     def test_a_rotating_coding_account_is_never_shared_with_a_pipeline_worker(self):
-        self.config['provider_auth_file_env'] = 'FORGE_HARNESS_AUTH_ONE'
+        self.config.update(provider='claude', provider_auth_file_env='FORGE_HARNESS_AUTH_ONE')
         job = self.pipeline_job('FORGE_HARNESS_AUTH_ONE')
         self.deployments().tick(self.config)
         self.assertFalse(self.engine)
@@ -632,6 +633,12 @@ class DeploymentTests(unittest.TestCase):
     def test_another_coding_account_is_not_held_by_the_pipeline_worker(self):
         self.config['provider_auth_file_env'] = 'FORGE_HARNESS_AUTH_TWO'
         self.pipeline_job('FORGE_HARNESS_AUTH_ONE')
+        self.deployments().tick(self.config)
+        self.assertEqual(self.entry()['status'], 'running')
+
+    def test_codex_access_snapshots_share_an_account_with_a_pipeline_worker(self):
+        self.config['provider_auth_file_env'] = 'FORGE_HARNESS_AUTH_ONE'
+        self.pipeline_job('FORGE_HARNESS_AUTH_ONE', provider='codex')
         self.deployments().tick(self.config)
         self.assertEqual(self.entry()['status'], 'running')
 
@@ -657,7 +664,7 @@ class DeploymentTests(unittest.TestCase):
     def test_a_running_strategist_holds_its_own_coding_account(self):
         # The strategist's own auxiliary lease carries the account, so a second
         # deployments store sees it as held until the execution is cleaned.
-        self.config['provider_auth_file_env'] = 'FORGE_HARNESS_AUTH_ONE'
+        self.config.update(provider='claude', provider_auth_file_env='FORGE_HARNESS_AUTH_ONE')
         self.deployments().tick(self.config)
         self.assertIsNone(self.available_account(self.config))
         self.finish()

@@ -1,4 +1,6 @@
 import type { IncomingMessage } from 'node:http'
+import { readFileSync } from 'node:fs'
+import { endianness } from 'node:os'
 import type { H3Event } from 'h3'
 export const MAX_ACTION_BODY = 262144
 export const MAX_RESPONSE_BODY = 1024 * 1024
@@ -81,27 +83,54 @@ export function guardAction({ method, headers, contentLength, publicOrigin }: Gu
 
 // Tailscale Serve adds `Tailscale-User-Login` for a tailnet person (never for a
 // tagged device). It is an identity only when this process received it from
-// Serve itself: Serve connects over loopback to the configured HTTPS name.
-// Any other path, such as a direct request to the tailnet address, may carry a
-// forged header, so nothing is forwarded. The status API trusts only
-// `TAILSCALE_UPSTREAM_HEADER`, and `upstreamHeaders` never copies a client's.
+// Serve itself: Serve connects over loopback to the configured HTTPS name, and
+// on Linux tailscaled runs as root. Any local account can open a loopback
+// connection and send the same header, so the connecting socket must also be
+// owned by root, read from the kernel's own socket table. Any other path, such
+// as a direct request to the tailnet address, may carry a forged header, so
+// nothing is forwarded. The status API trusts only `TAILSCALE_UPSTREAM_HEADER`,
+// and `upstreamHeaders` never copies a client's.
 export const TAILSCALE_UPSTREAM_HEADER = 'x-forge-tailscale-user-login'
 const TAILSCALE_LOGIN = /^[a-z0-9][a-z0-9._%+-]{0,63}@[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/
 
-function loopback(address: string | undefined): boolean {
+export interface PeerSocket { remoteAddress?: string; remotePort?: number; localAddress?: string; localPort?: number }
+
+// `/proc/net/tcp` prints an IPv4 address as its in-memory 32-bit word and the
+// port in host order, both as uppercase hex.
+function procEndpoint(address: string | undefined, port: number | undefined): string | undefined {
   const plain = (address ?? '').startsWith('::ffff:') ? (address ?? '').slice(7) : (address ?? '')
-  return plain === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(plain)
+  const parts = plain.split('.').map(Number)
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return undefined
+  if (!Number.isInteger(port) || port! <= 0 || port! > 65535) return undefined
+  const word = endianness() === 'LE' ? parts.reverse() : parts
+  return (word.map(part => part.toString(16).padStart(2, '0')).join('') + ':' + port!.toString(16).padStart(4, '0')).toUpperCase()
 }
 
-export function tailscaleIdentity(headers: Headers, remoteAddress: string | undefined, env: Record<string, string | undefined>): string | undefined {
+// The owning uid of the other end of a loopback IPv4 connection: its row has
+// our peer as local address and us as remote address. Undefined when unknown.
+export function loopbackPeerUid(socket: PeerSocket | undefined, read = (path: string) => readFileSync(path, 'utf8')): number | undefined {
+  const peer = procEndpoint(socket?.remoteAddress, socket?.remotePort)
+  const self = procEndpoint(socket?.localAddress, socket?.localPort)
+  if (!peer || !self || !/^127\./.test((socket?.remoteAddress ?? '').replace(/^::ffff:/, ''))) return undefined
+  let table: string
+  try { table = read('/proc/net/tcp') } catch { return undefined }
+  for (const line of table.split('\n').slice(1)) {
+    const field = line.trim().split(/\s+/)
+    if (field[1] === peer && field[2] === self && /^\d+$/.test(field[7] ?? '')) return Number(field[7])
+  }
+  return undefined
+}
+
+export function tailscaleIdentity(headers: Headers, socket: PeerSocket | undefined, env: Record<string, string | undefined>, owner = loopbackPeerUid): string | undefined {
   if (env.NITRO_FORGE_TAILSCALE_IDENTITY !== 'serve') return undefined
   let origin: URL
   try { origin = new URL(env.NITRO_FORGE_PUBLIC_ORIGIN ?? '') } catch { return undefined }
-  if (origin.protocol !== 'https:' || origin.pathname !== '/' || !loopback(remoteAddress)) return undefined
+  if (origin.protocol !== 'https:' || origin.pathname !== '/') return undefined
   if ((headers.host ?? '').trim().toLowerCase() !== origin.host.toLowerCase()) return undefined
   // A repeated header arrives comma-joined; that is never one person.
   const value = (headers['tailscale-user-login'] ?? '').trim().toLowerCase()
   if (!value || value.includes(',') || value.startsWith('tagged-devices') || value.length > 320 || !TAILSCALE_LOGIN.test(value)) return undefined
+  if (owner(socket) !== 0) return undefined
   return value
 }
 
@@ -114,7 +143,7 @@ export function requestTailscaleIdentity(event: H3Event, env = process.env): str
   const headers = Object.fromEntries(Object.entries(req.headers).map(([key, value]) =>
     [key, Array.isArray(value) ? value.join(',') : value]))
   const inherited = (req as IncomingMessage & { __unenv__?: object }).__unenv__
-  const login = tailscaleIdentity(headers, req.socket?.remoteAddress, env)
+  const login = tailscaleIdentity(headers, req.socket, env)
     ?? (inherited && requestIdentities.get(inherited))
   if (login) requestIdentities.set(event.context, login)
   return login

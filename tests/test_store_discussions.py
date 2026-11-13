@@ -235,7 +235,8 @@ class DiscussionTests(unittest.TestCase):
         self.assertFalse(any(m['role']=='assistant' for m in self.service.view('1:2')['messages']))
 
     def test_rotating_credentials_remain_leased_until_verified_cleanup(self):
-        self.config['provider_auth_file_env']='CODEX_ACCOUNT'
+        # Codex accounts are shared; a refreshable Claude login has one writer.
+        self.config.update(provider='claude',provider_auth_file_env='CLAUDE_ACCOUNT')
         job=self.start()
         with self.store.read_snapshot() as db:
             self.assertFalse(provider_available(db,self.config['provider'],None,self.config,self.now))

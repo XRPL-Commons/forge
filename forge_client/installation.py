@@ -21,14 +21,16 @@ from . import install_report, install_progress
 def intent(value, github):
     value = deepcopy(value)
     smoke_issue = value.pop('smoke_issue', None)
+    # Retired: Codex workers always receive access-only snapshots.
+    value.pop('codex_parallel_auth', None)
     fields(value, ('version', 'ssh', 'name', 'revision', 'host_key', 'hostname', 'owner', 'operators',
-                   'repositories', 'providers', 'smoke_target', 'codex_parallel_auth',
+                   'repositories', 'providers', 'smoke_target',
                    *(['rules_repair'] if 'rules_repair' in value else [])))
     require(value['version'] == 1 and isinstance(value['ssh'], str), 'invalid_intent')
     require(isinstance(value['name'], str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', value['name']), 'invalid_intent')
     require(value['host_key'] is None or isinstance(value['host_key'], str) and re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', value['host_key']), 'invalid_host_key')
     require(isinstance(value['hostname'], str) and re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', value['hostname']), 'invalid_hostname')
-    require(value.get('rules_repair') in (None, 'apply-if-admin', 'print-commands', 'skip') and type(value['codex_parallel_auth']) is bool, 'invalid_intent')
+    require(value.get('rules_repair') in (None, 'apply-if-admin', 'print-commands', 'skip'), 'invalid_intent')
     require(isinstance(value['operators'], list) and 1 <= len(value['operators']) <= 20, 'invalid_intent')
     require(isinstance(value['repositories'], list) and 1 <= len(value['repositories']) <= 20, 'invalid_intent')
     require(isinstance(value['providers'], list) and 1 <= len(value['providers']) <= 3, 'invalid_intent')
@@ -657,7 +659,7 @@ def schemas():
         'intent_schema': {
             'type': 'object', 'additionalProperties': False,
             'required': ['version', 'ssh', 'name', 'revision', 'host_key', 'hostname', 'owner', 'operators',
-                         'repositories', 'providers', 'smoke_target', 'codex_parallel_auth'],
+                         'repositories', 'providers', 'smoke_target'],
             'properties': {
                 'version': {'const': 1}, 'ssh': {'type': 'string'}, 'name': {'type': 'string'},
                 'revision': {'type': ['string', 'null'], 'description': 'Exact commit, or null to resolve the latest prepared release once'},
@@ -674,8 +676,7 @@ def schemas():
                     'properties': {'id': {'enum': ['codex', 'claude', 'grok']},
                                    'kind': {'enum': ['browser', 'api_key', 'token']}}}},
                 'smoke_target': {'type': 'string', 'description': 'scratch or a selected OWNER/REPO'},
-                'smoke_issue': {'type': ['integer', 'null'], 'minimum': 1, 'description': 'Optional existing issue in the selected smoke repo; omitted creates a smoke issue'},
-                'codex_parallel_auth': {'type': 'boolean', 'description': 'Allow parallel jobs with the host-managed Codex login'}
+                'smoke_issue': {'type': ['integer', 'null'], 'minimum': 1, 'description': 'Optional existing issue in the selected smoke repo; omitted creates a smoke issue'}
             }},
         'wait': 'Use --json --wait SECONDS to follow server work through handover. Human output returns the web destination after bootstrap. Resume retains the original installation and first-merge timer.',
         'secrets': 'Never accepted in the intent. Use forge account login with hidden input or private stdin.'}

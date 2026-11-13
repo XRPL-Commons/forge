@@ -4,6 +4,16 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 vi.mock('#app/nuxt', () => ({ useRuntimeConfig: () => ({ forgeApi: 'http://localhost:8788', forgeUpstreamSecretFile: '' }) }))
 vi.mock('#app/composables/ssr', () => ({ setResponseStatus: vi.fn() }))
+const procTable = vi.hoisted(() => [
+  '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+  // Serve's root-owned loopback connection from port 40000 to the UI on 8787.
+  '   0: 0100007F:9C40 0100007F:2253 01 00000000:00000000 00:00000000 00000000     0        0 13 1',
+].join('\n'))
+vi.mock('node:fs', async (original) => {
+  const fs = await original<typeof import('node:fs')>()
+  const readFileSync = ((path: unknown, ...rest: unknown[]) => path === '/proc/net/tcp' ? procTable : (fs.readFileSync as any)(path, ...rest)) as typeof fs.readFileSync
+  return { ...fs, default: { ...fs, readFileSync }, readFileSync }
+})
 
 async function middleware() {
   vi.stubGlobal('defineEventHandler', (handler: unknown) => handler)
@@ -59,7 +69,7 @@ describe('proxy server-rendered identity', () => {
     const page = request()
     page.path = '/'
     Object.assign(page.node.req.headers, { host: 'anvil.example.ts.net', 'tailscale-user-login': 'operator@example.com' })
-    Object.assign(page.node.req.socket, { remoteAddress: '127.0.0.1' })
+    Object.assign(page.node.req.socket, { remoteAddress: '127.0.0.1', remotePort: 40000, localAddress: '127.0.0.1', localPort: 8787 })
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
     await handler(page as any)
     expect(fetch).not.toHaveBeenCalled()

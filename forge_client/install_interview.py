@@ -143,7 +143,7 @@ def interview(ssh, github, *, ask=input, tell=None):
     value = {'version': 1, 'ssh': ssh, 'name': name, 'revision': None, 'host_key': fingerprint,
              'hostname': re.sub('[^a-z0-9-]+', '-', name.lower()).strip('-')[:63],
              'owner': owner, 'operators': [actor['login']], 'repositories': rows, 'providers': [account],
-             'smoke_target': 'scratch', 'codex_parallel_auth': True}
+             'smoke_target': 'scratch'}
     while True:
         summary(value, tell)
         selected = choice('Enter to check this plan, or choose a field to edit: ',
