@@ -66,6 +66,8 @@ export default async function (page, { base }) {
   assert.equal(asset.status(), 200)
   assert.match(asset.headers()['content-type'], /^image\/svg\+xml/)
   assert.equal(asset.headers()['x-content-type-options'], 'nosniff')
+  assert.equal(asset.headers()['x-frame-options'], 'DENY')
+  assert.equal(asset.headers()['content-security-policy'], "frame-ancestors 'none'")
   for (const name of ['unknown.svg', 'constructor', '__proto__', 'package.json', '%2e%2e%2fpackage.json']) {
     assert.equal((await page.request.get(base + '/_ui/help-assets/' + name)).status(), 404)
   }
