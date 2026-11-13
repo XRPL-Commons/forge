@@ -42,3 +42,9 @@ runner-seccomp.json
 !/ui/tests/e2e/fixtures/setup/
 !/ui/tests/e2e/fixtures/setup/**
 .superpowers/
+
+# Build and OS artifacts
+.DS_Store
+*.egg-info/
+build/
+dist/
